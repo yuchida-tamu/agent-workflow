@@ -1,0 +1,20 @@
+{
+  "name": "agent-workflow",
+  "version": "0.1.0",
+  "description": "Platform-agnostic agentic development loop: deterministic core, injectable platform packs and risk policies",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "bin": {
+    "agentflow-policy": "scripts/policy/cli.js",
+    "agentflow-state": "scripts/state/cli.js"
+  },
+  "dependencies": {
+    "yaml": "^2.4.0"
+  }
+}

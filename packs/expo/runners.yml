@@ -1,0 +1,10 @@
+# Runner requirements declared by this pack. Core reads this to route jobs.
+runners:
+  simulator:
+    labels: [self-hosted, macos, simulator]
+    # Jobs needing a booted simulator: implement (self-verify), ux-review, e2e.
+    concurrency: 2          # two booted simulators per machine
+    queue_metric: queue_wait_seconds
+    scale_hint: "sustained median queue wait > 600s → add a machine"
+  default:
+    labels: [ubuntu-latest]

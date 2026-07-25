@@ -1,0 +1,147 @@
+# Platform-neutral baseline pack. Every rule here can be disabled or reweighted
+# by a project pack — except locked rules, which no pack may disable.
+pack: baseline
+version: 1
+
+rules:
+  - id: self-mod-guard
+    description: Changes to the workflow, policies, or domain map always face a human
+    locked: true
+    stage: both
+    when:
+      any:
+        - fact: diff.files
+          matches: [".github/workflows/**", "policies/**", "domains.yml", "agentflow.config.json", "e2e/traces/**"]
+        - fact: plan.files
+          matches: [".github/workflows/**", "policies/**", "domains.yml", "agentflow.config.json"]
+    then:
+      floor: high
+      require: [G2, human-merge]
+      block: [auto-merge]
+
+  - id: scope-drift
+    description: Diff touches files outside the plan's declared surface
+    locked: true
+    stage: pr
+    when: { fact: drift.scope, is: true }
+    then:
+      require: [human-merge]
+      notify: [drift]
+      label: ["drift:scope"]
+
+  - id: brief-domain-drift
+    description: Brief's declared business impact contradicts the diff's domain footprint
+    locked: true
+    stage: pr
+    when: { fact: drift.brief_domain, is: true }
+    then:
+      require: [G2]
+      notify: [drift]
+      label: ["drift:brief"]
+
+  - id: new-dependency
+    description: Any new dependency
+    when: { fact: diff.new_dependency_count, gte: 1 }
+    then: { score: 3 }
+
+  - id: shared-module
+    description: Touches a module imported by more than 5 others
+    when: { fact: diff.shared_module_touched, is: true }
+    then: { score: 3 }
+
+  - id: deleted-exports
+    description: Deletes or renames exported symbols
+    when: { fact: diff.deleted_exports, gte: 1 }
+    then: { score: 2 }
+
+  - id: medium-diff
+    description: 300–799 changed lines
+    stage: pr
+    when:
+      all:
+        - { fact: diff.loc, gte: 300 }
+        - not: { fact: diff.loc, gte: 800 }
+    then: { score: 2 }
+
+  - id: large-diff
+    description: 800+ changed lines
+    stage: pr
+    when: { fact: diff.loc, gte: 800 }
+    then: { score: 4 }
+
+  - id: many-files
+    description: More than 10 files touched
+    stage: pr
+    when: { fact: diff.files_count, gte: 10 }
+    then: { score: 2 }
+
+  - id: logic-without-tests
+    description: Logic changed but no test added or modified
+    stage: pr
+    when:
+      all:
+        - { fact: diff.logic_changed, is: true }
+        - { fact: diff.tests_changed, is: false }
+    then: { score: 2 }
+
+  - id: low-surface-change
+    description: Docs, tests, or copy/style-only changes
+    stage: pr
+    when: { fact: meta.change_class, in: [docs, tests, copy] }
+    then: { score: -2 }
+
+tests:
+  - name: workflow file edit is high risk no matter how small
+    facts:
+      meta: { stage: pr }
+      diff: { files: [".github/workflows/agentflow-review.yml"], loc: 3 }
+    expect:
+      level: high
+      require: [G2, human-merge]
+      block: [auto-merge]
+
+  - name: trace update cannot auto-merge
+    facts:
+      meta: { stage: pr }
+      diff: { files: ["e2e/traces/checkout.trace.json"], loc: 12 }
+    expect:
+      level: high
+      block: [auto-merge]
+
+  - name: small docs change is low risk
+    facts:
+      meta: { stage: pr, change_class: docs }
+      diff: { files: ["README.md"], loc: 20 }
+    expect:
+      level: low
+      score: -2
+
+  - name: large untested logic change lands in medium
+    facts:
+      meta: { stage: pr }
+      diff:
+        files: ["src/a.ts", "src/b.ts"]
+        loc: 900
+        logic_changed: true
+        tests_changed: false
+    expect:
+      level: medium
+      score: 6
+      require: [human-merge]
+
+  - name: scope drift forces human merge
+    facts:
+      meta: { stage: pr }
+      diff: { files: ["src/other.ts"], loc: 10 }
+      drift: { scope: true }
+    expect:
+      require: [human-merge]
+      label: ["drift:scope"]
+
+  - name: plan-time evaluation sees declared surface
+    facts:
+      meta: { stage: plan }
+      plan: { files: ["policies/business.yml"] }
+    expect:
+      level: high
+      require: [G2]

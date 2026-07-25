@@ -1,0 +1,70 @@
+# React Native Expo platform pack — policy rules.
+# A platform pack is just another policy pack: combined with baseline and the
+# project's business pack by the same monotonic union.
+pack: expo
+version: 1
+
+rules:
+  - id: native-surface
+    description: Native project surface requires human plan review and merge
+    locked: true
+    stage: both
+    when:
+      any:
+        - fact: diff.files
+          matches: ["ios/**", "android/**", "app.json", "app.config.*", "eas.json"]
+        - fact: plan.files
+          matches: ["ios/**", "android/**", "app.json", "app.config.*", "eas.json"]
+    then:
+      floor: high
+      require: [G2, human-merge]
+      block: [auto-merge]
+
+  - id: sdk-bump
+    description: Expo SDK or React Native version change
+    locked: true
+    when: { fact: diff.sdk_bump, is: true }
+    then:
+      floor: high
+      require: [G2, human-merge]
+      block: [auto-merge]
+      run: [full-e2e]
+
+  - id: native-dependency
+    description: New dependency containing native code (requires dev-client rebuild)
+    locked: true
+    when: { fact: diff.native_dependency_added, is: true }
+    then:
+      floor: high
+      require: [G2]
+      block: [auto-merge]
+
+  - id: navigation-change
+    description: Route/navigation structure changed
+    when: { fact: diff.files, matches: ["app/**/_layout.*", "app/**/+*.*"] }
+    then: { score: 2 }
+
+tests:
+  - name: Podfile change is high even at 3 lines
+    facts:
+      meta: { stage: pr }
+      diff: { files: ["ios/Podfile"], loc: 3 }
+    expect:
+      level: high
+      require: [G2, human-merge]
+      block: [auto-merge]
+
+  - name: sdk bump demands the full e2e suite
+    facts:
+      meta: { stage: pr }
+      diff: { files: ["package.json"], loc: 2, sdk_bump: true }
+    expect:
+      level: high
+      run: [full-e2e]
+
+  - name: plain js change does not trip platform rules
+    facts:
+      meta: { stage: pr }
+      diff: { files: ["src/components/Button.tsx"], loc: 40 }
+    expect:
+      level: low

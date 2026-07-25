@@ -1,0 +1,875 @@
+<title>Agent Loop Architecture — agent-workflow toolkit</title>
+<style>
+  :root {
+    --paper: #FBFBFD;
+    --ink: #23262F;
+    --muted: #5D6272;
+    --accent: #4630EB;
+    --accent-soft: #EDEBFD;
+    --micro-soft: #F4F2FE;
+    --gate: #A65D0A;
+    --gate-soft: #FBF1E3;
+    --trigger: #0E7A6F;
+    --trigger-soft: #E4F3F1;
+    --script: #47702B;
+    --script-soft: #EDF4E4;
+    --line: #E2E3EC;
+    --card: #FFFFFF;
+    --code-bg: #F1F1F7;
+    --band: rgba(70, 48, 235, 0.025);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #13151C; --ink: #E8EAF2; --muted: #9BA1B5;
+      --accent: #8B7DFF; --accent-soft: #241F45; --micro-soft: #1E1B36;
+      --gate: #E8A33D; --gate-soft: #2E2312;
+      --trigger: #3FBFAE; --trigger-soft: #0F2723;
+      --script: #8FBF5F; --script-soft: #1C2614;
+      --line: #2A2D3A; --card: #191C26; --code-bg: #1F2230;
+      --band: rgba(139, 125, 255, 0.04);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #13151C; --ink: #E8EAF2; --muted: #9BA1B5;
+    --accent: #8B7DFF; --accent-soft: #241F45; --micro-soft: #1E1B36;
+    --gate: #E8A33D; --gate-soft: #2E2312;
+    --trigger: #3FBFAE; --trigger-soft: #0F2723;
+    --script: #8FBF5F; --script-soft: #1C2614;
+    --line: #2A2D3A; --card: #191C26; --code-bg: #1F2230;
+    --band: rgba(139, 125, 255, 0.04);
+  }
+  :root[data-theme="light"] {
+    --paper: #FBFBFD; --ink: #23262F; --muted: #5D6272;
+    --accent: #4630EB; --accent-soft: #EDEBFD; --micro-soft: #F4F2FE;
+    --gate: #A65D0A; --gate-soft: #FBF1E3;
+    --trigger: #0E7A6F; --trigger-soft: #E4F3F1;
+    --script: #47702B; --script-soft: #EDF4E4;
+    --line: #E2E3EC; --card: #FFFFFF; --code-bg: #F1F1F7;
+    --band: rgba(70, 48, 235, 0.025);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+  .shell { max-width: 980px; margin: 0 auto; padding: 3.5rem 1.5rem 6rem; }
+  .prose { max-width: 70ch; }
+
+  h1, h2, h3 { font-family: "Avenir Next", Seravek, system-ui, sans-serif; text-wrap: balance; }
+  h1 { font-size: 2.1rem; font-weight: 600; line-height: 1.2; margin: 0.5rem 0 0.75rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.35rem; font-weight: 600; margin: 3.5rem 0 0.75rem; letter-spacing: -0.005em; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.75rem 0 0.5rem; }
+  p { margin: 0.75rem 0; }
+  .lead { font-size: 1.1rem; color: var(--muted); max-width: 62ch; }
+
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 2rem; }
+
+  code, .mono {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.86em;
+    background: var(--code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+  }
+  pre.block {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+  }
+
+  .legend { display: flex; gap: 1.1rem; flex-wrap: wrap; margin: 1.25rem 0 0; font-size: 0.85rem; color: var(--muted); align-items: center; }
+  .tag {
+    display: inline-block;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+  .tag.agent   { color: var(--accent);  background: var(--accent-soft); }
+  .tag.gate    { color: var(--gate);    background: var(--gate-soft); }
+  .tag.trigger { color: var(--trigger); background: var(--trigger-soft); }
+  .tag.script  { color: var(--script);  background: var(--script-soft); }
+
+  .diagram-wrap { overflow-x: auto; margin: 1.5rem 0; padding: 1rem 0; }
+  pre.mermaid { background: none; margin: 0; min-width: 640px; }
+
+  /* Interactive wiring graph */
+  .graph-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    margin: 1.5rem 0 0;
+  }
+  #wiring { display: block; }
+  #wiring .node { cursor: pointer; }
+  #wiring .node rect { transition: filter 0.15s ease; }
+  @media (prefers-reduced-motion: reduce) {
+    #wiring .node rect { transition: none; }
+  }
+  #wiring .node:hover rect, #wiring .node:focus rect { filter: brightness(0.96); }
+  #wiring .node:focus { outline: none; }
+  #wiring .node:focus rect { stroke-width: 2.5; }
+  #wiring .node.selected rect { stroke-width: 2.5; }
+  #wiring text { font-family: system-ui, -apple-system, sans-serif; pointer-events: none; }
+  #wiring .n-title { font-size: 11.5px; font-weight: 600; fill: var(--ink); }
+  #wiring .n-sub { font-size: 10px; fill: var(--muted); }
+  #wiring .lane-label {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    fill: var(--muted); font-weight: 600;
+  }
+  #wiring .col-label {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+    fill: var(--muted);
+  }
+  #wiring .edge { stroke: var(--muted); stroke-width: 1.3; fill: none; opacity: 0.55; }
+  #wiring .edge.dashed { stroke-dasharray: 5 4; }
+  #wiring .edge.loop { stroke: var(--trigger); opacity: 0.8; }
+  #wiring .edge-label { font-size: 9.5px; fill: var(--trigger); font-weight: 600; }
+  #wiring .band { fill: var(--band); }
+
+  .detail {
+    border: 1px solid var(--line);
+    border-top: 3px solid var(--accent);
+    border-radius: 0 0 8px 8px;
+    background: var(--card);
+    padding: 1.1rem 1.4rem 1.25rem;
+    margin: -1px 0 0.5rem;
+    min-height: 9.5rem;
+  }
+  .detail h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+  .detail .chips { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+  .detail p { font-size: 0.9rem; margin: 0.4rem 0; max-width: 75ch; }
+  .detail p strong { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-right: 0.3rem; }
+  .detail .hint { color: var(--muted); font-size: 0.88rem; }
+
+  .table-wrap { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; min-width: 600px; }
+  th {
+    text-align: left;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+    padding: 0.5rem 1rem 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  td { padding: 0.65rem 1rem 0.65rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { white-space: nowrap; font-weight: 600; }
+
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  li::marker { color: var(--accent); }
+
+  .ladder { counter-reset: rung; list-style: none; padding: 0; margin: 1.25rem 0; display: grid; gap: 0.75rem; }
+  .ladder li {
+    counter-increment: rung;
+    display: grid; grid-template-columns: 2.5rem 1fr; gap: 1rem;
+    background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+    padding: 0.85rem 1.1rem; margin: 0;
+  }
+  .ladder li::before {
+    content: "L" counter(rung, decimal);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 600; color: var(--accent); font-size: 0.95rem; padding-top: 0.1rem;
+  }
+  .ladder li:first-child::before { content: "L0"; }
+  .ladder li:nth-child(2)::before { content: "L1"; }
+  .ladder li:nth-child(3)::before { content: "L2"; }
+  .ladder li:nth-child(4)::before { content: "L3"; }
+  .ladder strong { display: block; margin-bottom: 0.1rem; }
+  .ladder span { color: var(--muted); font-size: 0.9rem; }
+
+  .stage {
+    display: grid; grid-template-columns: 3.25rem 1fr; gap: 0 1.25rem;
+    border-top: 1px solid var(--line); padding: 1.75rem 0;
+  }
+  .stage:last-of-type { border-bottom: 1px solid var(--line); }
+  .stage-num {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 1.4rem; color: var(--accent); font-weight: 500; line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+  }
+  .stage h3 { margin: 0 0 0.25rem; font-size: 1.15rem; }
+  .stage .purpose { color: var(--muted); margin: 0 0 1rem; max-width: 62ch; }
+  .stage dl {
+    display: grid; grid-template-columns: 6.5rem 1fr; gap: 0.4rem 1rem;
+    margin: 0; font-size: 0.92rem; max-width: 68ch;
+  }
+  .stage dt {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); padding-top: 0.2rem;
+  }
+  .stage dd { margin: 0; }
+  .stage dt.t-trigger { color: var(--trigger); }
+  .stage dt.t-gate { color: var(--gate); }
+  .stage dt.t-script { color: var(--script); }
+
+  .gates { display: grid; gap: 0.75rem; margin: 1.25rem 0; padding: 0; list-style: none; }
+  .gates li {
+    display: grid; grid-template-columns: 3rem 1fr; gap: 1rem;
+    background: var(--card); border: 1px solid var(--line);
+    border-left: 3px solid var(--gate); border-radius: 6px;
+    padding: 0.85rem 1.1rem; margin: 0;
+  }
+  .gates .gid {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 600; color: var(--gate); font-size: 0.95rem; padding-top: 0.1rem;
+  }
+  .gates strong { display: block; margin-bottom: 0.1rem; }
+  .gates span { color: var(--muted); font-size: 0.9rem; }
+
+  .phases { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.25rem 0; }
+  .phase { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1rem 1.1rem; }
+  .phase h3 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+  .phase .ph-label {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
+  }
+  .phase p { font-size: 0.88rem; color: var(--muted); margin: 0.35rem 0 0; }
+  @media (max-width: 680px) {
+    .phases { grid-template-columns: 1fr; }
+    .stage { grid-template-columns: 1fr; }
+    .stage dl { grid-template-columns: 5.5rem 1fr; }
+  }
+
+  .principle { border-left: 3px solid var(--accent); padding: 0.1rem 0 0.1rem 1.1rem; margin: 1.25rem 0; }
+  .principle p { margin: 0.35rem 0; }
+
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+</style>
+
+<div class="shell">
+  <header>
+    <p class="eyebrow">Planning document · v0.6 · July 26, 2026</p>
+    <h1>A Platform-Agnostic Agentic Development Loop</h1>
+    <p class="lead">A closed-loop development workflow built on GitHub, designed as a reusable toolkit. The core owns the loop; <strong>platform knowledge</strong> (first pack: React Native Expo) and <strong>business knowledge</strong> (per project) are both injected. Ground rule: <strong>deterministic by default</strong> — every step that a script can perform is a script; agents are reserved for inference, judgment, and synthesis, and each agent call is routed to the cheapest model that can do the job.</p>
+    <div class="legend">
+      <span><span class="tag trigger">Event</span>&nbsp; GitHub webhook / schedule</span>
+      <span><span class="tag script">Script</span>&nbsp; deterministic, zero tokens</span>
+      <span><span class="tag agent">Agent</span>&nbsp; model-routed inference</span>
+      <span><span class="tag gate">Gate</span>&nbsp; human decision</span>
+    </div>
+  </header>
+
+  <h2>Decisions locked in</h2>
+  <ul class="prose">
+    <li><strong>Backlog home: GitHub Issues.</strong> Labels encode the state machine, comments carry approvals, GitHub Actions is the event bus, and Environments provide the release gate. One platform holds all state.</li>
+    <li><strong>E2E model: agent-compiled, deterministically replayed.</strong> Maestro is out (selector maintenance toil, slow). Scenarios are Gherkin; an agent interprets each step <em>once</em> and emits a compiled trace, which the runner replays deterministically ever after. Tokens scale with UI change, not suite size.</li>
+    <li><strong>Platform-agnostic core.</strong> This repo (<code>agent-workflow</code>) is the toolkit, not an app — and nothing platform-specific lives in it. Platform capabilities are extracted into packs (<code>pack-expo</code> first); any project installs core + a pack and gets the full loop with a per-project config.</li>
+    <li><strong>Determinism-first + model routing.</strong> The two ground rules below govern every step in the wiring diagram.</li>
+    <li><strong>Risk criteria are injected, never internalized.</strong> The toolkit ships a deterministic policy <em>engine</em>; each project supplies its own business-risk criteria via a domain map, policy rules, and intake questions. The technical rubric is only a default baseline pack.</li>
+  </ul>
+
+  <h2>The three-layer knowledge model</h2>
+  <p class="prose">Three kinds of knowledge, three owners. The same injection pattern proven by the risk engine applies at every layer boundary: lower layers define mechanisms and seams; upper layers supply the knowledge.</p>
+  <ul class="ladder">
+    <li><div><strong>Core — how the loop works (this toolkit)</strong><span>The state machine, GitHub wiring, gates G1–G4, the policy engine and platform-neutral baseline rules, the agent roster, the behavioral scenario DSL grammar and runner core, the graduation ledger, the installer. Platform-blind: agents' prompts reference <em>capabilities</em>, never platform tools.</span></div></li>
+    <li><div><strong>Platform pack — how this kind of app is built and driven</strong><span>Skills (<code>expo-dev</code>, <code>mobile-verify</code>, EAS <code>release</code>), the E2E step executor (agent-device for mobile), the build/distribute pipeline, platform hard-trigger policy rules (<code>ios/**</code>, SDK bumps, native deps — literally just another policy pack, combined by the same monotonic union), and runner requirements (rn-expo declares the self-hosted macOS runner). First pack: <code>pack-expo</code>; a web pack would plug Playwright into the same seams.</span></div></li>
+    <li><div><strong>Project — what this product is and what's risky about it</strong><span>The domain map, business policy pack, intake questions, this app's scenarios, convention overrides, and <code>agentflow.config.json</code> — which declares its platform: <code>platform: rn-expo</code>.</span></div></li>
+  </ul>
+
+  <h3>The capability interfaces — the seams core defines</h3>
+  <p class="prose">Four interfaces are the entire contract between core and pack. Core agents and scripts consume them; packs implement them:</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Interface</th><th>Contract</th><th>Consumed by</th><th>rn-expo implementation</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>run</code></td><td>Launch the app in an observable environment</td><td>Implementer, UX Reviewer, QA Explorer</td><td>Expo dev server + iOS simulator</td></tr>
+        <tr><td><code>verify</code></td><td>Drive the running app and capture evidence (screenshots, logs)</td><td>Implementer self-verify, UX Reviewer</td><td>agent-device</td></tr>
+        <tr><td><code>execute-step</code></td><td>Replay one compiled step trace deterministically</td><td>E2E scenario runner</td><td>agent-device step adapter</td></tr>
+        <tr><td><code>ship</code></td><td>Build, distribute, submit</td><td>Integration + release scripts</td><td>EAS build / submit, TestFlight</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="principle prose">
+    <p><strong>Don't over-abstract on day one:</strong> the interfaces are named and specified now because they're cheap to define and keep the core clean — but Phase 1 builds only <code>pack-expo</code> against them. The second pack (likely web) is what truly validates the seams, and it waits until the loop works end-to-end.</p>
+  </div>
+
+  <h2>Ground rule 1 — the determinism ladder</h2>
+  <p class="prose">Every step in the loop is placed on the lowest rung that can do it reliably. A step only moves up a rung when the rung below demonstrably can't decide the outcome. Deterministic checks always run <em>before</em> any agent is invoked — never spend tokens on work that a free check would have rejected.</p>
+  <ul class="ladder">
+    <li><div><strong>Scripts &amp; static checks — zero tokens</strong><span>Anything decidable by rules over structured data: state transitions, label management, template validation, dependency checks, lint / typecheck / unit tests, worktree setup, E2E scenario execution, issue filing from structured reports, version bumps, changelogs, EAS submit.</span></div></li>
+    <li><div><strong>Small model (Haiku) — bounded classification</strong><span>Classify, extract, or summarize against a clear rubric where a wrong answer is cheap to detect and correct: issue triage, duplicate detection, diff summaries, E2E failure clustering, risk-score tie-breaks.</span></div></li>
+    <li><div><strong>Mid model (Sonnet) — code within a plan</strong><span>Writing and modifying code against an approved plan, authoring tests, producing review findings, fix loops, exploratory QA passes. The workhorse tier.</span></div></li>
+    <li><div><strong>Frontier model (Opus / Fable) — open-ended judgment</strong><span>Shaping briefs from fuzzy intent, architecture plans, task decomposition, adversarial verification of review findings, diagnosing why something is stuck. Rare, deliberate, and worth it.</span></div></li>
+  </ul>
+  <div class="principle prose">
+    <p><strong>Escalation rule:</strong> a step may move up exactly one rung when it fails, and the escalation is logged with a reason. Nothing routes to a higher tier for mechanical work, and no agent runs before the deterministic checks in front of it pass.</p>
+  </div>
+
+  <h2>Ground rule 2 — model routing policy</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Task</th><th>Tier</th><th>Why this tier</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>State transitions, CI, E2E runs, releases</td><td>Script (L0)</td><td>Fully rule-decidable; correctness is verifiable without judgment</td></tr>
+        <tr><td>Issue triage, dupe check, priority</td><td>Haiku (L1)</td><td>Closed-set classification with a rubric; errors surface immediately at G1</td></tr>
+        <tr><td>Diff summary for reviewers</td><td>Haiku (L1)</td><td>Compression, not judgment; feeds humans and reviewers cheaply</td></tr>
+        <tr><td>E2E failure clustering &amp; report drafting</td><td>Haiku (L1)</td><td>Pattern grouping over structured runner output</td></tr>
+        <tr><td>Implementation, test authoring, fix loops</td><td>Sonnet (L2)</td><td>Code generation guided by an approved plan — the plan carries the hard decisions</td></tr>
+        <tr><td>Code review, UX review, exploratory QA</td><td>Sonnet (L2)</td><td>Judgment within a defined rubric (conventions, acceptance criteria)</td></tr>
+        <tr><td>Product shaping, architecture, decomposition</td><td>Opus (L3)</td><td>Open-ended synthesis; a bad decision here is the most expensive kind</td></tr>
+        <tr><td>Adversarial verification of review findings</td><td>Opus (L3)</td><td>Kills false positives before they cost an Implementer fix cycle</td></tr>
+        <tr><td>Stuck diagnosis after bounded retries</td><td>Opus (L3)</td><td>Last resort before escalating to the human</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Risk policy — an engine, not a rubric</h2>
+  <p class="prose">Technical rules alone misjudge risk: a 40-line change to the checkout flow matters more than an 800-line refactor of the settings screen. But business risk is project-specific, so the toolkit must not hard-code it. The split: <strong>the toolkit ships a deterministic policy engine; risk criteria are project-owned data.</strong> Three layers, evaluated together, later layers authoritative:</p>
+  <ul class="ladder">
+    <li><div><strong>Policy engine — toolkit</strong><span>Generic, deterministic evaluator. Takes a declared surface (plan time) or an actual diff (PR time) plus the brief's structured fields, evaluates every active rule pack, and emits <em>obligations</em> — not just a score.</span></div></li>
+    <li><div><strong>Technical baseline pack — toolkit default</strong><span>Hard triggers: native surface (<code>ios/</code>, <code>app.config.*</code>, <code>eas.json</code>), SDK/RN bumps, native dependencies, schema/migrations, secrets, and the workflow files themselves (agents never loosen their own gates). Additive factors: new dependencies, widely-imported shared modules, diff size, logic changed without tests. Projects can extend, reweight, or override all of it.</span></div></li>
+    <li><div><strong>Business pack — project-owned, authoritative</strong><span>A domain map, policy rules, and intake questions authored per project. This is where risk judgment actually lives; the baseline only catches what every RN Expo project has in common.</span></div></li>
+  </ul>
+
+  <h3>The domain map — business judgment encoded once</h3>
+  <p class="prose">The keystone artifact: a project-owned file mapping business capabilities to code. A human makes each criticality call exactly once ("checkout is critical, settings is not"), and the engine enforces it deterministically forever — which is what keeps business-aware gating on rung L0.</p>
+  <pre class="block"># domains.yml — owned by the project, not the toolkit
+checkout:
+  description: "Purchase flow from cart through receipt"
+  criticality: critical        # a business call, made by a human, once
+  paths: ["src/features/checkout/**"]
+  screens: ["/checkout/*"]
+  scenarios: ["@checkout"]     # E2E scenario tags
+onboarding:
+  criticality: high
+  paths: ["src/features/onboarding/**"]</pre>
+  <p class="prose">The same map is reused across the loop for free: post-merge smoke runs a touched domain's scenario tags, the UX Reviewer is told which domain's acceptance bar applies, changelogs group by domain, and trust graduation is tracked per change-class <em>× domain</em> — a class can be graduated in <code>settings</code> while still human-gated in <code>checkout</code>.</p>
+
+  <h3>Policy rules — obligations, not scores</h3>
+  <pre class="block"># policies/business.yml — project-owned
+rules:
+  - when: domain.criticality == "critical"
+    then: [require: G2, block: auto-merge, run: domain-scenarios-pre-merge]
+  - when: brief.compliance_impact == true
+    then: [require: G2, notify: reviewer]</pre>
+  <p class="prose">The engine's verdict is a set of consequences — require G2, block auto-merge, run extra scenarios, notify someone — posted as a factor-by-factor comment (auditable) and applied as labels (the labels are themselves the dispatch events). The low/medium/high score from the baseline pack becomes just one input among the rules.</p>
+
+  <h3>Intake questions — business risk declared at the source</h3>
+  <p class="prose">Each project injects the business-impact questions the Product Shaper must ask during the intake interview: does this change what users pay or see about pricing? Does it touch personal data? Is the behavior change irreversible for the user? Answers become structured fields on the brief, consumed deterministically by the rules above. The person with the idea knows the business meaning of a change better than any diff analysis will.</p>
+  <div class="principle prose">
+    <p><strong>Cross-check drift detector:</strong> the brief's declared impact and the diff's domain footprint must agree. If the brief said <code>revenue_impact: false</code> but the PR lands in the <code>checkout</code> domain, the engine flags the contradiction and escalates — either the brief was wrong or the implementation wandered. Deterministic either way, like the plan-vs-diff scope check.</p>
+  </div>
+  <p class="prose"><strong>Unmapped code</strong> is a per-project policy choice: assign a default criticality, or let a logged Haiku call classify the change against the domain descriptions (per the routing policy — and a nudge to grow the map). The engine also warns when the unmapped fraction of <code>src/</code> crosses a threshold, so the domain map can't silently rot.</p>
+
+  <h3>Policy pack schema — one rule shape for everything</h3>
+  <p class="prose">Hard triggers, additive score factors, and business rules are all the <em>same rule shape</em> — they differ only in which obligations they emit. That keeps the engine tiny and every criterion, technical or business, equally injectable:</p>
+  <pre class="block"># policies/business.yml
+pack: my-app-business
+version: 1
+rules:
+  - id: critical-domain
+    description: "Critical business domains always get human plan review"
+    stage: both                  # plan | pr | both
+    when:
+      all:
+        - fact: domains.max_criticality
+          in: [critical]
+    then:
+      require: [G2, human-merge]
+      block: [auto-merge]
+      run: [domain-scenarios]    # touched domains' @tags run pre-merge
+
+  - id: native-surface           # a "hard trigger" is just a rule…
+    when: { fact: diff.files, matches: ["ios/**", "app.config.*"] }
+    then: { floor: high, require: [G2], block: [auto-merge] }
+
+  - id: large-diff               # …and so is an "additive factor"
+    when: { fact: diff.loc, gte: 800 }
+    then: { score: +4 }</pre>
+  <p class="prose"><strong>Conditions</strong> are structured fact/operator trees — <code>all</code> / <code>any</code> / <code>not</code> over a closed operator set (<code>is</code>, <code>in</code>, <code>gte</code>, <code>lte</code>, <code>contains</code>, <code>matches</code>, <code>exists</code>). No expression language to parse: every pack is validatable with a JSON Schema before it runs, and evaluation is trivially deterministic. A readable string sugar can compile down to this form later if needed.</p>
+  <p class="prose"><strong>Obligations</strong> are a deliberately closed vocabulary of seven verbs: <code>require</code> (G2, human-merge) · <code>block</code> (auto-merge) · <code>run</code> (scenario tags / named checks) · <code>notify</code> · <code>label</code> · <code>score: +N</code> · <code>floor: &lt;level&gt;</code>. Score-to-level thresholds and per-level default obligations live in config, plugging the additive layer into the same vocabulary.</p>
+
+  <h4 style="font-family: 'Avenir Next', Seravek, system-ui, sans-serif; font-size: 0.95rem; margin: 1.5rem 0 0.4rem;">The fact catalog — the engine's public contract</h4>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Namespace</th><th>Examples</th><th>Available</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>brief.*</code></td><td>Project-defined intake answers: <code>revenue_impact</code>, <code>compliance_impact</code></td><td>plan + PR</td></tr>
+        <tr><td><code>plan.*</code></td><td>Declared surface: <code>files[]</code>, <code>new_dependencies[]</code>, <code>schema_change</code></td><td>plan + PR</td></tr>
+        <tr><td><code>diff.*</code></td><td><code>files[]</code>, <code>loc</code>, <code>new_dependencies[]</code>, <code>deleted_exports</code>, <code>tests_changed</code></td><td>PR only</td></tr>
+        <tr><td><code>domains.*</code></td><td><code>touched[]</code>, <code>max_criticality</code>, <code>unmapped_fraction</code> — derived from <code>domains.yml</code></td><td>both</td></tr>
+        <tr><td><code>drift.*</code></td><td><code>scope</code> (diff ⊄ plan), <code>brief_domain</code> (declared impact vs. domain footprint conflict)</td><td>PR only</td></tr>
+        <tr><td><code>history.*</code></td><td><code>class_graduated</code> — per change-class × domain, from the graduation ledger</td><td>PR only</td></tr>
+        <tr><td><code>score.*</code>, <code>meta.*</code></td><td><code>score.total</code>, <code>meta.stage</code>, <code>meta.change_class</code></td><td>both</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle prose">
+    <p><strong>Combination is the safety property:</strong> obligations only <em>union</em> — evaluating more packs can only add restrictions, never remove them, so there is no priority arithmetic to reason about. Loosening is explicit and scoped: a project pack may <code>disable</code> or reweight baseline scoring rules by id, but rules the toolkit marks <code>locked: true</code> (the self-modification guard on workflows and the policy files themselves) cannot be disabled by any pack. Agents — and configs — can't unlock their own cage.</p>
+  </div>
+
+  <p class="prose"><strong>Packs are testable.</strong> Evaluation is pure (facts in, verdict out), so packs ship with fixture tests run by <code>agentflow policy test</code> — assert the expected obligations against example fact sets. This is how a project safely evolves its risk policy: tighten a rule, run the fixtures, and see exactly which past scenarios would now gate differently. Policy file changes are themselves <code>locked</code>-rule territory, so they always pass a human at G3.</p>
+  <pre class="block">tests:
+  - name: "checkout copy change still blocks auto-merge"
+    facts: { diff: { files: ["src/features/checkout/Receipt.tsx"], loc: 4 } }
+    expect: { block: [auto-merge] }</pre>
+  <p class="prose">The <strong>verdict</strong> is a deterministic JSON document — every rule evaluated, the facts that matched, the union of obligations, the resulting level — rendered as the factor-by-factor comment and applied as <code>risk:*</code> / obligation labels, which are themselves the dispatch events for the next stage. Same engine, run twice: plan time over <code>plan.* + brief.*</code>, PR time over <code>diff.*</code> where the <code>drift.*</code> facts activate.</p>
+
+  <h2>The wiring — interactive</h2>
+  <p class="prose">GitHub is the event bus: every column below is one stage, triggered left-to-right by a GitHub event, flowing down through deterministic scripts, then micro-agents, then full agents, and ending at a human gate where one exists. <strong>Click any node</strong> for what it does, why it sits on that rung of the ladder, and what it emits. The dashed teal edge is the loop closing: QA findings re-enter intake as new issues. The graph shows the loop <em>instantiated with</em> <code>pack-expo</code> — wherever a node says simulator, agent-device, or EAS, that's the pack's implementation of a core capability interface, not a core assumption.</p>
+
+  <div class="graph-wrap">
+    <svg id="wiring" width="1270" height="512" viewBox="0 0 1270 512" role="img" aria-label="Wiring diagram: GitHub events trigger scripts, micro-agents, agents, and human gates across seven stages"></svg>
+  </div>
+  <div class="detail" id="detail">
+    <h3 id="d-title">How to read this graph</h3>
+    <div class="chips" id="d-chips"></div>
+    <p class="hint" id="d-body">Each column is a stage; each row is a rung of the determinism ladder. Work always enters a column through a GitHub event (top row) and passes every deterministic check before any tokens are spent. Select a node — click, or Tab + Enter — to see its details here.</p>
+  </div>
+
+  <h2>How GitHub encodes the state machine</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Concern</th><th>GitHub mechanism</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Work item state</td><td><code>state:*</code> labels (<code>idea → spec → planned → ready → in-progress → in-review → merged → verified</code>); every label change is a webhook event</td></tr>
+        <tr><td>Stage dispatch</td><td>GitHub Actions on <code>issues</code>, <code>pull_request</code>, <code>issue_comment</code>, <code>check_suite</code>, <code>push</code>, <code>schedule</code>, <code>workflow_dispatch</code></td></tr>
+        <tr><td>Human approvals (G1, G2)</td><td><code>/approve</code> issue comments, validated by a script against an authorized-user list</td></tr>
+        <tr><td>Merge gate (G3)</td><td>Native PR review approval + branch protection; <code>auto-merge</code> label for graduated low-risk classes</td></tr>
+        <tr><td>Release gate (G4)</td><td>GitHub Environment with a required reviewer — the platform's own deterministic approval primitive</td></tr>
+        <tr><td>Artifacts &amp; audit trail</td><td>Briefs and plans as issue comments; screenshots on PRs; every agent run logged as a check run with its model tier and token count</td></tr>
+        <tr><td>Platform runners</td><td>Declared by the platform pack — rn-expo requires a self-hosted macOS runner for simulator jobs (self-verify, UX review, E2E); cloud runners handle everything else</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose">The orchestrator disappears as a long-running process: GitHub Actions <em>is</em> the orchestrator. Each workflow is stateless, reads everything it needs from the issue/PR, dispatches the right script or agent, and writes results back. Kill anything mid-run and the next event picks up exactly where the labels say things stand.</p>
+
+  <h2>The six stages, revised</h2>
+
+  <div class="stage">
+    <div class="stage-num">0</div>
+    <div>
+      <h3>Ideation &amp; Intake</h3>
+      <p class="purpose">Turn fuzzy input — a message, an idea issue, a QA finding — into a concrete brief with acceptance criteria.</p>
+      <dl>
+        <dt class="t-trigger">Trigger</dt><dd><code>issues.opened</code> or <code>labeled: idea</code>; QA filer issues arrive pre-structured and skip the interview.</dd>
+        <dt class="t-script">Scripts</dt><dd>Template validation, state transition, authorized-author check.</dd>
+        <dt>Agents</dt><dd>Triage micro-agent (Haiku): type, duplicate, priority. <strong>Product Shaper</strong> (Opus): interviews the human, writes the brief.</dd>
+        <dt class="t-gate">Gate</dt><dd><strong>G1 — Brief approval</strong> via <code>/approve</code> comment.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">1</div>
+    <div>
+      <h3>Planning</h3>
+      <p class="purpose">Approved brief → technical plan → dependency-ordered child issues sized to one PR each.</p>
+      <dl>
+        <dt class="t-trigger">Trigger</dt><dd><code>labeled: state:spec</code>.</dd>
+        <dt class="t-script">Scripts</dt><dd>Risk engine — evaluates the plan's declared surface and the brief's business-impact fields against the project's injected policy packs and domain map; its obligations decide whether G2 is required.</dd>
+        <dt>Agents</dt><dd><strong>Architect</strong> (Opus) with read-only Explorer subagents (Haiku) for codebase mapping.</dd>
+        <dt class="t-gate">Gate</dt><dd><strong>G2 — Plan approval</strong>; auto-passes when the risk score is low.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">2</div>
+    <div>
+      <h3>Implementation</h3>
+      <p class="purpose">Build each task on an isolated branch; self-verify on the simulator before the PR exists.</p>
+      <dl>
+        <dt class="t-trigger">Trigger</dt><dd><code>labeled: state:ready</code> with no open dependencies (script-checked).</dd>
+        <dt class="t-script">Scripts</dt><dd>Dependency check, worktree + branch setup, local lint/typecheck/test loop the agent must pass before pushing.</dd>
+        <dt>Agents</dt><dd><strong>Implementer</strong> (Sonnet) — one per task, parallel across tasks, on the macOS runner for simulator self-verification.</dd>
+        <dt class="t-gate">Gate</dt><dd>None; bounded retries, then Opus stuck-diagnosis, then human escalation.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">3</div>
+    <div>
+      <h3>Review</h3>
+      <p class="purpose">Deterministic CI first; agent judgment only on code that already passes it.</p>
+      <dl>
+        <dt class="t-trigger">Trigger</dt><dd><code>pull_request.opened</code> / <code>synchronize</code>.</dd>
+        <dt class="t-script">Scripts</dt><dd>Full CI — lint, typecheck, unit tests, build. Red CI blocks all agent review: zero tokens on broken code.</dd>
+        <dt>Agents</dt><dd>Diff summary (Haiku). <strong>Code Reviewer</strong> + <strong>UX Reviewer</strong> (Sonnet); findings adversarially verified (Opus) before anyone acts on them.</dd>
+        <dt class="t-gate">Gate</dt><dd><strong>G3 — PR approval</strong>; low-risk classes graduate to auto-merge.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">4</div>
+    <div>
+      <h3>Integration</h3>
+      <p class="purpose">Keep main green without spending tokens while it already is.</p>
+      <dl>
+        <dt class="t-trigger">Trigger</dt><dd><code>push: main</code>; <code>check_suite.completed</code>.</dd>
+        <dt class="t-script">Scripts</dt><dd>CI + EAS dev-client build on every merge; queued-PR rebase.</dd>
+        <dt>Agents</dt><dd><strong>Build Sentinel</strong> (Sonnet) — invoked <em>only</em> on a red result; fixes or reverts, then escalates if still red.</dd>
+        <dt class="t-gate">Gate</dt><dd>None; escalation-only.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">5</div>
+    <div>
+      <h3>Testing &amp; QA</h3>
+      <p class="purpose">Deterministic regression nightly; agent creativity only for exploration. This edge closes the loop.</p>
+      <dl>
+        <dt class="t-trigger">Trigger</dt><dd><code>schedule</code> (nightly) + post-merge smoke subset.</dd>
+        <dt class="t-script">Scripts</dt><dd><strong>E2E replay runner</strong> — Gherkin scenarios replayed from agent-compiled traces on agent-device; agent re-derivation only on replay failure. Suite grows with each shipped feature: acceptance criteria become scenarios.</dd>
+        <dt>Agents</dt><dd>Failure clustering + structured bug filing (Haiku). <strong>QA Explorer</strong> (Sonnet) — exploratory pass over new and changed flows only.</dd>
+        <dt class="t-gate">Gate</dt><dd>None here — findings flow back to intake as issues.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <h2>Human touchpoints</h2>
+  <ul class="gates">
+    <li><span class="gid">G1</span><div><strong>Brief approval</strong><span><code>/approve</code> comment on the shaped issue. Cheapest place to correct course.</span></div></li>
+    <li><span class="gid">G2</span><div><strong>Plan approval</strong><span>Required only when the risk engine's obligations say so — driven by the project's own domain map and policy rules; trivial fixes flow through.</span></div></li>
+    <li><span class="gid">G3</span><div><strong>Merge approval</strong><span>Native PR review. Graduates toward label-driven auto-merge for proven low-risk classes.</span></div></li>
+    <li><span class="gid">G4</span><div><strong>Release approval</strong><span>GitHub Environment required-reviewer — approve once, and the release script does the rest.</span></div></li>
+  </ul>
+  <p class="prose"><strong>Standing rules:</strong> interrupt any stage at any time; every agent escalates via notification instead of spinning when its bounded retries run out. Silence always means progress, never a stall.</p>
+
+  <h2>E2E model — compile once, replay forever</h2>
+  <p class="prose">Scenarios are written in Gherkin — behavioral, readable, tagged (<code>@checkout</code> binds to the domain map, <code>@smoke</code> marks the post-merge subset). Underneath the behavioral layer sits a compiled artifact no human writes:</p>
+  <ul class="prose">
+    <li><strong>First run — the agent interprets (L2).</strong> A Sonnet agent reads the step ("When the user taps Checkout"), drives the app through the pack's <code>verify</code> primitives, and emits a <strong>compiled trace</strong>: the ordered primitive actions with resolved selectors (fixed resolution order: <code>testID</code> → accessibility label → visible text), waits, and assertions. Traces are committed to <code>e2e/traces/</code> — versioned, reviewable code.</li>
+    <li><strong>Every later run — deterministic replay (L0).</strong> The runner replays traces directly against the driver: no model in the loop, fast, zero tokens, identical verdicts. This is the nightly suite.</li>
+    <li><strong>Replay failure — the ladder decides.</strong> The agent re-derives the step (one-rung escalation, logged). If it succeeds, the UI changed but the behavior holds: trace updated via PR — which passes G3, so a trace that quietly weakens an assertion still meets a human. If the agent also fails, the behavior broke: evidence bundle → triage → issue into intake.</li>
+  </ul>
+  <div class="principle prose">
+    <p><strong>The economics:</strong> tokens are spent only on new scenarios and changed UI — proportional to change, not to suite size. A 50-scenario nightly run on an unchanged app costs nothing. And "flaky selector" vs. "actual regression" becomes a deterministic distinction, not a judgment call.</p>
+  </div>
+
+  <h2>Toolkit packaging — core, pack, project</h2>
+  <p class="prose">Three artifacts, one per knowledge layer. The installer wires a project to core plus its declared platform pack, pinning versions of both; everything of substance upgrades in one place.</p>
+  <pre class="block">agent-workflow/                     # CORE — this repo, platform-blind
+├── actions/          # composite GitHub Actions: intake, plan, implement, review, qa…
+├── scripts/          # state-machine CLI, risk policy engine, gate validator, issue filer
+├── policies/         # platform-neutral baseline pack (diff size, shared modules, tests, self-mod guard)
+├── scenarios/        # behavioral DSL grammar + runner core (executor-agnostic)
+├── agents/           # product-shaper · architect · implementer · reviewers · sentinel · qa-explorer
+├── interfaces/       # run · verify · execute-step · ship — the core↔pack contract
+└── init/             # installer: wires an app repo to core + its declared pack
+
+pack-expo/                          # PLATFORM PACK — React Native Expo
+├── skills/           # expo-dev · mobile-verify · release (EAS)
+├── policies/         # platform hard triggers: ios/**, app.config.*, SDK bumps, native deps
+├── adapters/         # run/verify → simulator + agent-device · execute-step · ship → EAS
+└── runners.yml       # declares: self-hosted macOS runner for simulator jobs
+
+your-app/                           # PROJECT — any consuming repo
+├── .github/workflows/agentflow-*.yml   # thin stubs calling pinned core actions
+├── agentflow.config.json               # platform: rn-expo · intake questions · model overrides
+├── domains.yml                         # business capability → code map + criticality
+├── policies/business.yml               # this app's risk rules (authoritative)
+└── e2e/scenarios/*.feature             # this app's behavioral scenarios</pre>
+  <p class="prose">The per-app config is where projects differ: which flows the nightly sweep walks, what counts as high-risk for G2, which change classes may auto-merge, and any model-tier overrides. The state machine, agents, and interfaces are identical everywhere — that's the payoff of keeping them deterministic, rubric-driven, and platform-blind.</p>
+
+  <h2>Adoption path — crawl, walk, run</h2>
+  <div class="phases">
+    <div class="phase">
+      <span class="ph-label">Phase 1 · Crawl</span>
+      <h3>Scripts + manual dispatch</h3>
+      <p>Build the L0 layer first: state-machine CLI, labels, gate validator, E2E runner. Agents run from one local session via <code>/next</code>. Proves the deterministic skeleton before any automation.</p>
+    </div>
+    <div class="phase">
+      <span class="ph-label">Phase 2 · Walk</span>
+      <h3>Actions-driven + parallel</h3>
+      <p>Wire the GitHub Actions triggers; Implementers run in parallel worktrees; nightly QA on schedule against the self-hosted macOS runner.</p>
+    </div>
+    <div class="phase">
+      <span class="ph-label">Phase 3 · Run</span>
+      <h3>Graduated autonomy</h3>
+      <p>Auto-merge for proven change classes, auto-pass G2 for low-risk plans, and the installer makes any new repo loop-ready in minutes. A second platform pack (web) validates the capability seams.</p>
+    </div>
+  </div>
+
+  <h2>Planning status: complete</h2>
+  <p class="prose">All open questions are resolved. <strong>Unmapped code</strong> defaults to <code>criticality: medium</code> (can't auto-merge, doesn't demand G2) with a rot warning above 20% unmapped; Haiku classification is opt-in per project. <strong>Runner topology:</strong> one self-hosted Mac, queued by GitHub Actions concurrency groups (simulator jobs capped at 2); the scale trigger is mechanical — sustained median queue wait above ~10 minutes adds a machine. <strong>Interface signatures:</strong> each adapter is an executable, JSON on stdin/stdout, shared exit codes (0 ok · 10 recoverable · 20 fatal) feeding the bounded-retry scripts; specs live in <code>interfaces/</code>. <strong>E2E:</strong> the compile-and-replay model above. Phase 1 construction has begun in this repo.</p>
+
+  <footer>
+    agent-workflow · loop architecture v0.6 · revised July 26, 2026 · planning complete — Phase 1 (deterministic skeleton) under construction
+  </footer>
+</div>
+
+<script>
+(function () {
+  var LANES = [
+    { key: "E", label: "GitHub event", y: 26 },
+    { key: "D", label: "Deterministic", y: 112 },
+    { key: "M", label: "Micro-agent", y: 198 },
+    { key: "A", label: "Agent", y: 284 },
+    { key: "G", label: "Human gate", y: 384 }
+  ];
+  var NH = 52, NW = 148, GUTTER = 132, COLSTEP = 161;
+  var COLS = ["0 · Intake", "1 · Plan", "2 · Implement", "3 · Review", "4 · Integrate", "5 · QA", "6 · Release"];
+
+  function cx(col) { return GUTTER + col * COLSTEP; }
+  function laneY(k) { for (var i = 0; i < LANES.length; i++) if (LANES[i].key === k) return LANES[i].y; return 0; }
+
+  var nodes = [
+    { id: "e0", col: 0, lane: "E", t: "issues.opened", s: "or labeled: idea", type: "event",
+      what: "A human files an idea or bug, or the QA filer opens a structured issue. This is the loop's only entry point — everything, including the system's own findings, comes through here.",
+      why: "GitHub webhook — free, instant, and already the system of record.",
+      emits: "Dispatches the intake workflow." },
+    { id: "d0", col: 0, lane: "D", t: "intake script", s: "template check · transition", type: "script",
+      what: "Validates the issue against the intake template, normalizes labels, and moves the item into the state machine. Rejects malformed input with a comment explaining what's missing.",
+      why: "Pure rule-checking over structured fields — no judgment involved, so no tokens spent.",
+      emits: "A valid issue in state:idea, or a fix-it comment." },
+    { id: "m0", col: 0, lane: "M", t: "triage", s: "type · dupe · priority", type: "micro", tier: "Haiku",
+      what: "Classifies the item (bug / feature / chore), checks for duplicates against open issues, and suggests a priority.",
+      why: "Closed-set classification with a rubric. A wrong call is caught at G1 seconds later, so the cheapest model is the right model.",
+      emits: "Type, priority, and duplicate labels." },
+    { id: "a0", col: 0, lane: "A", t: "Product Shaper", s: "brief via interview", type: "agent", tier: "Opus",
+      what: "Interviews the author in the issue thread to turn fuzzy intent into a brief: problem, user story, acceptance criteria, out-of-scope — plus the project's injected business-impact questions (revenue? personal data? irreversible?), whose answers become structured fields the risk engine consumes. Pre-structured bug reports from the QA filer skip the interview.",
+      why: "Extracting real intent from ambiguity is open-ended judgment — the one place in intake worth a frontier model.",
+      emits: "The brief, posted as an issue comment." },
+    { id: "g0", col: 0, lane: "G", t: "G1 · brief approval", s: "/approve comment", type: "gate",
+      what: "The human reads the brief and comments /approve (or replies with corrections, which reopens the interview). A script validates the approver and flips the state.",
+      why: "Cheapest place in the entire loop to correct course — before any planning or code exists.",
+      emits: "labeled: state:spec → triggers Planning." },
+
+    { id: "e1", col: 1, lane: "E", t: "labeled: state:spec", s: "brief approved", type: "event",
+      what: "The G1 approval script applies the state label; the label event dispatches the planning workflow.",
+      why: "Label changes are the state machine's transitions — every one is a free webhook.",
+      emits: "Dispatches planning." },
+    { id: "d1", col: 1, lane: "D", t: "risk engine", s: "policy packs · domain map", type: "script",
+      what: "Evaluates the plan's declared surface and the brief's business-impact fields against the project's injected policy packs: the domain map (business criticality by code area) plus the technical baseline. Emits obligations — require G2, block auto-merge, run domain scenarios — not just a score. Re-runs at PR time on the actual diff, where plan-vs-diff and brief-vs-domain mismatches escalate automatically.",
+      why: "Business risk judgment is made once by a human in the domain map, then enforced deterministically forever. The engine is toolkit; every criterion is project-owned data.",
+      emits: "risk:* labels + an auditable factor-by-factor comment." },
+    { id: "a1", col: 1, lane: "A", t: "Architect", s: "+ Explorer subagents", type: "agent", tier: "Opus",
+      what: "Reads the codebase (via cheap read-only Explorer subagents on Haiku), writes the technical plan, and decomposes it into dependency-ordered child issues each sized to one PR.",
+      why: "Architecture and decomposition are the highest-leverage judgments in the loop — a bad plan multiplies cost downstream.",
+      emits: "Plan comment + child issues in state:ready (held until G2 if high-risk)." },
+    { id: "g1", col: 1, lane: "G", t: "G2 · plan approval", s: "auto-pass if low risk", type: "gate",
+      what: "For high-risk plans the human approves via /approve; low-risk plans pass automatically per the risk scorer.",
+      why: "Risk-based gating: human attention goes only where a wrong plan is expensive.",
+      emits: "Child issues released to state:ready." },
+
+    { id: "e2", col: 2, lane: "E", t: "labeled: state:ready", s: "per child task", type: "event",
+      what: "Each released child issue fires its own event, so independent tasks dispatch in parallel.",
+      why: "Per-issue events give parallelism for free — no scheduler to build.",
+      emits: "Dispatches one implementation job per task." },
+    { id: "d2", col: 2, lane: "D", t: "prep script", s: "deps · worktree · checks", type: "script",
+      what: "Verifies dependency issues are closed, creates the branch and isolated worktree, and enforces the local check loop (lint, typecheck, unit tests) the Implementer must pass before pushing.",
+      why: "Environment setup and pass/fail checks are mechanical; the agent should inherit a ready workspace and a hard quality bar.",
+      emits: "A prepared worktree + a green/red local check command." },
+    { id: "a2", col: 2, lane: "A", t: "Implementer", s: "build + self-verify", type: "agent", tier: "Sonnet",
+      what: "Implements one task test-first, then launches the app on the iOS simulator and visually confirms the change (screenshots attached) before opening the PR. Runs on the self-hosted macOS runner.",
+      why: "Code generation against an approved plan is the workhorse tier — the plan already carries the hard decisions.",
+      emits: "A PR with description, screenshots, and passing local checks." },
+
+    { id: "e3", col: 3, lane: "E", t: "pull_request.opened", s: "or synchronize", type: "event",
+      what: "The PR (or any new push to it) dispatches the review pipeline.",
+      why: "Native GitHub event; review state lives on the PR itself.",
+      emits: "Dispatches CI, then review." },
+    { id: "d3", col: 3, lane: "D", t: "CI gate", s: "lint · types · unit · build", type: "script",
+      what: "Full deterministic CI. Agent reviewers are blocked until it's green — broken code never reaches a model.",
+      why: "The core cost rule: free checks run first, and red CI means zero tokens spent on review.",
+      emits: "Green check suite → unlocks agent review." },
+    { id: "m3", col: 3, lane: "M", t: "diff summary", s: "for reviewers + human", type: "micro", tier: "Haiku",
+      what: "Summarizes the diff and maps it to the brief's acceptance criteria, giving both agent reviewers and the human a cheap orientation pass.",
+      why: "Compression, not judgment.",
+      emits: "Summary comment on the PR." },
+    { id: "a3", col: 3, lane: "A", t: "Code + UX Reviewers", s: "findings verified", type: "agent", tier: "Sonnet",
+      what: "Code Reviewer checks correctness, conventions, and security. UX Reviewer runs the branch on the simulator and judges real pixels against acceptance criteria. Findings are adversarially verified (Opus) before the Implementer acts on them — false positives die here, not in a fix cycle.",
+      why: "Judgment within a rubric is mid-tier work; only the verification pass, which kills expensive false alarms, earns the frontier model.",
+      emits: "Verified findings → Implementer fix loop, or a clean summary for G3." },
+    { id: "g3", col: 3, lane: "G", t: "G3 · PR approval", s: "auto-merge low-risk", type: "gate",
+      what: "The human reads the review summary and screenshots, then approves via native PR review. Change classes with a proven track record graduate to label-driven auto-merge.",
+      why: "Branch protection makes this gate impossible to bypass, including by agents.",
+      emits: "Merge to main." },
+
+    { id: "e4", col: 4, lane: "E", t: "push: main", s: "check_suite result", type: "event",
+      what: "Every merge to main fires the integration pipeline; the completed check suite fires again with the result.",
+      why: "Two free events cover both the happy path and the failure path.",
+      emits: "Dispatches build; result routes to the Sentinel only on red." },
+    { id: "d4", col: 4, lane: "D", t: "CI + EAS build", s: "dev client on every merge", type: "script",
+      what: "Runs full CI and produces a fresh EAS dev-client build, plus rebases any queued PRs.",
+      why: "Entirely mechanical — and on the happy path, integration costs zero tokens.",
+      emits: "Green main + installable build, or a red suite." },
+    { id: "a4", col: 4, lane: "A", t: "Build Sentinel", s: "runs on red only", type: "agent", tier: "Sonnet",
+      what: "Invoked only when main goes red: diagnoses, fixes forward or reverts the offending merge, and notifies the human either way.",
+      why: "Conditional invocation is the cost model: the agent exists for the exception, not the routine.",
+      emits: "Green main restored, or an escalation." },
+
+    { id: "e5", col: 5, lane: "E", t: "schedule: nightly", s: "+ post-merge smoke", type: "event",
+      what: "A nightly cron runs the full sweep; each merge also triggers a small smoke subset of scenarios touching the changed flows.",
+      why: "Time-based and merge-based triggers combined keep feedback latency low without running the full suite constantly.",
+      emits: "Dispatches the E2E runner (and, nightly, the QA Explorer)." },
+    { id: "d5", col: 5, lane: "D", t: "E2E replay runner", s: "compiled traces · zero tokens", type: "script",
+      what: "Replays agent-compiled traces (resolved selectors, waits, assertions) step-by-step against the driver — no model in the loop. On replay failure, an agent re-derives the step once: success means the UI changed (trace updated via PR), failure means the behavior broke (bug filed). Suite grows as features ship — acceptance criteria compile into scenario skeletons.",
+      why: "Regression must be deterministic, fast, and free. Tokens are spent only on new scenarios and changed UI, never on the nightly run of an unchanged app.",
+      emits: "Structured pass/fail results with evidence; trace-update PRs; real failures to triage." },
+    { id: "m5", col: 5, lane: "M", t: "failure triage + filer", s: "cluster · file issues", type: "micro", tier: "Haiku",
+      what: "Clusters failures (one root cause, not ten duplicate reports), drafts structured bug reports from runner evidence, and a script files them as issues — which re-enter intake through the normal front door.",
+      why: "Grouping and drafting over structured output is cheap-model work; the filing itself is a script.",
+      emits: "Pre-structured issues → back to stage 0 (the loop edge)." },
+    { id: "a5", col: 5, lane: "A", t: "QA Explorer", s: "exploratory pass", type: "agent", tier: "Sonnet",
+      what: "Nightly exploratory dogfooding focused on new and recently changed flows: probes edge cases scenarios don't cover yet, and proposes new scenarios for behaviors worth locking in.",
+      why: "Exploration is the one QA task that genuinely needs creativity — everything repeatable belongs to the runner.",
+      emits: "Findings into the same triage/filer path; scenario proposals as PRs." },
+
+    { id: "e6", col: 6, lane: "E", t: "workflow_dispatch", s: "human-initiated", type: "event",
+      what: "The human decides a release is ready and triggers the release workflow manually (or a milestone-complete label can propose it).",
+      why: "Releases are intent, not automation — the trigger itself is a human act.",
+      emits: "Dispatches the release pipeline into G4." },
+    { id: "g6", col: 6, lane: "G", t: "G4 · release approval", s: "environment reviewer", type: "gate",
+      what: "A GitHub Environment with a required reviewer holds the deployment until the human approves — the platform's own gate primitive, no custom code.",
+      why: "The only gate touching the outside world gets the most tamper-proof mechanism available.",
+      emits: "Unblocks the release script." },
+    { id: "d6", col: 6, lane: "D", t: "release script", s: "EAS submit · version · notes", type: "script",
+      what: "Version bump, changelog generated from merged PR metadata, EAS build + submit to TestFlight / Play, GitHub Release created.",
+      why: "Every step is mechanical once approved — zero tokens between approval and store submission.",
+      emits: "A shipped build." }
+  ];
+
+  var chains = [
+    ["e0","d0","m0","a0","g0"],
+    ["e1","d1","a1","g1"],
+    ["e2","d2","a2"],
+    ["e3","d3","m3","a3","g3"],
+    ["e4","d4"],
+    ["e5","d5","m5","a5"],
+    ["e6","g6"]
+  ];
+  var cross = [
+    { from: "g0", to: "e1" },
+    { from: "g1", to: "e2" },
+    { from: "a2", to: "e3" },
+    { from: "g3", to: "e4" },
+    { from: "d4", to: "e5", dashed: true },
+    { from: "d4", to: "a4", dashed: true, side: true }
+  ];
+
+  var byId = {};
+  nodes.forEach(function (n) { byId[n.id] = n; });
+  function nx(n) { return cx(n.col); }
+  function ny(n) { return laneY(n.lane); }
+
+  var FILL = { event: "var(--trigger-soft)", script: "var(--script-soft)", micro: "var(--micro-soft)", agent: "var(--accent-soft)", gate: "var(--gate-soft)" };
+  var STROKE = { event: "var(--trigger)", script: "var(--script)", micro: "var(--accent)", agent: "var(--accent)", gate: "var(--gate)" };
+  var TYPENAME = { event: "GitHub event", script: "Deterministic script", micro: "Micro-agent", agent: "Agent", gate: "Human gate" };
+  var TAGCLASS = { event: "trigger", script: "script", micro: "agent", agent: "agent", gate: "gate" };
+
+  var W = 1270;
+  var svgParts = [];
+  svgParts.push('<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)" opacity="0.7"/></marker><marker id="arrLoop" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="var(--trigger)"/></marker></defs>');
+
+  LANES.forEach(function (l, i) {
+    if (i % 2 === 1) svgParts.push('<rect class="band" x="0" y="' + (l.y - 14) + '" width="' + W + '" height="' + (NH + 28) + '"/>');
+    svgParts.push('<text class="lane-label" x="14" y="' + (l.y + NH / 2 + 3) + '">' + l.label + '</text>');
+  });
+  COLS.forEach(function (c, i) {
+    svgParts.push('<text class="col-label" x="' + (cx(i) + NW / 2) + '" y="14" text-anchor="middle">' + c + '</text>');
+  });
+
+  function vEdge(a, b) {
+    var x = nx(a) + NW / 2, y1 = ny(a) + NH, y2 = ny(b) - 3;
+    return '<path class="edge" marker-end="url(#arr)" d="M' + x + ',' + y1 + ' L' + x + ',' + y2 + '"/>';
+  }
+  chains.forEach(function (chain) {
+    for (var i = 0; i < chain.length - 1; i++) svgParts.push(vEdge(byId[chain[i]], byId[chain[i + 1]]));
+  });
+  cross.forEach(function (e) {
+    var a = byId[e.from], b = byId[e.to];
+    var cls = "edge" + (e.dashed ? " dashed" : "");
+    if (e.side) {
+      var x1 = nx(a) + NW, ym = ny(a) + NH / 2, xm = nx(a) + NW + 10, y2 = ny(b) + NH / 2;
+      svgParts.push('<path class="' + cls + '" marker-end="url(#arr)" d="M' + x1 + ',' + ym + ' L' + xm + ',' + ym + ' L' + xm + ',' + y2 + ' L' + (nx(b) + NW + 3) + ',' + y2 + '"/>');
+    } else {
+      var sx = nx(a) + NW, sy = ny(a) + NH / 2, mx = nx(b) - 8, ty = ny(b) + NH / 2, tx = nx(b) - 3;
+      svgParts.push('<path class="' + cls + '" marker-end="url(#arr)" d="M' + sx + ',' + sy + ' L' + mx + ',' + sy + ' L' + mx + ',' + ty + ' L' + tx + ',' + ty + '"/>');
+    }
+  });
+
+  var la = byId["a5"], le = byId["e0"];
+  var lx = nx(la) + NW / 2, ly = ny(la) + NH, bottomY = 492, leftX = 120;
+  svgParts.push('<path class="edge dashed loop" marker-end="url(#arrLoop)" d="M' + lx + ',' + ly + ' L' + lx + ',' + bottomY + ' L' + leftX + ',' + bottomY + ' L' + leftX + ',' + (ny(le) + NH / 2) + ' L' + (nx(le) - 3) + ',' + (ny(le) + NH / 2) + '"/>');
+  svgParts.push('<text class="edge-label" x="' + (leftX + 240) + '" y="' + (bottomY - 8) + '">bugs &amp; findings re-enter intake as new issues</text>');
+
+  nodes.forEach(function (n) {
+    var x = nx(n), y = ny(n);
+    var tierBadge = n.tier ? '<text class="n-sub" x="' + (x + NW - 8) + '" y="' + (y + 14) + '" text-anchor="end" font-weight="700" fill="' + STROKE[n.type] + '">' + n.tier + '</text>' : "";
+    svgParts.push(
+      '<g class="node" data-id="' + n.id + '" tabindex="0" role="button" aria-label="' + n.t + '">' +
+      '<rect x="' + x + '" y="' + y + '" width="' + NW + '" height="' + NH + '" rx="7" fill="' + FILL[n.type] + '" stroke="' + STROKE[n.type] + '" stroke-width="1.4"/>' +
+      '<text class="n-title" x="' + (x + 10) + '" y="' + (y + 21) + '">' + n.t + '</text>' +
+      (n.s ? '<text class="n-sub" x="' + (x + 10) + '" y="' + (y + 38) + '">' + n.s + '</text>' : "") +
+      tierBadge +
+      '</g>'
+    );
+  });
+
+  var svg = document.getElementById("wiring");
+  svg.innerHTML = svgParts.join("");
+
+  var dTitle = document.getElementById("d-title");
+  var dChips = document.getElementById("d-chips");
+  var dBody = document.getElementById("d-body");
+  var selected = null;
+
+  function select(id) {
+    var n = byId[id];
+    if (!n) return;
+    if (selected) selected.classList.remove("selected");
+    selected = svg.querySelector('[data-id="' + id + '"]');
+    if (selected) selected.classList.add("selected");
+    dTitle.textContent = n.t + (n.s ? " — " + n.s : "");
+    var chips = '<span class="tag ' + TAGCLASS[n.type] + '">' + TYPENAME[n.type] + '</span>';
+    chips += n.tier ? '<span class="tag agent">' + n.tier + '</span>' : (n.type === "script" || n.type === "event" ? '<span class="tag script">0 tokens</span>' : "");
+    dChips.innerHTML = chips;
+    dBody.className = "";
+    dBody.innerHTML =
+      "<p><strong>What</strong> " + n.what + "</p>" +
+      "<p><strong>Why this rung</strong> " + n.why + "</p>" +
+      "<p><strong>Emits</strong> " + n.emits + "</p>";
+  }
+
+  svg.addEventListener("click", function (ev) {
+    var g = ev.target.closest ? ev.target.closest(".node") : null;
+    if (g) select(g.getAttribute("data-id"));
+  });
+  svg.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    var g = ev.target.closest ? ev.target.closest(".node") : null;
+    if (g) { ev.preventDefault(); select(g.getAttribute("data-id")); }
+  });
+})();
+</script>
