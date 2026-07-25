@@ -150,19 +150,34 @@ export function shellSubstitution(command) {
   return { toJSON: () => `${SH_SENTINEL}${command}${SH_SENTINEL}` };
 }
 
+// → { text, hasSubstitution }. `hasSubstitution` is decided by the sentinel in
+// the *pre*-replacement JSON, never by searching the rendered text for `$(`.
+// Repo data reaches this body — a required status-check context is named by
+// whoever holds commit-status write access, which is a far lower bar than repo
+// admin — so a context called `ci$(…)` must not be able to talk the renderer
+// into an unquoted heredoc. Looking like a substitution is not being one.
 export function renderBody(body) {
-  return JSON.stringify(body, null, 2).replace(SH_PATTERN, (_m, cmd) => `$(${cmd})`);
+  const json = JSON.stringify(body, null, 2);
+  return {
+    text: json.replace(SH_PATTERN, (_m, cmd) => `$(${cmd})`),
+    hasSubstitution: json.includes(SH_SENTINEL),
+  };
 }
 
 // A heredoc keeps the JSON readable and quotes the whole body in one move. Its
 // terminator has to sit flush-left, which is why callers never indent this.
+//
+// The quoted form (`<<'JSON'`) expands nothing and is used for every body that
+// carries no substitution of ours. The unquoted form is reserved for the one
+// body that does — the environment reviewer's id lookup — and that body holds
+// no data-derived free text: every string in it comes from a closed set, so
+// there is nothing in it for the shell to find.
 export function renderCommand({ method, path, body }) {
-  const rendered = renderBody(body);
-  // Quote the delimiter unless the body genuinely needs `$(…)` expanded.
-  const heredoc = rendered.includes("$(") ? "<<JSON" : "<<'JSON'";
+  const { text, hasSubstitution } = renderBody(body);
+  const heredoc = hasSubstitution ? "<<JSON" : "<<'JSON'";
   return [
     `gh api --method ${method} ${shellQuote(path)} --input - ${heredoc}`,
-    rendered,
+    text,
     "JSON",
   ].join("\n");
 }
@@ -376,7 +391,7 @@ export function mergeProtection(current, baseline) {
     ),
     block_creations: or(current.block_creations, baseline.block_creations),
     lock_branch: or(current.lock_branch, baseline.lock_branch),
-    allow_fork_syncing: Boolean(current.allow_fork_syncing),
+    allow_fork_syncing: Boolean(current.allow_fork_syncing && baseline.allow_fork_syncing),
   };
 }
 
@@ -462,7 +477,10 @@ export function normalizeEnvironment(got) {
     wait_timer: waitRule?.wait_timer ?? 0,
     prevent_self_review: Boolean(reviewerRule?.prevent_self_review),
     reviewers: (reviewerRule?.reviewers ?? []).map((r) => ({
-      type: r.type ?? "User",
+      // A closed set, not whatever the API said. This is the one body printed
+      // under an unquoted heredoc, so it must contain no free text at all —
+      // `login` below is only ever compared, never rendered into a command.
+      type: r.type === "Team" ? "Team" : "User",
       id: r.reviewer?.id ?? r.id,
       login: r.reviewer?.login ?? r.reviewer?.slug ?? null,
     })),

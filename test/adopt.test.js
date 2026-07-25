@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -12,11 +12,13 @@ import {
   normalizeProtection,
   protectionBaseline,
   remainingItems,
+  renderBody,
   renderCommand,
   renderSummary,
   scaffoldSummary,
   settingsReport,
   shellQuote,
+  shellSubstitution,
 } from "../init/adopt.js";
 
 const labelsDoc = {
@@ -628,4 +630,99 @@ test("adopt has no apply path: neither module offers one, under any flag", () =>
   for (const args of invocations) {
     assert.doesNotMatch(args, /--method/, `adopt never issues a mutating gh api call: ${args}`);
   }
+});
+
+// --- command injection: data that merely looks like a substitution ----------
+//
+// The heredoc form must be decided by whether WE put a substitution in the body,
+// not by whether the rendered text contains `$(`. A required status-check
+// context is named by whoever holds commit-status write access — any CI or
+// status integration, a far lower bar than repo admin — and it reaches the
+// printed body both from `--required-check` and from the GET + merge union.
+// If such a context could flip the renderer into an unquoted heredoc, the shell
+// would run it when a human pasted the command an admin was told was safe.
+
+// Paste the command into a real shell with `gh` shimmed, and report what the
+// body actually arrived as. Nothing leaves the process.
+function pasteAndCaptureBody(command) {
+  const script = [
+    // The /users lookup is answered inline so the shim does not recurse into
+    // itself; every other call dumps the body it was handed.
+    'gh() { case "$2" in /users/*) printf %s 4242; return 0;; esac; printf "BODY:\\n"; cat; }',
+    command,
+  ].join("\n");
+  const out = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return out.slice(out.indexOf("BODY:\n") + 6);
+}
+
+test("injection: a `$(…)` status-check context from --required-check stays inert", () => {
+  const payload = "ci$(touch /tmp/agentflow-injection-canary)";
+  const { "branch-protection": prot } = byId(
+    report({ requiredChecks: [payload], current: { protection: null } }),
+  );
+  assert.match(prot.command, /<<'JSON'/, "data that looks like a substitution must not unquote the heredoc");
+
+  const body = JSON.parse(pasteAndCaptureBody(prot.command));
+  assert.deepEqual(body.required_status_checks.contexts, [payload],
+    "the payload survives as literal text — the shell never evaluated it");
+  assert.ok(!existsSync("/tmp/agentflow-injection-canary"), "the command substitution did not run");
+});
+
+test("injection: a `$(…)` context arriving through the GET + merge path stays inert", () => {
+  // Nobody passed a malicious flag: this context is already on the branch, and
+  // mergeProtection unions it into the body adopt prints.
+  const payload = "deploy$(touch /tmp/agentflow-injection-canary-2)";
+  const { "branch-protection": prot } = byId(
+    report({
+      requiredChecks: ["ci"],
+      current: { protection: protectionGet({ required_status_checks: { strict: true, contexts: [payload] } }) },
+    }),
+  );
+  assert.match(prot.command, /<<'JSON'/);
+
+  const body = JSON.parse(pasteAndCaptureBody(prot.command));
+  assert.ok(body.required_status_checks.contexts.includes(payload), "unioned in, still literal");
+  assert.ok(!existsSync("/tmp/agentflow-injection-canary-2"), "the command substitution did not run");
+});
+
+test("injection: a payload in the branch name is quoted out of the command line", () => {
+  const { "branch-protection": prot } = byId(
+    report({ defaultBranch: "main$(touch /tmp/agentflow-injection-canary-3)", current: { protection: null } }),
+  );
+  pasteAndCaptureBody(prot.command);
+  assert.ok(!existsSync("/tmp/agentflow-injection-canary-3"), "shellQuote covers the path");
+});
+
+test("injection: an environment reviewer type is a closed set, never echoed from the API", () => {
+  // This is the one body printed under an unquoted heredoc, so nothing in it
+  // may be free text.
+  const { "release-environment": env } = byId(
+    report({
+      approverLogins: ["yuchida-tamu"],
+      current: {
+        environment: environmentGet([], {
+          protection_rules: [{
+            id: 1,
+            type: "required_reviewers",
+            reviewers: [{ type: "$(touch /tmp/agentflow-injection-canary-4)", reviewer: { login: "x", id: 7 } }],
+          }],
+        }),
+      },
+    }),
+  );
+  assert.match(env.command, /<<JSON/, "this one does carry a real substitution");
+  const body = JSON.parse(pasteAndCaptureBody(env.command));
+  assert.equal(body.reviewers[0].type, "User", "an unrecognised type collapses to User");
+  assert.ok(!existsSync("/tmp/agentflow-injection-canary-4"));
+});
+
+test("renderBody: reports a substitution only when the sentinel was really there", () => {
+  assert.equal(renderBody({ a: "$(touch x)" }).hasSubstitution, false, "text that looks like one is not one");
+  assert.equal(renderBody({ a: "`touch x`" }).hasSubstitution, false);
+  assert.equal(renderBody({ a: shellSubstitution("gh api /users/x --jq .id") }).hasSubstitution, true);
+});
+
+test("renderBody: a real substitution still renders as an unquoted $(…)", () => {
+  const { text } = renderBody({ id: shellSubstitution("gh api /users/x --jq .id") });
+  assert.match(text, /"id": \$\(gh api \/users\/x --jq \.id\)/);
 });
