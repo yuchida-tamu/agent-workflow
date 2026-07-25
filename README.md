@@ -52,7 +52,9 @@ live there; this README tracks what's built.
       qa-explorer · trace-deriver (sonnet) · triage (haiku)
 - [x] Installer: `agentflow-init labels` + `agentflow-init project`
       (idempotent, dry-run capable, installs agents into `.claude/agents/`)
-- [ ] GitHub remote + labels applied live
+- [x] GitHub remote (`yuchida-tamu/agent-workflow`) + 18 labels applied;
+      live smoke test passed: dispatch → gate refusal → `/approve` →
+      G1-validated transition → re-dispatch to architect
 - [ ] pack-expo adapters (`run` / `verify` / `execute-step` / `ship`) + skills
 - [ ] Composite GitHub Actions: gate wiring on issue comments, facts→policy
       on PRs, dispatch on label events
