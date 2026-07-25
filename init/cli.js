@@ -28,6 +28,7 @@ import { parse as parseYaml } from "yaml";
 import {
   DEFAULT_TOOLKIT_REPO,
   NOT_APPLICABLE,
+  isApproverLogin,
   labelCreateCommands,
   labelPlan,
   remainingItems,
@@ -148,6 +149,19 @@ function ghGet(path) {
   }
 }
 
+// Approver logins → numeric user ids, so the printed environment body can be
+// fully literal. Resolving here rather than printing a `$(gh api /users/…)` for
+// the reader's shell to run is what lets every command use an inert quoted
+// heredoc; see renderCommand. An unresolvable login yields `id: null`, which the
+// report turns into a "resolve this first" note rather than a broken command.
+function resolveApprovers(logins) {
+  return logins.map((login) => {
+    if (!isApproverLogin(login)) return { login, id: null };
+    const user = ghGet(`/users/${encodeURIComponent(login)}`);
+    return { login, id: user && user !== NOT_APPLICABLE ? user.id : null };
+  });
+}
+
 const [command, ...rest] = process.argv.slice(2);
 const flags = parseArgs(rest);
 
@@ -234,7 +248,7 @@ switch (command) {
       toolkitRepo,
       defaultBranch,
       environment,
-      approverLogins: config?.approvers ?? [],
+      approvers: resolveApprovers(config?.approvers ?? []),
       requiredChecks: asList(flags["required-check"]),
       current: {
         access: ghGet(`/repos/${toolkitRepo}/actions/permissions/access`),

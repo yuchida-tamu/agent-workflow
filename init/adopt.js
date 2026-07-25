@@ -141,43 +141,31 @@ export function shellQuote(value) {
   return `'${s.replaceAll("'", `'\\''`)}'`;
 }
 
-// A body value that must print as an unquoted `$(…)`, so the reader never has to
-// fill in a placeholder. It only ever wraps a command built from a login that
-// passed VALID_LOGIN, so the sentinel cannot be forged by API data.
-const SH_SENTINEL = "@@sh@@";
-const SH_PATTERN = /"@@sh@@(.*?)@@sh@@"/g;
-export function shellSubstitution(command) {
-  return { toJSON: () => `${SH_SENTINEL}${command}${SH_SENTINEL}` };
-}
-
-// → { text, hasSubstitution }. `hasSubstitution` is decided by the sentinel in
-// the *pre*-replacement JSON, never by searching the rendered text for `$(`.
-// Repo data reaches this body — a required status-check context is named by
-// whoever holds commit-status write access, which is a far lower bar than repo
-// admin — so a context called `ci$(…)` must not be able to talk the renderer
-// into an unquoted heredoc. Looking like a substitution is not being one.
-export function renderBody(body) {
-  const json = JSON.stringify(body, null, 2);
-  return {
-    text: json.replace(SH_PATTERN, (_m, cmd) => `$(${cmd})`),
-    hasSubstitution: json.includes(SH_SENTINEL),
-  };
-}
-
-// A heredoc keeps the JSON readable and quotes the whole body in one move. Its
-// terminator has to sit flush-left, which is why callers never indent this.
+// Every printed body goes inside a QUOTED heredoc. There is no unquoted form,
+// and adding one would be a security regression, not a feature.
 //
-// The quoted form (`<<'JSON'`) expands nothing and is used for every body that
-// carries no substitution of ours. The unquoted form is reserved for the one
-// body that does — the environment reviewer's id lookup — and that body holds
-// no data-derived free text: every string in it comes from a closed set, so
-// there is nothing in it for the shell to find.
+// Repo data reaches these bodies: a required status-check context is named by
+// whoever holds commit-status write access, which is a far lower bar than repo
+// admin. Two earlier attempts tried to let one field expand (the environment
+// reviewer's id lookup) while keeping the rest literal, first by sniffing the
+// rendered text for `$(` and then by sniffing it for a fixed sentinel. Both
+// failed the same way, because the property is not per-field: an unquoted
+// heredoc makes the WHOLE body live, so any single attacker-controlled string
+// anywhere in it reopens the hole for every other string. No amount of better
+// needle-detection fixes that shape.
+//
+// So nothing in a body is ever expanded, and the id lookup that wanted
+// expansion is resolved by the CLI before it gets here (see `approvers`).
+// The only interpolation left in a printed command is the path, which
+// shellQuote handles.
+//
+// The terminator must sit flush-left, which is why callers never indent this.
+// A body line can never itself be `JSON`: JSON.stringify escapes newlines
+// inside strings, so no data can introduce a raw line break to hide one behind.
 export function renderCommand({ method, path, body }) {
-  const { text, hasSubstitution } = renderBody(body);
-  const heredoc = hasSubstitution ? "<<JSON" : "<<'JSON'";
   return [
-    `gh api --method ${method} ${shellQuote(path)} --input - ${heredoc}`,
-    text,
+    `gh api --method ${method} ${shellQuote(path)} --input - <<'JSON'`,
+    JSON.stringify(body, null, 2),
     "JSON",
   ].join("\n");
 }
@@ -199,9 +187,12 @@ const same = (a, b) => stable(a) === stable(b);
 const or = (...vals) => vals.some(Boolean);
 const uniqSorted = (xs) => [...new Set(xs)].sort();
 
-// GitHub logins are alphanumerics with single interior dashes. Anything else
-// must never be interpolated into a command someone is about to paste.
+// GitHub logins are alphanumerics with single interior dashes. The CLI checks
+// this before putting a login in a request path, and the report checks it before
+// naming one as an approver it will configure.
 const VALID_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+export const isApproverLogin = (login) =>
+  login !== PLACEHOLDER_APPROVER && VALID_LOGIN.test(String(login ?? ""));
 
 // ---------------------------------------------------------------------------
 // 1. toolkit Actions access
@@ -477,9 +468,8 @@ export function normalizeEnvironment(got) {
     wait_timer: waitRule?.wait_timer ?? 0,
     prevent_self_review: Boolean(reviewerRule?.prevent_self_review),
     reviewers: (reviewerRule?.reviewers ?? []).map((r) => ({
-      // A closed set, not whatever the API said. This is the one body printed
-      // under an unquoted heredoc, so it must contain no free text at all —
-      // `login` below is only ever compared, never rendered into a command.
+      // A closed set, not whatever the API said — the value is re-sent in a PUT
+      // body, so it should be one of the two things the API accepts.
       type: r.type === "Team" ? "Team" : "User",
       id: r.reviewer?.id ?? r.id,
       login: r.reviewer?.login ?? r.reviewer?.slug ?? null,
@@ -488,35 +478,44 @@ export function normalizeEnvironment(got) {
   };
 }
 
-function environmentEntry({ repo, environment, approverLogins, current }) {
+// approvers: [{ login, id }] — the CLI resolved each login to its numeric user
+// id with a read-only GET. Ids arrive here already resolved precisely so that
+// nothing in the printed body has to be computed by the reader's shell.
+function environmentEntry({ repo, environment, approvers, current }) {
   const id = "release-environment";
   const path = `/repos/${repo}/environments/${environment}`;
-  const wanted = approverLogins ?? [];
+  const wanted = approvers ?? [];
 
-  const unresolved = wanted.filter((l) => l === PLACEHOLDER_APPROVER || !VALID_LOGIN.test(String(l)));
-  if (wanted.length === 0 || unresolved.length) {
+  const placeholders = wanted.filter((a) => !isApproverLogin(a.login));
+  const unresolvedIds = wanted.filter((a) => isApproverLogin(a.login) && !Number.isInteger(a.id));
+  if (wanted.length === 0 || placeholders.length || unresolvedIds.length) {
+    const why = () => {
+      if (wanted.length === 0) return "no approvers configured, so a G4 environment would gate releases on nobody";
+      if (placeholders.length) {
+        return `approvers are still unresolved (${placeholders.map((a) => a.login).join(", ")})`;
+      }
+      return `no numeric user id for ${unresolvedIds.map((a) => a.login).join(", ")} — GET /users/… did not answer`;
+    };
     return {
       id,
       status: "missing",
-      why:
-        wanted.length === 0
-          ? "no approvers configured, so a G4 environment would gate releases on nobody"
-          : `approvers are still unresolved (${unresolved.join(", ")})`,
+      why: why(),
       command: null,
       notes: [
-        'set "approvers" in agentflow.config.json to real GitHub logins, then re-run adopt — ' +
-          "printing this command now would configure a G4 gate nobody can approve",
+        placeholders.length || wanted.length === 0
+          ? 'set "approvers" in agentflow.config.json to real GitHub logins, then re-run adopt — ' +
+            "printing this command now would configure a G4 gate nobody can approve"
+          : "re-run adopt once `gh` can reach the API; a reviewer cannot be configured by login alone",
       ],
     };
   }
 
   // Existing reviewers keep their standing; the configured approvers are unioned
-  // in. A login already present contributes its known numeric id, so only a
-  // genuinely new one needs the `$(gh api /users/…)` lookup.
+  // in by numeric id, which is what the API records and what survives a rename.
   const build = (existing) => {
     const known = existing?.reviewers ?? [];
-    const haveLogins = new Set(known.map((r) => r.login).filter(Boolean));
-    const additions = wanted.filter((l) => !haveLogins.has(l));
+    const haveIds = new Set(known.map((r) => r.id));
+    const additions = wanted.filter((a) => !haveIds.has(a.id));
     return {
       additions,
       body: {
@@ -524,10 +523,7 @@ function environmentEntry({ repo, environment, approverLogins, current }) {
         prevent_self_review: existing?.prevent_self_review ?? false,
         reviewers: [
           ...known.map((r) => ({ type: r.type, id: r.id })),
-          ...additions.map((l) => ({
-            type: "User",
-            id: shellSubstitution(`gh api /users/${l} --jq .id`),
-          })),
+          ...additions.map((a) => ({ type: "User", id: a.id })),
         ],
         deployment_branch_policy: existing?.deployment_branch_policy ?? null,
       },
@@ -561,11 +557,11 @@ function environmentEntry({ repo, environment, approverLogins, current }) {
     id,
     status: existing ? "needs-change" : "missing",
     why: existing
-      ? `"${environment}" exists but does not require ${additions.join(", ")}`
+      ? `"${environment}" exists but does not require ${additions.map((a) => a.login).join(", ")}`
       : `no "${environment}" environment — G4 releases are ungated`,
     command: renderCommand({ method: "PUT", path, body }),
     notes: [
-      `+reviewer ${additions.join(", ")}`,
+      `+reviewer ${additions.map((a) => a.login).join(", ")}`,
       ...(existing ? ["existing reviewers, wait timer and branch policy are preserved above"] : []),
     ],
   };
@@ -579,19 +575,23 @@ function environmentEntry({ repo, environment, approverLogins, current }) {
 //   current.environment — GET /repos/{repo}/environments/{name}
 // Each is the response body, null when absent (404), or undefined when
 // unreadable (403). `access` may also be NOT_APPLICABLE (422, public toolkit).
+//
+// `approvers` is [{ login, id }], already resolved by the CLI. Taking ids rather
+// than logins is what lets every printed body be fully literal — see
+// renderCommand for why no part of a body may be left for the shell to compute.
 export function settingsReport({
   repo,
   toolkitRepo = DEFAULT_TOOLKIT_REPO,
   defaultBranch = "main",
   environment = "release",
-  approverLogins = [],
+  approvers = [],
   requiredChecks = [],
   current = {},
 }) {
   return [
     accessEntry({ repo, toolkitRepo, current: current.access }),
     protectionEntry({ repo, defaultBranch, requiredChecks, current: current.protection }),
-    environmentEntry({ repo, environment, approverLogins, current: current.environment }),
+    environmentEntry({ repo, environment, approvers, current: current.environment }),
   ];
 }
 

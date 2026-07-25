@@ -12,13 +12,11 @@ import {
   normalizeProtection,
   protectionBaseline,
   remainingItems,
-  renderBody,
   renderCommand,
   renderSummary,
   scaffoldSummary,
   settingsReport,
   shellQuote,
-  shellSubstitution,
 } from "../init/adopt.js";
 
 const labelsDoc = {
@@ -214,10 +212,11 @@ const environmentGet = (reviewers, over = {}) => ({
   ...over,
 });
 
-// The body a printed command would send, recovered from the heredoc.
+// The body a printed command would send, recovered from the heredoc. It parses
+// as plain JSON with no preprocessing, which is itself the point: nothing in a
+// printed body is left for a shell to compute.
 function bodyOf(command) {
-  const lines = command.split("\n");
-  return JSON.parse(lines.slice(1, -1).join("\n").replaceAll(/\$\([^)]*\)/g, "0"));
+  return JSON.parse(command.split("\n").slice(1, -1).join("\n"));
 }
 
 const report = (over = {}) =>
@@ -226,7 +225,7 @@ const report = (over = {}) =>
     toolkitRepo: TOOLKIT,
     defaultBranch: "main",
     environment: "release",
-    approverLogins: ["yuchida-tamu"],
+    approvers: [{ login: "yuchida-tamu", id: 4242 }],
     requiredChecks: [],
     ...over,
   });
@@ -425,7 +424,7 @@ test("normalizeProtection: reads the modern `checks` array as well as `contexts`
 test("settingsReport: an existing environment reviewer is unioned, never replaced", () => {
   const { "release-environment": env } = byId(
     report({
-      approverLogins: ["yuchida-tamu"],
+      approvers: [{ login: "yuchida-tamu", id: 4242 }],
       current: {
         environment: environmentGet([["existing-approver", 999]], {
           protection_rules: [
@@ -454,7 +453,7 @@ test("settingsReport: an existing environment reviewer is unioned, never replace
 
 test("settingsReport: an approver already on the environment needs no lookup", () => {
   const { "release-environment": env } = byId(
-    report({ approverLogins: ["a"], current: { environment: environmentGet([["a", 1], ["b", 2]]) } }),
+    report({ approvers: [{ login: "a", id: 1 }], current: { environment: environmentGet([["a", 1], ["b", 2]]) } }),
   );
   assert.equal(env.status, "satisfied", "a superset of the configured approvers is satisfied");
   assert.equal(env.command, null);
@@ -493,7 +492,7 @@ test("settingsReport: a 404 is absent, not unreadable — no wholesale warning o
 
 test("settingsReport: CHANGE_ME approvers report the placeholder instead of printing a command", () => {
   const { "release-environment": env } = byId(
-    report({ approverLogins: ["CHANGE_ME"], current: { environment: null } }),
+    report({ approvers: [{ login: "CHANGE_ME", id: null }], current: { environment: null } }),
   );
   assert.equal(env.status, "missing");
   assert.equal(env.command, null, "a G4 gate nobody can approve is worse than no gate");
@@ -502,14 +501,14 @@ test("settingsReport: CHANGE_ME approvers report the placeholder instead of prin
 });
 
 test("settingsReport: no approvers at all is as unresolved as CHANGE_ME", () => {
-  const { "release-environment": env } = byId(report({ approverLogins: [], current: { environment: null } }));
+  const { "release-environment": env } = byId(report({ approvers: [], current: { environment: null } }));
   assert.equal(env.command, null);
   assert.match(env.why, /gate releases on nobody/);
 });
 
 test("settingsReport: a login that is not shell-safe is never interpolated into a command", () => {
   const { "release-environment": env } = byId(
-    report({ approverLogins: ["a;rm -rf /"], current: { environment: null } }),
+    report({ approvers: [{ login: "a;rm -rf /", id: 7 }], current: { environment: null } }),
   );
   assert.equal(env.command, null, "an unparseable login is reported, not pasted into a subshell");
   assert.match(env.why, /unresolved/);
@@ -524,10 +523,20 @@ test("shellQuote: leaves plain values bare and quotes anything the shell would r
   assert.equal(shellQuote("$(x)"), "'$(x)'");
 });
 
-test("renderCommand: a body with no substitution uses a quoted heredoc", () => {
-  const command = renderCommand({ method: "PUT", path: "/x", body: { a: 1 } });
-  assert.match(command, /<<'JSON'\n/, "nothing to expand, so nothing is left expandable");
-  assert.ok(command.endsWith("\nJSON"));
+test("renderCommand: the heredoc is always quoted, whatever the body holds", () => {
+  const bodies = [
+    { a: 1 },
+    { a: "$(touch x)" },
+    { a: "`touch x`" },
+    { a: "@@sh@@touch x@@sh@@" },
+    { a: "${IFS}" },
+    { a: "\\$(touch x)" },
+  ];
+  for (const body of bodies) {
+    const command = renderCommand({ method: "PUT", path: "/x", body });
+    assert.match(command, /<<'JSON'\n/, `${JSON.stringify(body)} must not unquote the heredoc`);
+    assert.ok(command.endsWith("\nJSON"));
+  }
 });
 
 test("renderCommand: a branch name the shell would mangle is quoted", () => {
@@ -543,20 +552,17 @@ test("renderCommand: the heredoc terminator is flush-left in the rendered summar
   assert.ok(terminators.every((l) => l === "JSON"), "an indented terminator would not terminate the heredoc");
 });
 
-test("the printed environment command parses in a real shell and resolves the reviewer id", () => {
+test("the printed environment command carries a literal reviewer id, nothing to compute", () => {
   const { "release-environment": env } = byId(
-    report({ approverLogins: ["yuchida-tamu"], current: { environment: null } }),
+    report({ approvers: [{ login: "yuchida-tamu", id: 4242 }], current: { environment: null } }),
   );
-  assert.match(env.command, /\$\(gh api \/users\/yuchida-tamu --jq \.id\)/, "self-contained, no <ID> to fill in");
+  assert.doesNotMatch(env.command, /\$\(/, "no lookup is left for the reader's shell to run");
+  assert.deepEqual(bodyOf(env.command).reviewers, [{ type: "User", id: 4242 }]);
 
-  // `gh` is shimmed: the /users lookup answers 4242, the PUT dumps its argv and
-  // body. Nothing leaves the process — this proves quoting, not connectivity.
+  // `gh` is shimmed; nothing leaves the process. This proves quoting, not
+  // connectivity — and needs no /users shim, because nothing calls out.
   const script = [
-    "gh() {",
-    '  if [ "$2" = "/users/yuchida-tamu" ]; then printf %s 4242; return 0; fi',
-    '  for a in "$@"; do printf "ARG[%s]\\n" "$a"; done',
-    "  printf 'BODY\\n'; cat",
-    "}",
+    'gh() { for a in "$@"; do printf "ARG[%s]\\n" "$a"; done; printf "BODY\\n"; cat; }',
     env.command,
   ].join("\n");
   const out = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8" });
@@ -566,7 +572,7 @@ test("the printed environment command parses in a real shell and resolves the re
     "api", "--method", "PUT", `/repos/${REPO}/environments/release`, "--input", "-",
   ], "every argument arrives as one word — the command genuinely pastes");
   const body = JSON.parse(out.slice(out.indexOf("\nBODY\n") + 6));
-  assert.deepEqual(body.reviewers, [{ type: "User", id: 4242 }], "the substitution resolved to a number");
+  assert.deepEqual(body.reviewers, [{ type: "User", id: 4242 }], "the body arrived byte-for-byte");
 });
 
 test("the printed protection command parses in a real shell with its JSON body intact", () => {
@@ -694,11 +700,9 @@ test("injection: a payload in the branch name is quoted out of the command line"
 });
 
 test("injection: an environment reviewer type is a closed set, never echoed from the API", () => {
-  // This is the one body printed under an unquoted heredoc, so nothing in it
-  // may be free text.
   const { "release-environment": env } = byId(
     report({
-      approverLogins: ["yuchida-tamu"],
+      approvers: [{ login: "yuchida-tamu", id: 4242 }],
       current: {
         environment: environmentGet([], {
           protection_rules: [{
@@ -710,19 +714,87 @@ test("injection: an environment reviewer type is a closed set, never echoed from
       },
     }),
   );
-  assert.match(env.command, /<<JSON/, "this one does carry a real substitution");
   const body = JSON.parse(pasteAndCaptureBody(env.command));
   assert.equal(body.reviewers[0].type, "User", "an unrecognised type collapses to User");
   assert.ok(!existsSync("/tmp/agentflow-injection-canary-4"));
 });
 
-test("renderBody: reports a substitution only when the sentinel was really there", () => {
-  assert.equal(renderBody({ a: "$(touch x)" }).hasSubstitution, false, "text that looks like one is not one");
-  assert.equal(renderBody({ a: "`touch x`" }).hasSubstitution, false);
-  assert.equal(renderBody({ a: shellSubstitution("gh api /users/x --jq .id") }).hasSubstitution, true);
+// --- the two vectors that killed the previous fix ---------------------------
+//
+// The earlier attempt let one field expand while claiming the rest stayed
+// literal. It fell to a guessable needle and to the fact that the property is
+// not per-field. Both of these must stay dead, and the invariant below is what
+// actually keeps them dead: there is no expanding mode left to reach.
+
+test("injection: a payload containing the old sentinel token cannot become a substitution", () => {
+  // `@@sh@@` was a hardcoded constant in this repo's source, not a secret, so a
+  // context could spell it and have its own text rewritten into a live `$(…)`.
+  const payload = "@@sh@@touch /tmp/agentflow-injection-canary-5@@sh@@";
+  const { "branch-protection": prot } = byId(
+    report({ requiredChecks: [payload], current: { protection: null } }),
+  );
+  assert.match(prot.command, /<<'JSON'/);
+  assert.doesNotMatch(prot.command, /\$\(/, "the payload was not rewritten into a substitution");
+
+  const body = JSON.parse(pasteAndCaptureBody(prot.command));
+  assert.deepEqual(body.required_status_checks.contexts, [payload], "still the literal text it always was");
+  assert.ok(!existsSync("/tmp/agentflow-injection-canary-5"));
 });
 
-test("renderBody: a real substitution still renders as an unquoted $(…)", () => {
-  const { text } = renderBody({ id: shellSubstitution("gh api /users/x --jq .id") });
-  assert.match(text, /"id": \$\(gh api \/users\/x --jq \.id\)/);
+test("injection: one field cannot unquote the body on behalf of another", () => {
+  // The decoy carries the old sentinel; the payload is ordinary text. Under the
+  // previous fix the decoy flipped the whole heredoc and the payload then ran.
+  const decoy = "build@@sh@@x@@sh@@ok";
+  const payload = "deploy$(touch /tmp/agentflow-injection-canary-6)";
+  const { "branch-protection": prot } = byId(
+    report({ requiredChecks: [decoy, payload], current: { protection: null } }),
+  );
+  assert.match(prot.command, /<<'JSON'/);
+
+  const body = JSON.parse(pasteAndCaptureBody(prot.command));
+  assert.deepEqual(body.required_status_checks.contexts, [decoy, payload].sort());
+  assert.ok(!existsSync("/tmp/agentflow-injection-canary-6"), "no field can make another field live");
+});
+
+test("injection: a payload cannot forge the heredoc terminator", () => {
+  // JSON.stringify escapes the newline, so there is no way to plant a bare
+  // `JSON` line and have the rest of the payload land back in the shell.
+  const payload = "ci\nJSON\ntouch /tmp/agentflow-injection-canary-7\n";
+  const { "branch-protection": prot } = byId(
+    report({ requiredChecks: [payload], current: { protection: null } }),
+  );
+  assert.ok(
+    prot.command.split("\n").filter((l) => l === "JSON").length === 1,
+    "exactly one terminator, the one we wrote",
+  );
+  const body = JSON.parse(pasteAndCaptureBody(prot.command));
+  assert.deepEqual(body.required_status_checks.contexts, [payload], "newlines survive as \\n inside the string");
+  assert.ok(!existsSync("/tmp/agentflow-injection-canary-7"));
+});
+
+test("no printed command, in any state, ever uses an unquoted heredoc", () => {
+  // The invariant the whole design now rests on. Sweep every branch of the
+  // report — absent, present, unreadable, stricter-than-baseline — and assert
+  // the dangerous mode simply does not occur.
+  const currents = [
+    { access: null, protection: null, environment: null },
+    { access: undefined, protection: undefined, environment: undefined },
+    { access: NOT_APPLICABLE, protection: protectionGet(), environment: environmentGet([["a", 1]]) },
+    { access: { access_level: "none" }, protection: protectionGet({ enforce_admins: { enabled: true } }) },
+    { protection: protectionGet({ required_status_checks: { strict: true, contexts: ["$(x)", "@@sh@@y@@sh@@"] } }) },
+  ];
+  let seen = 0;
+  for (const current of currents) {
+    for (const approvers of [[], [{ login: "CHANGE_ME", id: null }], [{ login: "a", id: 1 }]]) {
+      for (const requiredChecks of [[], ["ci"], ["$(touch /tmp/nope)"]]) {
+        for (const entry of report({ current, approvers, requiredChecks })) {
+          if (!entry.command) continue;
+          seen++;
+          assert.match(entry.command, /--input - <<'JSON'\n/, `${entry.id} must use the inert heredoc`);
+          assert.ok(bodyOf(entry.command), `${entry.id} body is plain JSON, nothing to expand`);
+        }
+      }
+    }
+  }
+  assert.ok(seen > 30, `swept a meaningful number of commands (${seen})`);
 });
