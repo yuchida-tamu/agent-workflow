@@ -265,7 +265,7 @@
 
 <div class="shell">
   <header>
-    <p class="eyebrow">Planning document · v0.6 · July 26, 2026</p>
+    <p class="eyebrow">Planning document · v0.7 · July 26, 2026</p>
     <h1>A Platform-Agnostic Agentic Development Loop</h1>
     <p class="lead">A closed-loop development workflow built on GitHub, designed as a reusable toolkit. The core owns the loop; <strong>platform knowledge</strong> (first pack: React Native Expo) and <strong>business knowledge</strong> (per project) are both injected. Ground rule: <strong>deterministic by default</strong> — every step that a script can perform is a script; agents are reserved for inference, judgment, and synthesis, and each agent call is routed to the cheapest model that can do the job.</p>
     <div class="legend">
@@ -563,7 +563,7 @@ rules:
     <li><span class="gid">G3</span><div><strong>Merge approval</strong><span>Native PR review. Graduates toward label-driven auto-merge for proven low-risk classes.</span></div></li>
     <li><span class="gid">G4</span><div><strong>Release approval</strong><span>GitHub Environment required-reviewer — approve once, and the release script does the rest.</span></div></li>
   </ul>
-  <p class="prose"><strong>Standing rules:</strong> interrupt any stage at any time; every agent escalates via notification instead of spinning when its bounded retries run out. Silence always means progress, never a stall.</p>
+  <p class="prose"><strong>Standing rules:</strong> interrupt any stage at any time; every agent escalates via notification instead of spinning when its bounded retries run out. Silence always means progress, never a stall. And gates meet the human where they are: in an interactive session, agents collect decisions via multi-choice prompts and post the <code>/approve</code> artifact through the human's own <code>gh</code> account — GitHub is the record, not the conversation; comment-driven approval remains the async path.</p>
 
   <h2>E2E model — compile once, replay forever</h2>
   <p class="prose">Scenarios are written in Gherkin — behavioral, readable, tagged (<code>@checkout</code> binds to the domain map, <code>@smoke</code> marks the post-merge subset). Underneath the behavioral layer sits a compiled artifact no human writes:</p>
@@ -624,7 +624,7 @@ your-app/                           # PROJECT — any consuming repo
   <p class="prose">All open questions are resolved. <strong>Unmapped code</strong> defaults to <code>criticality: medium</code> (can't auto-merge, doesn't demand G2) with a rot warning above 20% unmapped; Haiku classification is opt-in per project. <strong>Runner topology:</strong> one self-hosted Mac, queued by GitHub Actions concurrency groups (simulator jobs capped at 2); the scale trigger is mechanical — sustained median queue wait above ~10 minutes adds a machine. <strong>Interface signatures:</strong> each adapter is an executable, JSON on stdin/stdout, shared exit codes (0 ok · 10 recoverable · 20 fatal) feeding the bounded-retry scripts; specs live in <code>interfaces/</code>. <strong>E2E:</strong> the compile-and-replay model above. Phase 1 construction has begun in this repo.</p>
 
   <footer>
-    agent-workflow · loop architecture v0.6 · revised July 26, 2026 · planning complete — Phase 1 (deterministic skeleton) under construction
+    agent-workflow · loop architecture v0.7 · revised July 26, 2026 · planning complete — Phase 1 built; Phase 2 (agents, installer) underway
   </footer>
 </div>
 
@@ -657,11 +657,11 @@ your-app/                           # PROJECT — any consuming repo
       why: "Closed-set classification with a rubric. A wrong call is caught at G1 seconds later, so the cheapest model is the right model.",
       emits: "Type, priority, and duplicate labels." },
     { id: "a0", col: 0, lane: "A", t: "Product Shaper", s: "brief via interview", type: "agent", tier: "Opus",
-      what: "Interviews the author in the issue thread to turn fuzzy intent into a brief: problem, user story, acceptance criteria, out-of-scope — plus the project's injected business-impact questions (revenue? personal data? irreversible?), whose answers become structured fields the risk engine consumes. Pre-structured bug reports from the QA filer skip the interview.",
+      what: "Interviews the human to turn fuzzy intent into a brief: problem, user story, acceptance criteria, out-of-scope — plus the project's injected business-impact questions, whose answers become structured fields the risk engine consumes. The interview happens in the human's agentic session by default, as multi-choice questions (typing is the fallback, not the medium); issue-comment interviewing is the async fallback for headless runs. The brief lands on the issue either way — GitHub is the record, not the conversation. Pre-structured bug reports from the QA filer skip the interview.",
       why: "Extracting real intent from ambiguity is open-ended judgment — the one place in intake worth a frontier model.",
       emits: "The brief, posted as an issue comment." },
     { id: "g0", col: 0, lane: "G", t: "G1 · brief approval", s: "/approve comment", type: "gate",
-      what: "The human reads the brief and comments /approve (or replies with corrections, which reopens the interview). A script validates the approver and flips the state.",
+      what: "The human confirms the brief — in-session via a multi-choice prompt (the agent then posts the /approve comment through the human's own gh account, so the audit artifact is identical), or by commenting /approve directly. A script validates the approver and flips the state.",
       why: "Cheapest place in the entire loop to correct course — before any planning or code exists.",
       emits: "labeled: state:spec → triggers Planning." },
 
