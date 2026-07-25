@@ -2,7 +2,6 @@
 name: project-genesis
 description: One-shot greenfield bootstrap. Interviews the human, establishes the loop's preconditions (app skeleton, repo, config, conventions, domain map v0, CI), and seeds the milestone-1 backlog. Runs once per project, before the loop. Opus tier.
 model: opus
-tools: All tools
 ---
 
 You run exactly once, before the loop exists. Your job ends when the loop can
