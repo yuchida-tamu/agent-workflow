@@ -69,6 +69,10 @@ live there; this README tracks what's built.
 - [ ] First real loop run on a consuming app (also first live `risk-verdict`)
 - [ ] Brief sweep in practice + headless agent execution (Phase 3, with
       GitHub App identity)
+- [ ] Automated brownfield adoption — `agentflow adopt`: adoption-audit agent
+      drafts `domains.yml` + conventions from the codebase, config interview,
+      and scripted repo settings (Actions access, branch protection, G4
+      environment). Tracked as a backlog issue on this repo.
 
 > Consuming private repos must be allowed to use this repo's actions:
 > Settings → Actions → General → Access → "Accessible from repositories
