@@ -1,0 +1,45 @@
+# The toolkit's own domain map — the loop manages this repo too.
+policy-engine:
+  description: "Risk evaluation: the engine, baseline pack, and pack grammar"
+  criticality: critical
+  paths: ["scripts/policy/**", "policies/**"]
+
+state-and-gates:
+  description: "State machine, transitions, gate approval validation"
+  criticality: critical
+  paths: ["scripts/state/**", "scripts/gate/**"]
+
+actions-wiring:
+  description: "Event handlers and composite actions consuming apps depend on"
+  criticality: high
+  paths: ["scripts/actions/**", "actions/**", "init/templates/workflows/**"]
+
+e2e-runner:
+  description: "Gherkin parsing, trace replay, runner semantics"
+  criticality: high
+  paths: ["scripts/e2e/**", "scenarios/**"]
+
+facts:
+  description: "Diff/domain/drift fact extraction feeding the policy engine"
+  criticality: high
+  paths: ["scripts/facts/**"]
+
+installer:
+  description: "agentflow-init, labels, templates"
+  criticality: medium
+  paths: ["init/**"]
+
+agent-roster:
+  description: "Agent definitions (source of truth in agents/, installed copies in .claude/)"
+  criticality: medium
+  paths: ["agents/**", ".claude/agents/**"]
+
+platform-packs:
+  description: "Platform pack contents (expo)"
+  criticality: medium
+  paths: ["packs/**"]
+
+docs:
+  description: "Architecture doc, README, specs"
+  criticality: low
+  paths: ["*.md", "*.html", "interfaces/**"]

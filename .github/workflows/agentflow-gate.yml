@@ -1,0 +1,17 @@
+name: agentflow · gate
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  issues: write
+  contents: read
+jobs:
+  gate:
+    # issue comments only (PR merge gate is native review + branch protection)
+    if: ${{ !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: yuchida-tamu/agent-workflow/actions/gate-check@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
