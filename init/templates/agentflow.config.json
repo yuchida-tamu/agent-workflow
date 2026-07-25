@@ -1,5 +1,6 @@
 {
   "platform": "rn-expo",
+  "maturity": "steady",
   "approvers": ["CHANGE_ME"],
   "intake_questions": [
     "Does this change what users pay or what they see about pricing?",

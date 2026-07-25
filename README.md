@@ -47,9 +47,12 @@ live there; this README tracks what's built.
 
 ## Phase 2 status (walk)
 
-- [x] Agent definitions: product-shaper (opus) · architect (opus) ·
+- [x] Agent definitions: product-shaper · architect · project-genesis (opus) ·
       implementer · code-reviewer · ux-reviewer · build-sentinel ·
       qa-explorer · trace-deriver (sonnet) · triage (haiku)
+- [x] Entry paths: genesis (one-shot bootstrap → seeded backlog handoff),
+      adoption (init + audit), steady state; `maturity: genesis|steady` in
+      config surfaces as `meta.maturity` for policy softening
 - [x] Installer: `agentflow-init labels` + `agentflow-init project`
       (idempotent, dry-run capable, installs agents into `.claude/agents/`)
 - [x] GitHub remote (`yuchida-tamu/agent-workflow`) + 18 labels applied;

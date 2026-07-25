@@ -265,7 +265,7 @@
 
 <div class="shell">
   <header>
-    <p class="eyebrow">Planning document · v0.7 · July 26, 2026</p>
+    <p class="eyebrow">Planning document · v0.8 · July 26, 2026</p>
     <h1>A Platform-Agnostic Agentic Development Loop</h1>
     <p class="lead">A closed-loop development workflow built on GitHub, designed as a reusable toolkit. The core owns the loop; <strong>platform knowledge</strong> (first pack: React Native Expo) and <strong>business knowledge</strong> (per project) are both injected. Ground rule: <strong>deterministic by default</strong> — every step that a script can perform is a script; agents are reserved for inference, judgment, and synthesis, and each agent call is routed to the cheapest model that can do the job.</p>
     <div class="legend">
@@ -423,7 +423,7 @@ rules:
         <tr><td><code>domains.*</code></td><td><code>touched[]</code>, <code>max_criticality</code>, <code>unmapped_fraction</code> — derived from <code>domains.yml</code></td><td>both</td></tr>
         <tr><td><code>drift.*</code></td><td><code>scope</code> (diff ⊄ plan), <code>brief_domain</code> (declared impact vs. domain footprint conflict)</td><td>PR only</td></tr>
         <tr><td><code>history.*</code></td><td><code>class_graduated</code> — per change-class × domain, from the graduation ledger</td><td>PR only</td></tr>
-        <tr><td><code>score.*</code>, <code>meta.*</code></td><td><code>score.total</code>, <code>meta.stage</code>, <code>meta.change_class</code></td><td>both</td></tr>
+        <tr><td><code>score.*</code>, <code>meta.*</code></td><td><code>score.total</code>, <code>meta.stage</code>, <code>meta.change_class</code>, <code>meta.maturity</code> (genesis | steady)</td><td>both</td></tr>
       </tbody>
     </table>
   </div>
@@ -554,6 +554,17 @@ rules:
         <dt class="t-gate">Gate</dt><dd>None here — findings flow back to intake as issues.</dd>
       </dl>
     </div>
+  </div>
+
+  <h2>Entry paths — how a project reaches the loop</h2>
+  <p class="prose">The loop is steady-state machinery: every stage is deterministic <em>against a baseline</em> — a domain map, conventions, CI, a bootable app. Establishing that baseline is not a stage; it happens once, before the loop, by one of three paths:</p>
+  <ul class="ladder">
+    <li><div><strong>Genesis — a new project</strong><span>A one-shot <code>project-genesis</code> agent (Opus): interviews the human in-session (multi-choice), then establishes the loop's preconditions — app skeleton, repo + labels, config with intake questions, conventions doc, domain map v0, CI — and <em>seeds the backlog with milestone-1 issues in <code>state:idea</code></em>. That seeded backlog is the handoff: genesis terminates, <code>agentflow-next</code> picks up issue #1, the loop owns everything after.</span></div></li>
+    <li><div><strong>Adoption — an existing app</strong><span><code>agentflow-init project</code> plus an adoption-audit agent that proposes a domain map draft from the codebase structure; the human confirms each criticality (the one judgment that must stay human). Existing conventions are read, not invented.</span></div></li>
+    <li><div><strong>Steady state — already in the loop</strong><span>The six stages, as wired above.</span></div></li>
+  </ul>
+  <div class="principle prose">
+    <p><strong>Maturity is a fact, not a mode switch:</strong> config declares <code>maturity: genesis | steady</code>, surfaced to the policy engine as <code>meta.maturity</code>. A young project — where every change is a new screen, a new dependency, a new domain — would be strangled by steady-state scoring; during genesis, packs soften scoring rules and reserve G2 for locked triggers, while auto-merge stays impossible regardless. Flipping to <code>steady</code> is itself a deliberate human decision: the moment the foundation is declared set.</p>
   </div>
 
   <h2>Human touchpoints</h2>
