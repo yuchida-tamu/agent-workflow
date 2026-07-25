@@ -59,6 +59,15 @@ export function gateFor(from, to) {
   return GATED_TRANSITIONS[`${from}→${to}`] ?? null;
 }
 
+// The gate (and target state) a comment-approval on this state would satisfy.
+export function pendingGateFor(state) {
+  for (const [key, gate] of Object.entries(GATED_TRANSITIONS)) {
+    const [from, to] = key.split("→");
+    if (from === state) return { gate, to };
+  }
+  return null;
+}
+
 // Compute the label edit for a transition, or throw if it's illegal.
 export function planTransition(labels, to) {
   if (!STATES.includes(to)) throw new Error(`unknown state "${to}"`);

@@ -10,7 +10,7 @@
 // Exit codes: 0 ok · 20 usage/error.
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -34,16 +34,23 @@ export function labelCommands(labelsDoc, repo) {
   ]);
 }
 
-export function projectPlan(targetDir) {
+export function projectPlan(targetDir, toolkitRepo = "yuchida-tamu/agent-workflow") {
   const agentsDir = join(HERE, "../agents");
   const agentSteps = readdirSync(agentsDir)
     .filter((f) => f.endsWith(".md"))
     .map((f) => ({ from: join(agentsDir, f), to: join(targetDir, ".claude/agents", f) }));
+  const workflowsDir = join(HERE, "templates/workflows");
+  const workflowSteps = readdirSync(workflowsDir).map((f) => ({
+    from: join(workflowsDir, f),
+    to: join(targetDir, ".github/workflows", f),
+    subst: { __TOOLKIT_REPO__: toolkitRepo },
+  }));
   return [
     { from: join(HERE, "templates/agentflow.config.json"), to: join(targetDir, "agentflow.config.json") },
     { from: join(HERE, "templates/domains.yml"), to: join(targetDir, "domains.yml") },
     { from: join(HERE, "templates/policies-business.yml"), to: join(targetDir, "policies/business.yml") },
     ...agentSteps,
+    ...workflowSteps,
     { dir: join(targetDir, "e2e/scenarios") },
     { dir: join(targetDir, "e2e/traces") },
   ];
@@ -72,7 +79,7 @@ switch (command) {
       console.error("usage: agentflow-init project --target <dir> [--dry-run]");
       process.exit(20);
     }
-    for (const step of projectPlan(flags.target)) {
+    for (const step of projectPlan(flags.target, flags.toolkit)) {
       if (step.dir) {
         if (flags.dryRun) console.log(`mkdir -p ${step.dir}`);
         else mkdirSync(step.dir, { recursive: true });
@@ -86,7 +93,15 @@ switch (command) {
         console.log(`copy ${step.from} → ${step.to}`);
       } else {
         mkdirSync(dirname(step.to), { recursive: true });
-        copyFileSync(step.from, step.to);
+        if (step.subst) {
+          let content = readFileSync(step.from, "utf8");
+          for (const [key, value] of Object.entries(step.subst)) {
+            content = content.replaceAll(key, value);
+          }
+          writeFileSync(step.to, content);
+        } else {
+          copyFileSync(step.from, step.to);
+        }
         console.log(`wrote ${step.to}`);
       }
     }

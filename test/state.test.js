@@ -4,6 +4,7 @@ import {
   STATES,
   TRANSITIONS,
   gateFor,
+  pendingGateFor,
   planTransition,
   stateFromLabels,
 } from "../scripts/state/machine.js";
@@ -42,6 +43,14 @@ test("unlabeled item enters the machine at idea, ungated", () => {
   const plan = planTransition([], "idea");
   assert.equal(plan.gate, null);
   assert.deepEqual(plan.add, ["state:idea"]);
+});
+
+test("pendingGateFor maps states to their comment-approvable gate", () => {
+  assert.deepEqual(pendingGateFor("idea"), { gate: "G1", to: "spec" });
+  assert.deepEqual(pendingGateFor("planned"), { gate: "G2", to: "ready" });
+  assert.deepEqual(pendingGateFor("verified"), { gate: "G4", to: "released" });
+  assert.equal(pendingGateFor("ready"), null);
+  assert.equal(pendingGateFor("spec"), null);
 });
 
 test("all four gates sit on the right edges", () => {

@@ -1,0 +1,20 @@
+name: agentflow risk verdict
+description: Extract facts from the PR diff, evaluate policy packs (baseline + platform + repo business pack), apply risk labels, post the verdict comment.
+inputs:
+  github-token:
+    description: Token with pull-requests write access
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install toolkit deps
+      shell: bash
+      run: cd "$GITHUB_ACTION_PATH/../.." && npm ci --omit=dev
+    - name: Evaluate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/actions/pr-verdict.js"

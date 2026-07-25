@@ -25,7 +25,7 @@ live there; this README tracks what's built.
 | `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, adapters/skills (Phase 2) |
 | `agents/` | core | The nine agent definitions with model tiers (installed into consuming repos' `.claude/agents/`) |
 | `init/` | core | `agentflow-init labels` (18-label set) · `agentflow-init project` (config, domains, business pack, agents, e2e dirs) |
-| `actions/` | core | Phase 2: composite GitHub Actions |
+| `actions/` | core | Composite Actions: `gate-check` · `risk-verdict` · `dispatch` (thin YAML over `scripts/actions/*.js`) |
 
 ## Phase 1 status (crawl)
 
@@ -59,9 +59,20 @@ live there; this README tracks what's built.
       live smoke test passed: dispatch → gate refusal → `/approve` →
       G1-validated transition → re-dispatch to architect
 - [ ] pack-expo adapters (`run` / `verify` / `execute-step` / `ship`) + skills
-- [ ] Composite GitHub Actions: gate wiring on issue comments, facts→policy
-      on PRs, dispatch on label events
-- [ ] First real loop run on a consuming app
+- [x] Composite GitHub Actions: `gate-check` (issue comments → validated
+      transitions), `risk-verdict` (PR diff → facts → policy → labels +
+      verdict comment), `dispatch` (state label → who-acts-next comment);
+      workflow stubs installed by `agentflow-init project` with the toolkit
+      repo substituted in. Gate + dispatch scripts verified live with
+      synthetic event payloads; `risk-verdict` awaits the first consuming-app
+      PR.
+- [ ] First real loop run on a consuming app (also first live `risk-verdict`)
+- [ ] Brief sweep in practice + headless agent execution (Phase 3, with
+      GitHub App identity)
+
+> Consuming private repos must be allowed to use this repo's actions:
+> Settings → Actions → General → Access → "Accessible from repositories
+> owned by yuchida-tamu".
 
 ```sh
 npm install

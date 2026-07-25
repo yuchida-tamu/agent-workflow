@@ -1,0 +1,20 @@
+name: agentflow gate check
+description: Validate a /approve or /reject issue comment against the pending gate and apply the state transition.
+inputs:
+  github-token:
+    description: Token with issues write access
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install toolkit deps
+      shell: bash
+      run: cd "$GITHUB_ACTION_PATH/../.." && npm ci --omit=dev
+    - name: Check gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/actions/gate-comment.js"

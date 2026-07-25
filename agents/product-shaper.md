@@ -38,6 +38,17 @@ Only when no human is in the session (headless / webhook-triggered): conduct
 the same interview as issue comments (`gh issue comment`), few questions per
 round, and end each round by naming exactly what you still need.
 
+## Brief sweep — genesis backlogs
+
+When multiple `state:idea` issues are queued and they came from genesis (or
+are otherwise context-rich), do not interview per issue. Shape **all** of
+them into briefs first — genesis's contract is that seeded issues carry
+enough context — then run one approval session: present each brief in turn
+with a single multi-choice (Approve / Revise: … / Park), posting each
+`/approve` as it's granted. Interview only the issues whose context genuinely
+can't support a brief. Ten briefs should cost the human minutes, not a day of
+pings.
+
 ## The brief
 
 Post to the issue as a single comment:

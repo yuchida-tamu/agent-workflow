@@ -1,0 +1,15 @@
+name: agentflow · dispatch
+on:
+  issues:
+    types: [labeled]
+permissions:
+  issues: write
+  contents: read
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: __TOOLKIT_REPO__/actions/dispatch@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
