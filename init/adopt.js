@@ -5,6 +5,12 @@
 // Adoption is additive by construction: it never rewrites a file and never
 // rewrites a label, so a repo that has half of the loop already keeps its own.
 
+// The one matcher. `domains.yml` globs mean here exactly what they mean to the
+// risk engine, because it is literally the same compiler — a second, subtly
+// different glob implementation would let `--coverage` disagree with the
+// verdicts the engine later hands down about the same paths.
+import { globToRegExp } from "../scripts/policy/engine.js";
+
 // The config template ships these; until a human changes them the loop can't
 // route approvals, so they belong in `remaining` rather than looking configured.
 const PLACEHOLDER_APPROVER = "CHANGE_ME";
@@ -590,4 +596,138 @@ export function renderSettings(entries) {
     if (entry.command) lines.push("", entry.command);
   }
   return lines;
+}
+
+// ---------------------------------------------------------------------------
+// 4. coverage — how much of this repo does domains.yml actually classify?
+//
+// Repo-scoped, and deliberately not the same number as
+// `domainFacts().unmapped_fraction` in scripts/facts/core.js, which is
+// diff-scoped (the share of a *change* the map cannot classify). This one
+// answers "how far has the map been grown?" over every tracked file. Both use
+// the same glob compiler, so the two agree file-for-file; only the population
+// differs.
+//
+// It exists so the adoption-auditor never eyeballs the number: coverage is
+// counting, and counting is a script's job.
+
+// The template's value, and the fallback when a target has no config yet.
+export const DEFAULT_WARN_FRACTION = 0.2;
+
+const CRITICALITY_ORDER = ["low", "medium", "high", "critical"];
+
+// Never checked in by hand, so never a thing a human assigns criticality to.
+const GENERATED_DIR =
+  /(^|\/)(node_modules|vendor|dist|build|out|coverage|\.next|\.expo|\.turbo|__snapshots__|Pods|Carthage)\//;
+const LOCKFILE =
+  /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json|Gemfile\.lock|Podfile\.lock|poetry\.lock|Cargo\.lock|composer\.lock|go\.sum)$/;
+// Binaries and assets: real content, but nobody writes a `paths:` glob for a PNG.
+const ASSET_EXT =
+  /\.(png|jpe?g|gif|svg|webp|ico|bmp|tiff?|pdf|zip|gz|tgz|mp[34]|mov|webm|wav|ttf|otf|woff2?|eot|xcf|psd|keystore|jks|p12|snap)$/i;
+
+// Docs, JSON and YAML deliberately COUNT as source. The toolkit's own map gives
+// `*.md` and `policies/**` a criticality, so filtering them out would bake a
+// judgement — "docs don't matter" — into a script whose whole job is to count
+// without judging. What is filtered out is only what a human never authors.
+export function isTrackedSource(path) {
+  return !GENERATED_DIR.test(path) && !LOCKFILE.test(path) && !ASSET_EXT.test(path);
+}
+
+export function trackedSourceFiles(paths) {
+  return (paths ?? []).filter((p) => typeof p === "string" && p.length > 0).filter(isTrackedSource);
+}
+
+// The directory a human would add to `paths:` to fix this, i.e. the immediate
+// parent — a top-level segment is too coarse to act on in a deep tree.
+const parentDir = (path) => {
+  const cut = path.lastIndexOf("/");
+  return cut === -1 ? "." : path.slice(0, cut);
+};
+
+// domains: parsed domains.yml — { name: { criticality, paths: [glob…] } }.
+// files:   already filtered through trackedSourceFiles() by the caller.
+// warnFraction: null means "no threshold configured", never a warning.
+export function coverage(domains, files, { warnFraction = null, topDirs = 5 } = {}) {
+  const compiled = Object.entries(domains ?? {}).map(([name, d]) => ({
+    name,
+    criticality: d?.criticality ?? "medium",
+    regexps: (d?.paths ?? []).map(globToRegExp),
+  }));
+
+  const counts = new Map(compiled.map((d) => [d.name, 0]));
+  const unmappedFiles = [];
+  for (const file of files) {
+    let hit = false;
+    for (const domain of compiled) {
+      if (!domain.regexps.some((r) => r.test(file))) continue;
+      counts.set(domain.name, counts.get(domain.name) + 1);
+      hit = true;
+    }
+    if (!hit) unmappedFiles.push(file);
+  }
+
+  const dirCounts = new Map();
+  for (const file of unmappedFiles) {
+    const dir = parentDir(file);
+    dirCounts.set(dir, (dirCounts.get(dir) ?? 0) + 1);
+  }
+
+  const total = files.length;
+  const unmappedFraction = total === 0 ? 0 : unmappedFiles.length / total;
+  return {
+    total,
+    mapped: total - unmappedFiles.length,
+    unmapped: unmappedFiles.length,
+    unmapped_fraction: unmappedFraction,
+    warn_fraction: warnFraction,
+    // Strictly above: a repo sitting exactly on its configured threshold is
+    // within the budget it set, not over it.
+    warn: warnFraction !== null && unmappedFraction > warnFraction,
+    unmapped_files: unmappedFiles,
+    top_unmapped_dirs: [...dirCounts.entries()]
+      .map(([dir, count]) => ({ dir, count }))
+      .sort((a, b) => b.count - a.count || (a.dir < b.dir ? -1 : 1))
+      .slice(0, topDirs),
+    domains: compiled
+      .map((d) => ({ name: d.name, criticality: d.criticality, files: counts.get(d.name) }))
+      .sort(
+        (a, b) =>
+          CRITICALITY_ORDER.indexOf(b.criticality) - CRITICALITY_ORDER.indexOf(a.criticality) ||
+          (a.name < b.name ? -1 : 1),
+      ),
+  };
+}
+
+const pct = (fraction) => `${(fraction * 100).toFixed(1)}%`;
+
+// `unmappedCriticality` comes from the target's config: it is the criticality
+// the engine already assigns to unmapped changes, so it is also the honest
+// default for a catch-all domain.
+export function renderCoverage(report, { unmappedCriticality = "medium" } = {}) {
+  const lines = [
+    `coverage — ${report.total} tracked source file(s), ` +
+      `${report.unmapped} unmapped (${pct(report.unmapped_fraction)})`,
+  ];
+
+  if (report.domains.length === 0) {
+    lines.push("", "  domains.yml maps nothing — it is still the template stub");
+  }
+  if (report.warn) {
+    lines.push(
+      "",
+      `  ! ${pct(report.unmapped_fraction)} exceeds unmapped_warn_fraction ` +
+        `${pct(report.warn_fraction)} — extend domains.yml, or add a catch-all ` +
+        `domain at criticality "${unmappedCriticality}"`,
+    );
+  }
+
+  if (report.top_unmapped_dirs.length) {
+    lines.push("", "  top unmapped directories");
+    for (const { dir, count } of report.top_unmapped_dirs) lines.push(`    ${count}  ${dir}`);
+  }
+  if (report.domains.length) {
+    lines.push("", "  mapped by domain");
+    for (const d of report.domains) lines.push(`    ${d.files}  ${d.name} (${d.criticality})`);
+  }
+  return lines.join("\n");
 }
