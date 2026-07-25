@@ -15,6 +15,10 @@ live there; this README tracks what's built.
 |---|---|---|
 | `scripts/policy/` | core | Risk policy engine (pure) + `agentflow-policy` CLI |
 | `scripts/state/` | core | Work-item state machine (pure) + `agentflow-state` CLI |
+| `scripts/gate/` | core | `/approve` comment validation + `agentflow-gate` CLI |
+| `scripts/facts/` | core | Diff/domain/drift fact extraction + `agentflow-facts` CLI |
+| `scripts/e2e/` | core | Gherkin parser, trace replay runner + `agentflow-e2e` CLI |
+| `scripts/next/` | core | Crawl-phase dispatcher + `agentflow-next` CLI |
 | `policies/baseline.yaml` | core | Platform-neutral baseline pack (locked guards + scoring) |
 | `interfaces/` | core | The four core↔pack contracts: `run` · `verify` · `execute-step` · `ship` |
 | `scenarios/SPEC.md` | core | Gherkin grammar, compiled-trace format, runner semantics |
@@ -29,10 +33,19 @@ live there; this README tracks what's built.
 - [x] State machine: `state:*` labels, gated transitions (G1–G4), `gh`-backed
       `apply` that refuses ungated gate crossings
 - [x] Interface signatures + scenario/trace spec
-- [ ] Gate validator (authorized `/approve` comments → `--approved-gate`)
-- [ ] Fact extractors (diff → `diff.*` facts; domains.yml → `domains.*`)
-- [ ] E2E runner core (feature parser, trace validity check, replay loop)
-- [ ] `/next` local dispatch command
+- [x] Gate validator: `/approve [gate]` · `/reject`, authorized-approver check,
+      feeds `agentflow-state apply --approved-gate`
+- [x] Fact extractors: git range → `diff.*`, `domains.*` (via domains.yml),
+      `drift.*` (scope + brief-vs-domain) → pipes into `agentflow-policy evaluate`
+- [x] E2E runner core: Gherkin parser, tag selection, trace replay over the
+      `execute-step` adapter, `needs-derivation` emission (derivation itself is
+      an agent task — Phase 2)
+- [x] `agentflow-next`: crawl-phase dispatcher — top actionable issue by
+      priority/age → who acts next per the dispatch table
+
+Phase 2 (walk): pack-expo adapters + skills, trace derivation agent, agent
+definitions, composite GitHub Actions, gate wiring on issue comments,
+installer. Then the loop runs itself.
 
 ```sh
 npm install
