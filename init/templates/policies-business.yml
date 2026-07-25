@@ -1,0 +1,23 @@
+# This app's risk rules — authoritative over the toolkit baseline.
+# Same grammar as every pack: see agent-workflow/policies/baseline.yaml.
+pack: app-business
+version: 1
+
+rules:
+  - id: critical-domain
+    description: Critical business domains always get human plan review and merge
+    stage: both
+    when: { fact: domains.max_criticality, in: [critical] }
+    then:
+      require: [G2, human-merge]
+      block: [auto-merge]
+      run: [domain-scenarios]
+
+tests:
+  - name: critical domain touch requires G2
+    facts:
+      meta: { stage: pr }
+      domains: { max_criticality: critical }
+    expect:
+      require: [G2, human-merge]
+      block: [auto-merge]

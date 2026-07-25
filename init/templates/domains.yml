@@ -1,0 +1,9 @@
+# Business capability → code map. A human makes each criticality call once;
+# the risk engine enforces it deterministically forever. Grow this map — the
+# engine warns when too much of the diff surface is unmapped.
+#
+# example:
+#   criticality: critical        # low | medium | high | critical
+#   paths: ["src/features/example/**"]
+#   screens: ["/example/*"]
+#   scenarios: ["@example"]

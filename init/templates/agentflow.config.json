@@ -1,0 +1,12 @@
+{
+  "platform": "rn-expo",
+  "approvers": ["CHANGE_ME"],
+  "intake_questions": [
+    "Does this change what users pay or what they see about pricing?",
+    "Does it touch personal data?",
+    "Is the behavior change irreversible for the user?"
+  ],
+  "unmapped_criticality": "medium",
+  "unmapped_warn_fraction": 0.2,
+  "model_overrides": {}
+}

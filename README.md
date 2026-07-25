@@ -23,7 +23,9 @@ live there; this README tracks what's built.
 | `interfaces/` | core | The four core↔pack contracts: `run` · `verify` · `execute-step` · `ship` |
 | `scenarios/SPEC.md` | core | Gherkin grammar, compiled-trace format, runner semantics |
 | `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, adapters/skills (Phase 2) |
-| `agents/` `actions/` `init/` | core | Phase 2: agent definitions, composite Actions, installer |
+| `agents/` | core | The nine agent definitions with model tiers (installed into consuming repos' `.claude/agents/`) |
+| `init/` | core | `agentflow-init labels` (18-label set) · `agentflow-init project` (config, domains, business pack, agents, e2e dirs) |
+| `actions/` | core | Phase 2: composite GitHub Actions |
 
 ## Phase 1 status (crawl)
 
@@ -43,9 +45,18 @@ live there; this README tracks what's built.
 - [x] `agentflow-next`: crawl-phase dispatcher — top actionable issue by
       priority/age → who acts next per the dispatch table
 
-Phase 2 (walk): pack-expo adapters + skills, trace derivation agent, agent
-definitions, composite GitHub Actions, gate wiring on issue comments,
-installer. Then the loop runs itself.
+## Phase 2 status (walk)
+
+- [x] Agent definitions: product-shaper (opus) · architect (opus) ·
+      implementer · code-reviewer · ux-reviewer · build-sentinel ·
+      qa-explorer · trace-deriver (sonnet) · triage (haiku)
+- [x] Installer: `agentflow-init labels` + `agentflow-init project`
+      (idempotent, dry-run capable, installs agents into `.claude/agents/`)
+- [ ] GitHub remote + labels applied live
+- [ ] pack-expo adapters (`run` / `verify` / `execute-step` / `ship`) + skills
+- [ ] Composite GitHub Actions: gate wiring on issue comments, facts→policy
+      on PRs, dispatch on label events
+- [ ] First real loop run on a consuming app
 
 ```sh
 npm install

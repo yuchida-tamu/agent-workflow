@@ -1,0 +1,28 @@
+# Labels the loop depends on. `agentflow-init labels` creates/updates these
+# idempotently. Colors: states use the indigo ramp, gates/risk amber, drift red.
+labels:
+  # state machine (one per issue, enforced by scripts/state)
+  - { name: "state:idea",        color: "E8E5FB", description: "Intake: awaiting shaping" }
+  - { name: "state:spec",        color: "D4CEF7", description: "Brief approved (G1); awaiting plan" }
+  - { name: "state:planned",     color: "BFB6F3", description: "Plan posted; awaiting G2 or auto-pass" }
+  - { name: "state:ready",       color: "A99CEF", description: "Dispatchable to an implementer" }
+  - { name: "state:in-progress", color: "9384EB", description: "Implementation underway" }
+  - { name: "state:in-review",   color: "7D6BE7", description: "PR open; review pipeline running" }
+  - { name: "state:merged",      color: "6753E3", description: "Merged; awaiting post-merge smoke" }
+  - { name: "state:verified",    color: "513ADF", description: "Smoke green; releasable" }
+  - { name: "state:released",    color: "3B21DB", description: "Shipped" }
+
+  # dispatch ordering
+  - { name: "priority:p0", color: "B60205", description: "Drop everything" }
+  - { name: "priority:p1", color: "D93F0B", description: "Next up" }
+  - { name: "priority:p2", color: "FBCA04", description: "When convenient" }
+  - { name: "blocked",     color: "000000", description: "Not dispatchable; see comments" }
+
+  # risk engine verdicts
+  - { name: "risk:low",    color: "C2E0C6", description: "Auto-merge eligible (if class graduated)" }
+  - { name: "risk:medium", color: "F9D0A4", description: "Human merge required" }
+  - { name: "risk:high",   color: "E99695", description: "G2 required; never auto-merge" }
+
+  # drift detectors
+  - { name: "drift:scope", color: "D73A4A", description: "Diff exceeds the plan's declared surface" }
+  - { name: "drift:brief", color: "D73A4A", description: "Diff contradicts the brief's declared impact" }
