@@ -6,7 +6,9 @@ whether to adopt, not for a contributor replaying history. See
 `agent-loop-architecture.html` for the design and `STATUS.md` for the
 build-status ledger this summarizes.
 
-## v0.1.0 — first tagged release
+## v0.2.0 — first complete release
+
+(Everything below describes the toolkit as of this tag.)
 
 The first version a consuming repo can pin instead of riding `@main`. The
 deterministic core, the agent roster, App identity, and headless review are
@@ -125,7 +127,7 @@ runs `agentflow-e2e smoke` against a repo's own suite and passes vacuously
 on an empty one — a fact about that repo's coverage, not a runner failure —
 so the loop's tail completes on a toolkit or library, not only an app.
 
-### Known gaps at v0.1.0
+### Known gaps at v0.2.0
 
 - **`pack-expo` adapters are specified, not shipped.** The four
   interfaces (`run`, `verify`, `execute-step`, `ship`) are locked in
@@ -138,5 +140,13 @@ so the loop's tail completes on a toolkit or library, not only an app.
 - No consuming-app has yet run the full loop end to end; this repo is its
   own only production user so far.
 
-[Unreleased]: https://github.com/yuchida-tamu/agent-workflow/compare/v0.1.0...HEAD
-[v0.1.0]: https://github.com/yuchida-tamu/agent-workflow/releases/tag/v0.1.0
+[Unreleased]: https://github.com/yuchida-tamu/agent-workflow/compare/v0.2.0...HEAD
+[v0.2.0]: https://github.com/yuchida-tamu/agent-workflow/releases/tag/v0.2.0
+
+## v0.1.0 — historical
+
+Cut mid-development (2026-07-26, commit `794667b`) while building and
+live-testing `agentflow-release` itself — a working but incomplete snapshot
+predating the review guard, the squash-aware delivery check, and the release
+docs. Kept because tags are immutable here by policy: the release CLI refuses
+to re-point a published version, and we practice what it enforces.

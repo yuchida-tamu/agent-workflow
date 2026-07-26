@@ -45,12 +45,12 @@ your repo reference this same tag, so your loop's behavior changes only
 when you choose to upgrade.
 
 ```sh
-git clone --branch v0.1.0 https://github.com/yuchida-tamu/agent-workflow
+git clone --branch v0.2.0 https://github.com/yuchida-tamu/agent-workflow
 cd agent-workflow && npm install
 node init/cli.js adopt --target /path/to/your-repo --repo <owner>/<name>
 # creates the 18-label set (states, priorities, risk, drift), scaffolds
 # config + domains.yml + business policy pack, and prints the repo settings
-# it can't apply for you — installed workflow stubs pin @v0.1.0
+# it can't apply for you — installed workflow stubs pin @v0.2.0
 node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name>
 # re-reads what actually landed, including your G3 mode (native-review | solo-comment)
 ```

@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: __TOOLKIT_REPO__/actions/risk-verdict@v0.1.0
+      - uses: __TOOLKIT_REPO__/actions/risk-verdict@v0.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           app-id: ${{ secrets.AGENTFLOW_APP_ID }}
