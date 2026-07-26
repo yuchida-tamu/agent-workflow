@@ -7,6 +7,7 @@ import {
   openSession,
   closeSession,
   listApps,
+  unwrap,
   AgentDeviceError,
 } from "../lib/agent-device.js";
 
@@ -113,7 +114,64 @@ test("translateRef: rejects a non-string / empty ref", () => {
 });
 
 test("listApps: scopes to platform/device for the install-check", async () => {
-  const runner = fakeRunner(() => ({ code: 0, stdout: "[]", stderr: "" }));
+  const runner = fakeRunner(() => ({ code: 0, stdout: '{"success":true,"data":{"apps":[]}}', stderr: "" }));
   await listApps({ platform: "ios", device: "iPhone 15", runner });
   assert.deepEqual(runner.calls[0].args, ["apps", "--platform", "ios", "--device", "iPhone 15", "--json"]);
+});
+
+// #142: the real `agent-device apps --json` payload is enveloped
+// `{success, data:{apps:[...]}}`, not a bare array — decideStartPath used to
+// read `apps?.apps` straight off that envelope (finding nothing) instead of
+// off listApps's return value, so the installed-dev-client check never
+// fired and every session start paid a full `expo run:ios` build.
+test("listApps: unwraps the real {success, data:{apps}} envelope to the bare array", async () => {
+  const runner = fakeRunner(() => ({
+    code: 0,
+    stdout: JSON.stringify({ success: true, data: { apps: ["com.example.app"] } }),
+    stderr: "",
+  }));
+  const apps = await listApps({ platform: "ios", device: "iPhone 15", runner });
+  assert.deepEqual(apps, ["com.example.app"]);
+});
+
+test("listApps: success:false in the body is an error even at exit 0", async () => {
+  const runner = fakeRunner(() => ({
+    code: 0,
+    stdout: JSON.stringify({ success: false, error: { code: "DEVICE_NOT_FOUND", message: "no such device" } }),
+    stderr: "",
+  }));
+  await assert.rejects(() => listApps({ platform: "ios", device: "iPhone 15", runner }), (err) => {
+    assert.ok(err instanceof AgentDeviceError);
+    assert.match(err.message, /DEVICE_NOT_FOUND/);
+    return true;
+  });
+});
+
+// Tolerance for a bare/legacy array response (no envelope) — cheap to keep
+// supporting since `unwrap` already passes a shape with no `.data` through
+// untouched.
+test("listApps: tolerates a legacy unenveloped array response", async () => {
+  const runner = fakeRunner(() => ({ code: 0, stdout: '["com.example.app"]', stderr: "" }));
+  const apps = await listApps({ platform: "ios", device: "iPhone 15", runner });
+  assert.deepEqual(apps, ["com.example.app"]);
+});
+
+test("unwrap: pulls .data out of the {success,data} envelope", () => {
+  assert.deepEqual(unwrap({ success: true, data: { apps: [] } }), { apps: [] });
+});
+
+test("unwrap: passes through a shape with no .data untouched", () => {
+  assert.deepEqual(unwrap({ apps: [] }), { apps: [] });
+  assert.equal(unwrap(null), null);
+});
+
+test("unwrap: success:false is an error even at exit 0 — never silently yields empty data", () => {
+  assert.throws(
+    () => unwrap({ success: false, error: { code: "COMMAND_FAILED", message: "no visible effect" } }),
+    (err) => {
+      assert.ok(err instanceof AgentDeviceError);
+      assert.match(err.message, /COMMAND_FAILED: no visible effect/);
+      return true;
+    }
+  );
 });

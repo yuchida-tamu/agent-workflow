@@ -38,27 +38,67 @@ test("bundleIdFromConfig: fatal (20) when the config has no ios.bundleIdentifier
   });
 });
 
-test("decideStartPath: dev client already installed -> reuse", async () => {
-  const runner = { exec: async () => ({ code: 0, stdout: '["com.example.app"]', stderr: "" }) };
+// #142: the real `agent-device apps --json` payload is enveloped
+// `{success, data:{apps:[...]}}`, not a bare array. decideStartPath used to
+// read `apps?.apps` straight off that envelope — which never matches, since
+// the array is at `data.apps` — so the installed-dev-client check always
+// came back empty and every session start paid a full `expo run:ios` build.
+test("decideStartPath: dev client already installed (real {success,data:{apps}} envelope) -> reuse", async () => {
+  const runner = {
+    exec: async () => ({
+      code: 0,
+      stdout: JSON.stringify({ success: true, data: { apps: ["com.example.app"] } }),
+      stderr: "",
+    }),
+  };
   const path = await decideStartPath({ bundleId: "com.example.app", target: "iPhone 15", runner });
   assert.equal(path, "reuse");
 });
 
-test("decideStartPath: dev client not installed -> build", async () => {
-  const runner = { exec: async () => ({ code: 0, stdout: "[]", stderr: "" }) };
+test("decideStartPath: dev client not installed (real envelope, empty apps) -> build", async () => {
+  const runner = {
+    exec: async () => ({ code: 0, stdout: JSON.stringify({ success: true, data: { apps: [] } }), stderr: "" }),
+  };
   const path = await decideStartPath({ bundleId: "com.example.app", target: "iPhone 15", runner });
   assert.equal(path, "build");
 });
 
-test("decideStartPath: apps objects with an id/bundleId field also match", async () => {
-  const runner = { exec: async () => ({ code: 0, stdout: '[{"id":"com.example.app"}]', stderr: "" }) };
+test("decideStartPath: apps objects with an id/bundleId field also match, under the real envelope", async () => {
+  const runner = {
+    exec: async () => ({
+      code: 0,
+      stdout: JSON.stringify({ success: true, data: { apps: [{ id: "com.example.app" }] } }),
+      stderr: "",
+    }),
+  };
   assert.equal(await decideStartPath({ bundleId: "com.example.app", target: "x", runner }), "reuse");
+});
+
+test("decideStartPath: body says success:false despite exit 0 -> falls back to the safe 'build' path", async () => {
+  const runner = {
+    exec: async () => ({
+      code: 0,
+      stdout: JSON.stringify({ success: false, error: { code: "DEVICE_NOT_FOUND", message: "no such device" } }),
+      stderr: "",
+    }),
+  };
+  const path = await decideStartPath({ bundleId: "com.example.app", target: "iPhone 15", runner });
+  assert.equal(path, "build");
 });
 
 test("decideStartPath: can't confirm (agent-device error, device not booted) -> falls back to the safe 'build' path", async () => {
   const runner = { exec: async () => ({ code: 1, stdout: "", stderr: "no device" }) };
   const path = await decideStartPath({ bundleId: "com.example.app", target: "iPhone 15", runner });
   assert.equal(path, "build");
+});
+
+// Legacy/unenveloped tolerance: a bare array response (no {success,data}
+// wrapper) is cheap to keep supporting since listApps's unwrap already
+// passes a shape with no `.data` through untouched.
+test("decideStartPath: tolerates a legacy unenveloped array response -> reuse", async () => {
+  const runner = { exec: async () => ({ code: 0, stdout: '["com.example.app"]', stderr: "" }) };
+  const path = await decideStartPath({ bundleId: "com.example.app", target: "iPhone 15", runner });
+  assert.equal(path, "reuse");
 });
 
 // ---- waitForMetroReady: real readiness (HTTP /status probe), not a log grep
@@ -155,7 +195,11 @@ async function withTempDirs(fn) {
 
 // Dispatches by the command name every real dependency this adapter shells:
 // xcrun (assertXcode), the workspace-local expo bin (`expo config --json`),
-// and agent-device (apps/open/close).
+// and agent-device (apps/open/close). `apps` responds with the real
+// enveloped shape (#142: agent-device --json wraps every response as
+// {success, data:{...}} — e.g. apps live at data.apps — not the bare array
+// this fixture used to hand back, which is how the bug on #142 shipped with
+// green tests: a bare-array mock can't catch a broken envelope unwrap).
 function agentDeviceAndExpoRunner({ appsInstalled = [], expoConfig = { ios: { bundleIdentifier: "com.example.app" } } } = {}) {
   const calls = [];
   return {
@@ -167,7 +211,7 @@ function agentDeviceAndExpoRunner({ appsInstalled = [], expoConfig = { ios: { bu
         return { code: 0, stdout: JSON.stringify(expoConfig), stderr: "", error: null };
       }
       if (cmd === "agent-device" && args[0] === "apps") {
-        return { code: 0, stdout: JSON.stringify(appsInstalled), stderr: "", error: null };
+        return { code: 0, stdout: JSON.stringify({ success: true, data: { apps: appsInstalled } }), stderr: "", error: null };
       }
       if (cmd === "agent-device" && (args[0] === "open" || args[0] === "close")) {
         return { code: 0, stdout: "{}", stderr: "", error: null };
