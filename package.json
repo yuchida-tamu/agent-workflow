@@ -19,7 +19,8 @@
     "agentflow-next": "scripts/next/cli.js",
     "agentflow-init": "init/cli.js",
     "agentflow-log": "scripts/log/cli.js",
-    "agentflow-release": "scripts/release/cli.js"
+    "agentflow-release": "scripts/release/cli.js",
+    "agentflow-gates": "scripts/gates/cli.js"
   },
   "dependencies": {
     "yaml": "^2.4.0"

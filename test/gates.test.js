@@ -6,6 +6,7 @@ import {
   selectArtifact,
   renderItem,
 } from "../scripts/gates/core.js";
+import { parseArgs, assertInteractive, resolveRepos, FORBIDDEN_FLAGS } from "../scripts/gates/cli.js";
 
 const issue = (number, labels, over = {}) => ({
   number,
@@ -143,4 +144,59 @@ test("long artifacts truncate explicitly, never silently", () => {
 test("a short artifact is not marked as truncated", () => {
   const out = renderItem({ item, artifact: { body: "## Brief\nshort" }, maxLines: 10 });
   assert.doesNotMatch(out, /more lines/);
+});
+
+// --- the CLI's shut door -----------------------------------------------------
+
+test("a non-TTY stdin is refused, and the refusal is fatal", () => {
+  assert.throws(
+    () => assertInteractive({ isTTY: false }),
+    (err) => err.code === 2 && /interactive only/.test(err.message)
+  );
+});
+
+test("a TTY is accepted", () => {
+  assert.doesNotThrow(() => assertInteractive({ isTTY: true }));
+});
+
+test("no bulk-approve verb exists, and adding one fails this test", () => {
+  // The inbox's whole value is approving many things quickly, which is also the
+  // shape of its worst misuse. Every one of these must remain unparseable.
+  for (const flag of FORBIDDEN_FLAGS) {
+    assert.throws(() => parseArgs([flag]), /unknown option/, `${flag} must not be accepted`);
+  }
+});
+
+test("unknown options are rejected rather than ignored", () => {
+  assert.throws(() => parseArgs(["--wat"]), /unknown option "--wat"/);
+});
+
+test("the legitimate surface parses", () => {
+  assert.deepEqual(parseArgs([]), { repos: [] });
+  assert.deepEqual(parseArgs(["--repo", "o/r"]), { repos: ["o/r"] });
+  assert.equal(parseArgs(["--limit", "5"]).limit, 5);
+  assert.equal(parseArgs(["--all-repos"]).allRepos, true);
+});
+
+test("--all-repos reads an explicit list, never discovery", () => {
+  assert.deepEqual(
+    resolveRepos({ flags: { repos: [], allRepos: true }, config: { gate_inbox_repos: ["a/b", "c/d"] } }),
+    ["a/b", "c/d"]
+  );
+  assert.throws(
+    () => resolveRepos({ flags: { repos: [], allRepos: true }, config: {} }),
+    /needs a "gate_inbox_repos" list/,
+    "must refuse rather than scan every repo the token can see"
+  );
+});
+
+test("no --repo and no --all-repos means the current repo", () => {
+  assert.deepEqual(resolveRepos({ flags: { repos: [] }, config: {} }), [null]);
+});
+
+test("explicit --repo wins over --all-repos", () => {
+  assert.deepEqual(
+    resolveRepos({ flags: { repos: ["x/y"], allRepos: true }, config: { gate_inbox_repos: ["a/b"] } }),
+    ["x/y"]
+  );
 });
