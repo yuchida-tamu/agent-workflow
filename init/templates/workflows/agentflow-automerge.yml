@@ -1,0 +1,17 @@
+name: agentflow · auto-merge
+# Fires when checks finish, which is the moment both inputs the decision needs
+# — a green CI rollup and a posted verdict — are first available together.
+on:
+  check_suite:
+    types: [completed]
+permissions:
+  pull-requests: write
+  contents: write
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: __TOOLKIT_REPO__/actions/auto-merge@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}

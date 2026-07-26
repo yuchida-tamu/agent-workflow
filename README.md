@@ -27,7 +27,7 @@ live there; this README tracks what's built.
 | `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, adapters/skills (Phase 2) |
 | `agents/` | core | The eleven agent definitions with model tiers (installed into consuming repos' `.claude/agents/`) |
 | `init/` | core | `agentflow-init labels` (18-label set) · `agentflow-init project` (config, domains, business pack, agents, e2e dirs) · `agentflow-init adopt` (scaffold + labels + printed settings commands · `--verify` · `--coverage`) |
-| `actions/` | core | Composite Actions: `gate-check` · `risk-verdict` · `dispatch` · `post-merge` (thin YAML over `scripts/actions/*.js`) |
+| `actions/` | core | Composite Actions: `gate-check` · `risk-verdict` · `dispatch` · `post-merge` · `auto-merge` (thin YAML over `scripts/actions/*.js`) |
 
 ## Phase 1 status (crawl)
 
