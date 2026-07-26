@@ -32,19 +32,32 @@ export function runProcess(
       child.kill("SIGTERM");
     }, timeoutMs);
 
+    // `setEncoding` and not `+= buffer`. Concatenating raw Buffers with `+=`
+    // calls `toString()` per chunk, so a multi-byte character straddling a chunk
+    // boundary is decoded as two broken halves — `verdict — approved` arrives as
+    // `verdict ��� approved`. A stream decoder holds the partial sequence until
+    // the rest arrives. Em dashes are everywhere in this repo's artifacts, so
+    // this is a routine trigger, not an exotic one; and a split inside the JSON
+    // body would make `parseUsage` fail on a run that actually succeeded.
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (d) => (stdout += d));
     child.stderr?.on("data", (d) => (stderr += d));
 
-    const finish = (code) => {
+    const finish = (code, signal = null) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut, timeoutMs });
+      resolve({ code, signal, stdout, stderr, timedOut, timeoutMs });
     };
 
     child.on("error", (err) => {
       stderr += `\n${err.message}`;
       finish(127); // could not spawn — classified as `failed`, not as auth
     });
-    child.on("close", (code) => finish(code ?? 0));
+    // A signal-killed process reports `code === null`. Coercing that to 0 would
+    // classify an OOM-killed or operator-cancelled run as a success and close
+    // its ledger row `ok` — the one case our own timeout does not cover, since
+    // `timedOut` short-circuits first.
+    child.on("close", (code, signal) => finish(code, signal));
   });
 }
 

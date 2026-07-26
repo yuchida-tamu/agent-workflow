@@ -177,11 +177,24 @@ export function launchPlan({
 // Classification order matters: auth and rate limits are checked before the
 // generic non-zero branch, because both exit non-zero and both would otherwise
 // be indistinguishable from a crash.
-export function classify({ code = 0, stdout = "", stderr = "", timedOut = false, timeoutMs = null } = {}) {
+export function classify({ code = 0, signal = null, stdout = "", stderr = "", timedOut = false, timeoutMs = null } = {}) {
   if (timedOut) {
     return {
       outcome: "failed",
       reason: `timed out after ${timeoutMs ?? "?"}ms — the run was killed rather than left to hang`,
+      usage: null,
+    };
+  }
+
+  // A signal-killed process reports `code === null`, and null is not `!== 0`.
+  // Without this branch an OOM kill or an operator-cancelled job would fall
+  // through to the success path and close its ledger row `ok`.
+  if (signal || code === null) {
+    return {
+      outcome: "failed",
+      reason: signal
+        ? `killed by ${signal} — the run produced no usable result`
+        : "exited without a status code — the run produced no usable result",
       usage: null,
     };
   }

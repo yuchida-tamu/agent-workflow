@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import {
   DEFAULT_ALLOWED_TOOLS,
   KNOWN_FLAGS,
@@ -208,22 +209,31 @@ test("the summary line states subscription-billed, not API-metered", () => {
 
 // --- the shell, with an injected spawn ---------------------------------------
 
+// Real streams, not EventEmitter stand-ins. `run.js` calls `setEncoding` on
+// them, and a stub without it both hides the multi-byte bug and hangs the
+// suite — a fake that cannot do what the real thing does is not a fake, it is a
+// different object.
+function childStub() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = (signal) => {
+    child.killed = signal;
+    setImmediate(() => child.emit("close", null, signal));
+  };
+  return child;
+}
+
 function fakeSpawn({ stdout = "", stderr = "", code = 0, hang = false } = {}) {
   const calls = [];
   const fn = (cmd, argv, opts) => {
     calls.push({ cmd, argv, opts });
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.stderr = new EventEmitter();
-    child.kill = (signal) => {
-      child.killed = signal;
-      setImmediate(() => child.emit("close", null));
-    };
+    const child = childStub();
     if (!hang) {
       setImmediate(() => {
-        if (stdout) child.stdout.emit("data", stdout);
-        if (stderr) child.stderr.emit("data", stderr);
-        child.emit("close", code);
+        if (stdout) child.stdout.write(stdout);
+        if (stderr) child.stderr.write(stderr);
+        child.emit("close", code, null);
       });
     }
     return child;
@@ -265,10 +275,7 @@ test("a hanging process is killed, not orphaned", async () => {
 test("a spawn error is `failed`, never mistaken for an auth problem", async () => {
   // `claude` missing from the runner must not read as an expired token.
   const spawnFn = () => {
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.stderr = new EventEmitter();
-    child.kill = () => {};
+    const child = childStub();
     setImmediate(() => child.emit("error", new Error("spawn claude ENOENT")));
     return child;
   };
@@ -301,4 +308,47 @@ test("every flag emitted is on the hand-checked allowlist", () => {
 test("--max-turns specifically never comes back", () => {
   assert.equal(KNOWN_FLAGS.includes("--max-turns"), false);
   assert.equal(plan().argv.includes("--max-turns"), false);
+});
+
+// --- regressions from review of PR #100 --------------------------------------
+
+test("a signal-killed run is a failure, not a success", () => {
+  // Node reports `code === null` when a process dies by signal. Coercing that
+  // to 0 classified an OOM kill or a cancelled Actions job as `ok` and closed
+  // its ledger row green. Our own timeout never exposed it, because `timedOut`
+  // short-circuits first — which is exactly why it survived the first pass.
+  const killed = classify({ code: null, signal: "SIGKILL", stdout: "" });
+  assert.equal(killed.outcome, "failed");
+  assert.match(killed.reason, /SIGKILL/);
+
+  assert.equal(classify({ code: null, signal: null }).outcome, "failed");
+  // A clean exit is still ok — the fix must not turn every run into a failure.
+  assert.equal(classify({ code: 0, signal: null, stdout: "{}" }).outcome, "ok");
+});
+
+test("multi-byte output is decoded whole, not per chunk", async () => {
+  // `+= buffer` calls toString() per chunk, so an em dash split across a chunk
+  // boundary decodes as two broken halves: `verdict — approved` arrives as
+  // `verdict ��� approved`. This repo's artifacts are full of em
+  // dashes, and a split inside the JSON body makes parseUsage fail on a run
+  // that succeeded.
+  const text = JSON.stringify({ result: "verdict — approved", usage: { input_tokens: 1, output_tokens: 2 } });
+  const buf = Buffer.from(text, "utf8");
+  const cut = buf.indexOf(0xe2) + 1; // inside the em dash
+
+  const spawnFn = () => {
+    const child = childStub();
+    setImmediate(() => {
+      // Two writes, boundary inside a multi-byte sequence — what a real pipe does.
+      child.stdout.write(buf.subarray(0, cut));
+      child.stdout.write(buf.subarray(cut));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+
+  const result = await runProcess({ argv: [], env: {}, timeoutMs: 1000 }, spawnFn);
+  assert.equal(result.stdout.includes("�"), false, "no replacement characters");
+  assert.equal(JSON.parse(result.stdout).result, "verdict — approved");
+  assert.equal(classify(result).usage.inputTokens, 1, "usage survives the split");
 });
