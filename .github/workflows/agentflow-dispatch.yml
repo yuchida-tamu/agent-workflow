@@ -9,6 +9,11 @@ on:
 permissions:
   issues: write
   contents: read
+# One dispatch in flight per issue, so a label applied twice cannot race two
+# launches for the same work item.
+concurrency:
+  group: agentflow-dispatch-${{ github.event.issue.number }}
+  cancel-in-progress: false
 jobs:
   dispatch:
     runs-on: ubuntu-latest
@@ -17,5 +22,6 @@ jobs:
       - uses: yuchida-tamu/agent-workflow/actions/dispatch@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           app-id: ${{ secrets.AGENTFLOW_APP_ID }}
           app-private-key: ${{ secrets.AGENTFLOW_APP_PRIVATE_KEY }}

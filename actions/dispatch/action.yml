@@ -1,9 +1,20 @@
 name: agentflow dispatch
-description: On a state label change, post who acts next on the issue (crawl-phase visibility; replaced by headless agent launch in Phase 3).
+description: >-
+  On a state label change, post who acts next on the issue — or launch that agent
+  headlessly when `headless.dispatch.<state>` is on. Every flag ships off, so the
+  default is the comment this action has always posted.
 inputs:
   github-token:
     description: Fallback token, used when no App credentials are supplied. Token with issues write access
     required: true
+  claude-oauth-token:
+    description: >-
+      Subscription token from `claude setup-token`. Only used when a
+      `headless.dispatch.<state>` flag is on for the state being dispatched.
+      Optional: without it the action posts the dispatch comment exactly as it
+      always has. There is deliberately no metered-API-key fallback.
+    required: false
+    default: ""
   app-id:
     description: >-
       agentflow GitHub App id. Set it together with app-private-key and this
@@ -49,8 +60,15 @@ runs:
     - name: Install toolkit deps
       shell: bash
       run: cd "$GITHUB_ACTION_PATH/../.." && npm ci --omit=dev
+    - name: Install Claude Code
+      # Only when a subscription token is supplied. A repo that never enables a
+      # dispatch flag pays nothing for this step.
+      shell: bash
+      if: ${{ inputs.claude-oauth-token != '' }}
+      run: npm install -g @anthropic-ai/claude-code@2
     - name: Dispatch
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app-token.outputs.token || inputs.github-token }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-oauth-token }}
       run: node "$GITHUB_ACTION_PATH/../../scripts/actions/dispatch-comment.js"
