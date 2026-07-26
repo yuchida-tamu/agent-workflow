@@ -19,6 +19,11 @@ e2e-runner:
   criticality: high
   paths: ["scripts/e2e/**", "scenarios/**"]
 
+run-ledger:
+  description: "Per-iteration agent/model/phase audit log"
+  criticality: medium
+  paths: ["scripts/log/**"]
+
 facts:
   description: "Diff/domain/drift fact extraction feeding the policy engine"
   criticality: high

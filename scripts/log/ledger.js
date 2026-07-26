@@ -125,7 +125,14 @@ export function upsert(rows, entry) {
 //
 // `tiers` comes from the agent definitions themselves, so routing policy has one
 // source of truth rather than a second table that can drift from the roster.
-export function audit({ rows, tiers, state = null }) {
+// Phases a child issue never performs itself. The architect creates children
+// already at `state:ready`: their shaping and planning happened on the parent,
+// and are logged there. Charging a child a gap for them would report a finding
+// on every child in the repo, which is how a useful audit becomes noise nobody
+// reads.
+const PARENT_ONLY_PHASES = new Set(["idea", "spec"]);
+
+export function audit({ rows, tiers, state = null, hasParent = false }) {
   const findings = [];
   for (const row of rows ?? []) {
     const expected = tiers?.[row.agent];
@@ -141,6 +148,7 @@ export function audit({ rows, tiers, state = null }) {
     const reached = STATES.indexOf(state);
     for (const producer of PRODUCERS) {
       if (reached < STATES.indexOf(producer.after)) continue;
+      if (hasParent && PARENT_ONLY_PHASES.has(producer.phase)) continue;
       const ran = (rows ?? []).some((r) => r.phase === producer.phase && r.agent === producer.agent);
       if (!ran) findings.push({ kind: "gap", phase: producer.phase, agent: producer.agent, state });
     }

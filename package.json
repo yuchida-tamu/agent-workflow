@@ -17,7 +17,8 @@
     "agentflow-facts": "scripts/facts/cli.js",
     "agentflow-e2e": "scripts/e2e/cli.js",
     "agentflow-next": "scripts/next/cli.js",
-    "agentflow-init": "init/cli.js"
+    "agentflow-init": "init/cli.js",
+    "agentflow-log": "scripts/log/cli.js"
   },
   "dependencies": {
     "yaml": "^2.4.0"
