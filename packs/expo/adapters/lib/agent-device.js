@@ -32,6 +32,24 @@ function quote(value) {
   return `"${String(value).replaceAll('"', '\\"')}"`;
 }
 
+// Snapshot refs travel through the contract bare ("e12" — see
+// interfaces/verify.md's snapshot example and a live agent-device 0.19.3
+// `snapshot -i --json` response, where the `ref` field is likewise bare),
+// but the CLI itself requires the "@" prefix to tell a ref apart from a
+// literal string/selector: `agent-device press e12` fails with
+// `INVALID_ARGS: Did you mean "@e12"? Snapshot refs need the @ prefix.`
+// against a real session. Both #134 (verify) and #135 (execute-step, which
+// replays refs recorded in a compiled trace) need this identical
+// translation, so it lives beside `translateSelector` rather than being
+// duplicated per adapter. Idempotent: a ref that already carries "@" (e.g.
+// forwarded verbatim from a snapshot response) is left as-is.
+export function translateRef(ref) {
+  if (!ref || typeof ref !== "string") {
+    throw new TypeError("ref must be a non-empty string");
+  }
+  return ref.startsWith("@") ? ref : `@${ref}`;
+}
+
 export class AgentDeviceError extends Error {
   constructor(message, { command, code, stderr, stdout } = {}) {
     super(message);
