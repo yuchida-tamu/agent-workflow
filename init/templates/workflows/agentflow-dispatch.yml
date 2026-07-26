@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: __TOOLKIT_REPO__/actions/dispatch@v0.1.0
+      - uses: __TOOLKIT_REPO__/actions/dispatch@v0.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

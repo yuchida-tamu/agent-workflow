@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: __TOOLKIT_REPO__/actions/headless-review@v0.1.0
+      - uses: __TOOLKIT_REPO__/actions/headless-review@v0.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
