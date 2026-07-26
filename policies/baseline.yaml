@@ -4,16 +4,21 @@ pack: baseline
 version: 1
 
 rules:
+  # `init/templates/**` and `actions/**` are here because they are workflows and
+  # composite actions that *consuming repos install and run*. Protecting only
+  # `.github/workflows/**` guards the author's own CI while leaving everyone
+  # else's unguarded — which is how PR #33 changed the post-merge stub every
+  # adopting repo installs and scored `low`, eligible for auto-merge.
   - id: self-mod-guard
-    description: Changes to the workflow, policies, or domain map always face a human
+    description: Changes to workflows, policies, the domain map, or anything consuming repos install always face a human
     locked: true
     stage: both
     when:
       any:
         - fact: diff.files
-          matches: [".github/workflows/**", "policies/**", "domains.yml", "agentflow.config.json", "e2e/traces/**"]
+          matches: [".github/workflows/**", "policies/**", "domains.yml", "agentflow.config.json", "e2e/traces/**", "init/templates/**", "actions/**"]
         - fact: plan.files
-          matches: [".github/workflows/**", "policies/**", "domains.yml", "agentflow.config.json"]
+          matches: [".github/workflows/**", "policies/**", "domains.yml", "agentflow.config.json", "init/templates/**", "actions/**"]
     then:
       floor: high
       require: [G2, human-merge]
@@ -90,6 +95,32 @@ rules:
     when: { fact: meta.change_class, in: [docs, tests, copy] }
     then: { score: -2 }
 
+  # The domain map classifies every path by criticality, and until now nothing
+  # outside a project's own `critical` rule ever read it — so a change to a
+  # `high` domain scored exactly like a change to a `low` one, and the map's
+  # whole criticality axis was inert.
+  #
+  # Floor is `medium`, not `high`, on purpose: `high` domains cover most of a
+  # typical repo, and flooring them all at `high` would make every ordinary
+  # change indistinguishable from self-modification. The obligation that matters
+  # is the human merge; the level is secondary.
+  #
+  # Restricted to code changes: a README edit inside a high domain should not
+  # demand a human merge. That is a deliberate choice, and the fixtures below
+  # record it so it reads as a decision rather than an oversight.
+  - id: high-domain-change
+    description: Code touching a high-criticality domain is merged by a human
+    stage: pr
+    when:
+      all:
+        - fact: domains.max_criticality
+          in: [high]
+        - fact: meta.change_class
+          in: [code]
+    then:
+      floor: medium
+      require: [human-merge]
+
 tests:
   - name: workflow file edit is high risk no matter how small
     facts:
@@ -145,3 +176,55 @@ tests:
     expect:
       level: high
       require: [G2]
+
+  - name: a workflow stub consuming repos install is self-modification
+    facts:
+      meta: { stage: pr, change_class: code }
+      diff: { files: ["init/templates/workflows/agentflow-postmerge.yml"], loc: 14 }
+    expect:
+      level: high
+      require: [G2, human-merge]
+      block: [auto-merge]
+
+  - name: a composite action is self-modification too
+    facts:
+      meta: { stage: pr, change_class: code }
+      diff: { files: ["actions/post-merge/action.yml"], loc: 20 }
+    expect:
+      level: high
+      require: [G2, human-merge]
+
+  - name: plan-time surface naming a template is caught before any code exists
+    facts:
+      meta: { stage: plan }
+      plan: { files: ["init/templates/workflows/agentflow-automerge.yml"] }
+    expect:
+      level: high
+      require: [G2]
+
+  - name: code in a high-criticality domain needs a human merge
+    facts:
+      meta: { stage: pr, change_class: code }
+      diff: { files: ["scripts/facts/core.js"], loc: 30 }
+      domains: { max_criticality: high, touched: ["facts"] }
+    expect:
+      level: medium
+      require: [human-merge]
+
+  - name: docs inside a high domain do not demand a human merge
+    facts:
+      meta: { stage: pr, change_class: docs }
+      diff: { files: ["scripts/facts/README.md"], loc: 4 }
+      domains: { max_criticality: high, touched: ["facts"] }
+    expect:
+      level: low
+      require: []
+
+  - name: a low-criticality domain is unaffected
+    facts:
+      meta: { stage: pr, change_class: code }
+      diff: { files: ["docs/notes.js"], loc: 10 }
+      domains: { max_criticality: low, touched: ["docs"] }
+    expect:
+      level: low
+      require: []
