@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { MARKER, COLUMNS, render, parse, upsert, audit } from "../scripts/log/ledger.js";
+import { loadTiers } from "../scripts/log/cli.js";
 
 const row = (over = {}) => ({
   run: "a1b2c3",
@@ -183,4 +185,49 @@ test("audit without a state checks tiers only", () => {
 test("audit counts an open row as having run", () => {
   const rows = [row({ phase: "idea", agent: "product-shaper", model: "opus", ended: null, outcome: null })];
   assert.deepEqual(audit({ rows, tiers, state: "spec" }), []);
+});
+
+// --- the CLI's tier loading --------------------------------------------------
+
+test("loadTiers reads the declared tier of every agent definition", () => {
+  const tiers = loadTiers();
+  assert.equal(tiers["product-shaper"], "opus");
+  assert.equal(tiers.architect, "opus");
+  assert.equal(tiers.implementer, "sonnet");
+  assert.equal(tiers.triage, "haiku");
+});
+
+test("loadTiers covers the whole roster, so audit never sees a phantom unknown-agent", () => {
+  const tiers = loadTiers();
+  const files = readdirSync(new URL("../agents/", import.meta.url)).filter((f) => f.endsWith(".md"));
+  assert.equal(Object.keys(tiers).length, files.length);
+  for (const model of Object.values(tiers)) {
+    assert.ok(["opus", "sonnet", "haiku"].includes(model), model);
+  }
+});
+
+test("every tier loadTiers reports is one the audit can compare against", () => {
+  const tiers = loadTiers();
+  const rows = Object.entries(tiers).map(([agent, model], i) => ({
+    run: `r${i}`, phase: "idea", agent, model, session: null,
+    started: "T0", ended: "T1", outcome: "ok",
+  }));
+  assert.deepEqual(audit({ rows, tiers }), [], "the roster must audit clean against itself");
+});
+
+test("a child issue is not charged gaps for phases its parent performed", () => {
+  // Children are created already at `ready`: shaping and planning happened on
+  // the parent, so charging them here would flag every child in the repo.
+  const findings = audit({ rows: [], tiers, state: "ready", hasParent: true });
+  assert.deepEqual(findings, []);
+});
+
+test("a child is still charged for the phases it does perform itself", () => {
+  const findings = audit({ rows: [], tiers, state: "in-review", hasParent: true });
+  assert.deepEqual(findings, [{ kind: "gap", phase: "ready", agent: "implementer", state: "in-review" }]);
+});
+
+test("a parent item is still charged for shaping and planning", () => {
+  const findings = audit({ rows: [], tiers, state: "planned", hasParent: false });
+  assert.equal(findings.length, 2);
 });
