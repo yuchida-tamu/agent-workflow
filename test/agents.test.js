@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 
 // The roster is as load-bearing as the policy packs, and gets the same rigor:
 // its own definitions are validated by the suite that validates everything else.
@@ -83,4 +84,80 @@ test("every installed copy is byte-identical to its source", () => {
       `${INSTALLED}/${file} has drifted from ${SOURCE}/${file} — edit both, or run the installer`
     );
   }
+});
+
+// --- frontmatter validation ---------------------------------------------------
+//
+// PR #9 fixed malformed `tools:` frontmatter that this toolkit had shipped in
+// two of its own definitions. Policy packs validate themselves as part of the
+// suite; the roster is just as load-bearing and now gets the same treatment.
+
+const TIERS = ["opus", "sonnet", "haiku"];
+
+function frontmatter(text, file) {
+  const match = text.match(/^---\n([\s\S]*?)\n---\n/);
+  assert.ok(match, `${file} has no frontmatter block`);
+  let parsed;
+  try {
+    parsed = parseYaml(match[1]);
+  } catch (err) {
+    assert.fail(`${file} frontmatter does not parse: ${err.message}`);
+  }
+  assert.ok(parsed && typeof parsed === "object", `${file} frontmatter is not a mapping`);
+  return parsed;
+}
+
+test("every definition has parseable frontmatter with the required keys", () => {
+  for (const file of definitionFiles(SOURCE)) {
+    const meta = frontmatter(read(SOURCE, file), file);
+    for (const key of ["name", "description", "model"]) {
+      assert.ok(
+        typeof meta[key] === "string" && meta[key].trim() !== "",
+        `${file} is missing a non-empty "${key}"`
+      );
+    }
+  }
+});
+
+test("each definition's name matches its filename", () => {
+  for (const file of definitionFiles(SOURCE)) {
+    const meta = frontmatter(read(SOURCE, file), file);
+    assert.equal(meta.name, file.replace(/\.md$/, ""), `${file} declares name "${meta.name}"`);
+  }
+});
+
+test("every model is one of the sanctioned tiers", () => {
+  for (const file of definitionFiles(SOURCE)) {
+    const meta = frontmatter(read(SOURCE, file), file);
+    assert.ok(TIERS.includes(meta.model), `${file} declares model "${meta.model}", not one of ${TIERS.join("/")}`);
+  }
+});
+
+test("tools is optional, but well-formed when present", () => {
+  // Absence is legal and deliberate: it grants the full toolset, which
+  // implementer, project-genesis and adoption-auditor rely on. Do not "fix" a
+  // definition by adding `tools: All tools` — that parses as two tool names
+  // that do not exist, leaving the agent with none. That was the PR #9 bug.
+  for (const file of definitionFiles(SOURCE)) {
+    const meta = frontmatter(read(SOURCE, file), file);
+    if (!Object.hasOwn(meta, "tools")) continue;
+    assert.equal(typeof meta.tools, "string", `${file} tools must be a comma-separated string`);
+    const names = meta.tools.split(",").map((t) => t.trim());
+    assert.ok(names.length > 0, `${file} declares an empty tools list`);
+    for (const name of names) {
+      assert.match(name, /^[A-Za-z][A-Za-z0-9_]*$/, `${file} declares a malformed tool name "${name}"`);
+    }
+  }
+});
+
+test("at least one definition omits tools, and the suite tolerates it", () => {
+  const withoutTools = definitionFiles(SOURCE).filter(
+    (file) => !Object.hasOwn(frontmatter(read(SOURCE, file), file), "tools")
+  );
+  assert.ok(withoutTools.length > 0, "expected some definitions to grant the full toolset by omission");
+});
+
+test("the roster covers all three tiers — routing is real, not aspirational", () => {
+  const models = new Set(definitionFiles(SOURCE).map((f) => frontmatter(read(SOURCE, f), f).model));
+  assert.deepEqual([...models].sort(), [...TIERS].sort());
 });
