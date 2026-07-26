@@ -12,7 +12,37 @@ state-and-gates:
 actions-wiring:
   description: "Event handlers and composite actions consuming apps depend on"
   criticality: high
-  paths: ["scripts/actions/**", "actions/**", "init/templates/workflows/**"]
+  paths: ["scripts/actions/**", "actions/**", "init/templates/workflows/**", ".github/workflows/**"]
+
+release:
+  description: "G4: what shipping means — tag, GitHub release, the released state"
+  criticality: high
+  paths: ["scripts/release/**"]
+
+verdict-reader:
+  description: "Reading risk verdicts back out of the record to authorise a gate"
+  criticality: high
+  paths: ["scripts/verdict/**"]
+
+dispatch:
+  description: "Who acts next: the crawl-phase dispatcher and its dispatch table"
+  criticality: medium
+  paths: ["scripts/next/**"]
+
+hierarchy:
+  description: "Parent↔child resolution over sub-issues, with the text fallback"
+  criticality: medium
+  paths: ["scripts/hierarchy/**"]
+
+approval-inbox:
+  description: "The interactive gate inbox — human instrument, agents denied"
+  criticality: medium
+  paths: ["scripts/gates/**"]
+
+config:
+  description: "Reading agentflow.config.json and resolving what it implies"
+  criticality: medium
+  paths: ["scripts/config/**"]
 
 e2e-runner:
   description: "Gherkin parsing, trace replay, runner semantics"
@@ -48,3 +78,20 @@ docs:
   description: "Architecture doc, README, specs"
   criticality: low
   paths: ["*.md", "*.html", "interfaces/**"]
+
+# Given an explicit answer rather than left unmapped by accident. `low` because
+# `low-surface-change` already softens test-only diffs, and because leaving 17
+# files unclassified inflated `unmapped_fraction` enough to hide real gaps
+# behind noise — which is how scripts/release/** stayed invisible.
+tests:
+  description: "The suite that validates everything above"
+  criticality: low
+  paths: ["test/**"]
+
+# Config and package metadata. `medium` rather than `low`: agentflow.config.json
+# decides release semantics and who may approve, and package.json carries the
+# bin entries every command is reached through.
+project-config:
+  description: "Repo-level config and package metadata"
+  criticality: medium
+  paths: ["agentflow.config.json", "package.json", "package-lock.json", "domains.yml"]
