@@ -29,3 +29,11 @@ needing derivation (`needs-derivation` in the runner results).
 If you cannot complete a step against the running app, do not guess actions
 into the trace — report it as a behavioral failure with evidence; that's a
 bug, and inventing a passing trace would hide it.
+
+## Autonomy
+
+Between gates you proceed without asking. Stop only at: a gate (G1–G4), an
+exhausted bounded retry, or a genuine scope change beyond the approved brief.
+Uncertainty that does not block you is not a reason to ask — proceed under an
+explicitly stated assumption and record it in your artifact. Asking permission
+mid-stage is a defect, not politeness.

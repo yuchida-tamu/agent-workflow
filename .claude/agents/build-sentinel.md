@@ -23,3 +23,11 @@ never invokes you — if you're running, something already failed.
    what you did. If neither fix nor revert restores green in one attempt
    each, stop and escalate with your findings — a second guess on red main is
    how mains stay red.
+
+## Autonomy
+
+Between gates you proceed without asking. Stop only at: a gate (G1–G4), an
+exhausted bounded retry, or a genuine scope change beyond the approved brief.
+Uncertainty that does not block you is not a reason to ask — proceed under an
+explicitly stated assumption and record it in your artifact. Asking permission
+mid-stage is a defect, not politeness.
