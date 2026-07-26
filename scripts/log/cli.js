@@ -3,12 +3,24 @@
 //
 //   agentflow-log start --issue N --run <id> --phase <p> --agent <a> --model <m> [--session <s>] [--repo owner/name]
 //   agentflow-log end   --issue N --run <id> --outcome <ok|failed|abandoned> [--repo owner/name]
-//   agentflow-log audit --repo owner/name [--issue N]
+//   agentflow-log audit --repo owner/name [--issue N] [--since <date>]
 //
 // One ledger comment per work item, updated in place — the same marker pattern
 // the risk verdict uses. `audit` compares each row's model against the tier its
 // agent definition declares, so routing policy has one source of truth: the
 // roster itself.
+//
+// `--since <date>` scopes the audit to issues *created* on or after that date
+// (any string `Date` can parse — an ISO date or timestamp). The ledger did not
+// exist before it shipped, so every item merged before then (#30–#69 in this
+// repo) has zero ledger rows for phases it genuinely passed through — not a
+// real gap, just history the ledger never had a chance to log. Cutoff is by
+// issue creation, not by ledger row timestamp: a pre-ledger issue has no rows
+// to filter *by* date, so the only way to keep it from reporting a permanent
+// "gap" finding is to exclude the issue itself. An issue created before the
+// cutoff is skipped entirely — from tier-violation findings as well as gap
+// findings — and does not count toward the item total. Without `--since`,
+// every issue is audited exactly as before.
 //
 // Exit codes: 0 ok (audit: no findings) · 10 findings · 20 usage/error.
 
@@ -111,6 +123,26 @@ function usage(message) {
   return err;
 }
 
+// Parse `--since` into a Date, or `null` when the flag is absent — the
+// signal `filterSince` reads as "no cutoff, audit everything" so omitting
+// the flag reproduces today's behaviour exactly. Exported so the cutoff
+// logic is unit-testable without shelling out to `gh`.
+export function parseSince(value) {
+  if (value === undefined || value === null) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw usage(`--since must be a parseable date, got "${value}"`);
+  return date;
+}
+
+// Drop issues created before the cutoff. `cutoff === null` is the identity —
+// the shape `parseSince` returns for an absent `--since` — so a caller that
+// always routes through both functions gets unchanged behaviour for free
+// rather than needing a separate no-flag branch.
+export function filterSince(issues, cutoff) {
+  if (cutoff === null) return issues;
+  return issues.filter((issue) => new Date(issue.createdAt) >= cutoff);
+}
+
 // `loadTiers` is imported by the tests, so the command body must not run on
 // import — only when this file is the entry point.
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
@@ -153,13 +185,27 @@ if (isMain) {
       }
       case "audit": {
         if (!flags.repo) throw usage("audit needs --repo owner/name");
+        const since = parseSince(flags.since);
         const tiers = loadTiers();
-        const issues = flags.issue
-          ? [JSON.parse(sh(["issue", "view", flags.issue, "--repo", flags.repo, "--json", "number,labels,body"]))]
+        const fields = "number,labels,body,createdAt";
+        const fetched = flags.issue
+          ? [JSON.parse(sh(["issue", "view", flags.issue, "--repo", flags.repo, "--json", fields]))]
           : JSON.parse(
-              sh(["issue", "list", "--repo", flags.repo, "--state", "all", "--limit", "200", "--json", "number,labels,body"])
+              sh(["issue", "list", "--repo", flags.repo, "--state", "all", "--limit", "200", "--json", fields])
             );
+        const issues = filterSince(fetched, since);
         // Only meaningful for the whole-repo walk — see parentsWithDeclaredChildren.
+        //
+        // Computed AFTER filterSince, deliberately: children are always
+        // *derived from what declares the parent* (see CLAUDE.md) — the
+        // architect mints a child from an already-approved parent, so a
+        // child's createdAt can never precede its parent's. That means a
+        // parent that survives the --since cutoff has every one of its
+        // declared children survive it too, so scanning the filtered list
+        // cannot miss a real parent↔child link for any issue this run
+        // actually audits below. A parent that does NOT survive the cutoff
+        // never reaches the loop at all — whether it would have shown up
+        // here is moot, since it asks no question this audit answers.
         const declaredParents = flags.issue ? null : parentsWithDeclaredChildren(issues);
 
         let findings = 0;
