@@ -144,3 +144,21 @@ test("a fabricated verdict cannot authorise a merge without a SHA to check", () 
   const fabricated = { level: "low", require: [], block: [], matched: [], sha: null };
   assert.equal(authorises("G3", fabricated, { headSha: "abc1234" }), false);
 });
+
+// --- the G2 auto-pass decision, end to end -----------------------------------
+
+test("the exact verdict shapes this repo produces decide G2 correctly", () => {
+  // Drawn from real comments: a low verdict with no obligations auto-passes; a
+  // self-mod-guard verdict does not; a medium human-merge verdict still passes
+  // G2 because human-merge is a G3 obligation, not a G2 one.
+  const cases = [
+    { requires: "—", expect: true },
+    { requires: "G2, human-merge", expect: false },
+    { requires: "human-merge", expect: true },
+    { requires: "G2", expect: false },
+  ];
+  for (const c of cases) {
+    const v = parseVerdict(comment({ requires: c.requires }));
+    assert.equal(authorises("G2", v), c.expect, `requires=[${c.requires}]`);
+  }
+});

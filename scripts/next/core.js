@@ -7,7 +7,7 @@ import { stateFromLabels } from "../state/machine.js";
 export const DISPATCH = {
   idea: { actor: "agent", who: "product-shaper", action: "shape the brief, post it, then await G1 /approve" },
   spec: { actor: "agent", who: "architect", action: "produce plan + child issues; risk engine decides G2; → planned" },
-  planned: { actor: "human", who: "G2", action: "approve the plan (/approve) or auto-pass per risk verdict; → ready" },
+  planned: { actor: "human", who: "G2", action: "approve the plan (/approve); → ready" },
   ready: { actor: "agent", who: "implementer", action: "worktree, build, self-verify, open PR; → in-progress" },
   "in-progress": { actor: "none", who: "-", action: "implementation underway — wait or continue the open task" },
   "in-review": { actor: "agent", who: "reviewers", action: "CI must be green; code+UX review; then human G3 on the PR" },
@@ -25,8 +25,20 @@ const VERIFIED_BY_RELEASE_KIND = {
   none: { actor: "none", who: "-", action: "done — this repo has no release step (release_kind: none)" },
 };
 
-export function dispatchFor(state, { releaseKind = "store" } = {}) {
+// `planned` means different things depending on what the engine said about the
+// plan: a human is needed, or the transition will pass on the verdict alone.
+// The dispatch line must say which, or it sends someone to a gate that isn't
+// there — the table claimed "or auto-pass per risk verdict" for a long time
+// while no such path existed.
+const PLANNED_AUTOPASS = {
+  actor: "script",
+  who: "agentflow-state",
+  action: "verdict requires no gate — apply `--to ready` to auto-pass; → ready",
+};
+
+export function dispatchFor(state, { releaseKind = "store", g2Authorised = null } = {}) {
   if (state === "verified") return VERIFIED_BY_RELEASE_KIND[releaseKind] ?? DISPATCH.verified;
+  if (state === "planned" && g2Authorised === true) return PLANNED_AUTOPASS;
   return DISPATCH[state];
 }
 
