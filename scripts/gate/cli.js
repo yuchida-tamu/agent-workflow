@@ -2,7 +2,12 @@
 // agentflow-gate — check whether a comment validly approves a gate.
 //
 //   agentflow-gate check --author alice --body "/approve" --gate G1 \
-//                        --authorized "alice,bob"
+//                        --authorized "alice,bob" [--author-type User]
+//
+// `--author-type` exists so a caller reproducing a webhook payload can reproduce
+// its verdict. There is deliberately no `--surface pr` and no way to supply a
+// verdict: the bot carve-out reads the record from the PR itself, and a flag
+// here would be a way to assert authorisation from a shell.
 //
 // Exit codes: 0 valid approval · 10 not an approval (incl. rejection) · 20 usage.
 // On success, stdout JSON includes the gate — pipe into
@@ -29,6 +34,7 @@ if (command !== "check" || !flags.author || !flags.gate || flags.body === undefi
 
 const verdict = validateApproval({
   author: flags.author,
+  authorType: flags["author-type"] ?? null,
   body: flags.body,
   expectedGate: flags.gate,
   authorized: (flags.authorized ?? "").split(",").map((s) => s.trim()).filter(Boolean),

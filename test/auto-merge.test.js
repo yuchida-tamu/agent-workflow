@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decideAutoMerge, renderRecord, MARKER } from "../scripts/actions/auto-merge.js";
+import { decideAutoMerge, decideBotReview, renderRecord, MARKER } from "../scripts/actions/auto-merge.js";
 
 const sha = "09d673d1a2b3c4d5e6f70819";
 const clean = { level: "low", require: [], block: [], matched: [], sha };
@@ -80,4 +80,78 @@ test("a record is distinguishable from a human approval", () => {
   const body = renderRecord({ verdict: clean, headSha: sha });
   assert.ok(body.startsWith(MARKER), "its own marker, not the /approve grammar");
   assert.doesNotMatch(body, /^\/approve/m, "must never look like a human's artifact");
+});
+
+// --- the approving review ----------------------------------------------------
+//
+// An auto-merge crosses G3 with no human. Today its only artifact is a comment.
+// Once agentflow has an identity, the engine's decision can leave a *review*
+// instead — the artifact G3 was designed around — without granting anyone new
+// authority: the same verdict that authorises the merge authorises the review.
+
+const identity = { configured: true, slug: "agentflow-bot", appId: null, source: "config" };
+const reviewBase = { identity, verdict: clean, headSha: sha, prAuthor: "yuchida-tamu", actingLogin: null };
+
+test("an authorising verdict on a configured repo produces a review", () => {
+  const d = decideBotReview(reviewBase);
+  assert.equal(d.review, true);
+});
+
+test("an unconfigured repo attempts no review at all", () => {
+  // The comment record is unchanged there — every path keeps a working
+  // unconfigured branch, because the toolkit ships to repos with no App.
+  const d = decideBotReview({ ...reviewBase, identity: { configured: false, slug: null } });
+  assert.equal(d.review, false);
+  assert.match(d.reason, /agent_identity|not configured/i);
+});
+
+test("a verdict that does not authorise produces no review", () => {
+  for (const verdict of [null, { ...clean, sha: null }, { ...clean, require: ["human-merge"] }]) {
+    const d = decideBotReview({ ...reviewBase, verdict });
+    assert.equal(d.review, false, JSON.stringify(verdict));
+    assert.match(d.reason, /verdict/i);
+  }
+});
+
+test("the acting identity never tries to approve its own PR", () => {
+  // GitHub forbids it, and once agent PRs are authored by the App this is the
+  // ordinary case rather than an edge. Naming the refusal beats an API error.
+  const d = decideBotReview({
+    ...reviewBase,
+    prAuthor: "agentflow-bot[bot]",
+    actingLogin: "agentflow-bot[bot]",
+  });
+  assert.equal(d.review, false);
+  assert.match(d.reason, /own pull request|self/i);
+});
+
+test("a different bot may review an App-authored PR", () => {
+  // In Actions the reviewer is usually github-actions[bot] while the PR is the
+  // App's — two bots, so no self-review, and the verdict authorises both.
+  const d = decideBotReview({
+    ...reviewBase,
+    prAuthor: "agentflow-bot[bot]",
+    actingLogin: "github-actions[bot]",
+  });
+  assert.equal(d.review, true);
+});
+
+test("an unknown acting identity still attempts the review", () => {
+  // Better to try and let GitHub refuse than to silently skip the artifact on a
+  // guess. The merge does not depend on the review succeeding.
+  const d = decideBotReview({ ...reviewBase, prAuthor: "agentflow-bot[bot]", actingLogin: null });
+  assert.equal(d.review, true);
+});
+
+test("every review refusal names itself", () => {
+  const refusals = [
+    { ...reviewBase, identity: { configured: false } },
+    { ...reviewBase, verdict: null },
+    { ...reviewBase, prAuthor: "agentflow-bot[bot]", actingLogin: "agentflow-bot[bot]" },
+  ];
+  for (const input of refusals) {
+    const d = decideBotReview(input);
+    assert.equal(d.review, false);
+    assert.ok(d.reason && d.reason.length > 10, JSON.stringify(d));
+  }
 });

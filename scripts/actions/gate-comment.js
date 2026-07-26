@@ -37,6 +37,11 @@ const config = existsSync("agentflow.config.json")
   : {};
 const verdict = validateApproval({
   author,
+  // Passed explicitly rather than left to default. This workflow is filtered to
+  // issue comments, so the bot carve-out is unreachable here by construction —
+  // stating that at the call site is what keeps it true after an edit.
+  authorType: event.comment?.user?.type ?? null,
+  surface: "issue",
   body,
   authorized: config.approvers ?? [],
   expectedGate: pending.gate,
