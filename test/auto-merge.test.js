@@ -1,10 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decideAutoMerge, decideBotReview, renderRecord, MARKER } from "../scripts/actions/auto-merge.js";
+import { decideAutoMerge, decideBotReview, renderRecord, uiGlobsFor, MARKER } from "../scripts/actions/auto-merge.js";
+import { resolveTrustedReviewState } from "../scripts/identity/identity.js";
 
 const sha = "09d673d1a2b3c4d5e6f70819";
 const clean = { level: "low", require: [], block: [], matched: [], sha };
-const base = { verdict: clean, headSha: sha, checksPassing: true };
+// A passing review is now part of the ordinary "everything is fine" fixture:
+// #113 composes the review guard alongside the risk verdict at this exact
+// call site, independently (AND-ed) — every pre-existing verdict-only
+// refusal case below still refuses for the SAME reason it always did,
+// because the verdict check runs first and short-circuits before the review
+// is ever consulted; only the base "clean" case needed a review to keep
+// merging.
+const passingReview = { native: null, comment: { verdict: "mergeable", sha, ux: "n/a", source: "comment" } };
+const base = { verdict: clean, headSha: sha, checksPassing: true, reviewState: passingReview };
 
 test("a clean verdict on a green PR merges", () => {
   const d = decideAutoMerge(base);
@@ -53,6 +62,129 @@ test("the most permissive fabricated verdict still cannot merge without a SHA", 
   assert.equal(decideAutoMerge({ ...base, verdict: fabricated }).merge, false);
 });
 
+// --- the review guard composition (#113) --------------------------------------
+//
+// `decideAutoMerge` is one of the two places the machine mints a G3 outcome.
+// The risk verdict already authorises every case below (`base`'s `clean`
+// verdict, unmodified) — only the review half of the composition varies, so
+// a failure here can only be the review guard, never the verdict check
+// regressing.
+
+test("no review artifact at all refuses, even though the risk verdict allows", () => {
+  const d = decideAutoMerge({ ...base, reviewState: null });
+  assert.equal(d.merge, false);
+  assert.match(d.reason, /review guard/);
+  assert.match(d.reason, /no review recorded/);
+});
+
+test("an untrusted-only artifact refuses exactly like no artifact — pre-collapse filtering holds", () => {
+  // Raw comments include a `mergeable` post from someone who is NOT the
+  // trusted login. `resolveTrustedReviewState` must filter it out before
+  // collapsing to "the latest" (scripts/review/core.js's documented
+  // obligation) — if it didn't, this would wrongly merge.
+  const rawComments = [
+    {
+      body: "<!-- agentflow-review -->\nverdict: mergeable\nsha: " + sha + "\nux: n/a",
+      author: { login: "pr-author", association: "OWNER" },
+    },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { headless: { review: true } }, // solo-comment, trusts only github-actions[bot]
+    nativeReviews: [],
+    comments: rawComments,
+  });
+  assert.equal(trust.comment, null, "the untrusted post was never a candidate");
+  const d = decideAutoMerge({ ...base, reviewState: { native: trust.native, comment: trust.comment } });
+  assert.equal(d.merge, false);
+  assert.match(d.reason, /review guard/);
+});
+
+test("a trusted mergeable review at head merges, when the risk verdict also allows", () => {
+  const rawComments = [
+    {
+      body: "<!-- agentflow-review -->\nverdict: mergeable\nsha: " + sha + "\nux: n/a",
+      author: { login: "github-actions[bot]", association: "NONE" },
+    },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { headless: { review: true } },
+    nativeReviews: [],
+    comments: rawComments,
+  });
+  assert.equal(trust.comment.verdict, "mergeable");
+  const d = decideAutoMerge({ ...base, reviewState: { native: trust.native, comment: trust.comment } });
+  assert.equal(d.merge, true);
+  assert.match(d.reason, /comment review is `mergeable`/);
+});
+
+test("a trusted not-mergeable review vetoes, even though the risk verdict allows", () => {
+  const rawComments = [
+    {
+      body: "<!-- agentflow-review -->\nverdict: not-mergeable\nsha: " + sha + "\nux: n/a",
+      author: { login: "github-actions[bot]", association: "NONE" },
+    },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { headless: { review: true } },
+    nativeReviews: [],
+    comments: rawComments,
+  });
+  const d = decideAutoMerge({ ...base, reviewState: { native: trust.native, comment: trust.comment } });
+  assert.equal(d.merge, false);
+  assert.match(d.reason, /review guard/);
+  assert.match(d.reason, /not-mergeable/);
+});
+
+test("a stale trusted artifact refuses, naming the mismatch, even though the risk verdict allows", () => {
+  const rawComments = [
+    {
+      body: "<!-- agentflow-review -->\nverdict: mergeable\nsha: 0000000000000000\nux: n/a",
+      author: { login: "github-actions[bot]", association: "NONE" },
+    },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { headless: { review: true } },
+    nativeReviews: [],
+    comments: rawComments,
+  });
+  const d = decideAutoMerge({ ...base, reviewState: { native: trust.native, comment: trust.comment } });
+  assert.equal(d.merge, false);
+  assert.match(d.reason, /review guard/);
+  assert.equal(d.review.code, "stale-sha", JSON.stringify(d));
+  assert.match(d.reason, new RegExp(sha)); // names the head the review failed to describe
+});
+
+test("a trusted review from the native-review mode's App bot login is honoured", () => {
+  const rawNativeReviews = [
+    { state: "APPROVED", commit_id: sha, body: null, author: { login: "agentflow-bot[bot]", association: "NONE" } },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { agent_identity: "agentflow-bot" },
+    nativeReviews: rawNativeReviews,
+    comments: [],
+  });
+  assert.equal(trust.mode, "native-review");
+  assert.equal(trust.native.verdict, "mergeable");
+  const d = decideAutoMerge({ ...base, reviewState: { native: trust.native, comment: trust.comment } });
+  assert.equal(d.merge, true);
+});
+
+// --- uiGlobsFor: the uiTouched derivation seam --------------------------------
+
+test("uiGlobsFor is empty with no config at all, or a config that declares no ui_surface", () => {
+  assert.deepEqual(uiGlobsFor(undefined), []);
+  assert.deepEqual(uiGlobsFor({}), []);
+  assert.deepEqual(uiGlobsFor({ platform: "expo" }), []);
+});
+
+test("uiGlobsFor reads a future ui_surface config key, once something sets it", () => {
+  assert.deepEqual(uiGlobsFor({ ui_surface: ["app/**", "src/ui/**"] }), ["app/**", "src/ui/**"]);
+});
+
+test("uiGlobsFor drops non-string entries rather than passing them to the glob matcher", () => {
+  assert.deepEqual(uiGlobsFor({ ui_surface: ["app/**", 42, null] }), ["app/**"]);
+});
+
 // --- the record --------------------------------------------------------------
 
 test("the record names the verdict, its obligations, and the exact head", () => {
@@ -80,6 +212,20 @@ test("a record is distinguishable from a human approval", () => {
   const body = renderRecord({ verdict: clean, headSha: sha });
   assert.ok(body.startsWith(MARKER), "its own marker, not the /approve grammar");
   assert.doesNotMatch(body, /^\/approve/m, "must never look like a human's artifact");
+});
+
+test("the record names the review source when one authorised the merge (#113)", () => {
+  const review = { authorised: true, code: "ok", reason: "comment review is `mergeable` at head", source: "comment" };
+  const body = renderRecord({ verdict: clean, headSha: sha, review });
+  assert.match(body, /\| review \|.*comment.*\|/);
+  assert.match(body, /fresh/);
+  assert.match(body, /mergeable/);
+});
+
+test("the record still renders with no review passed (backwards-compatible shape)", () => {
+  const body = renderRecord({ verdict: clean, headSha: sha });
+  assert.ok(body.startsWith(MARKER));
+  assert.doesNotMatch(body, /\| review \|/);
 });
 
 // --- the approving review ----------------------------------------------------

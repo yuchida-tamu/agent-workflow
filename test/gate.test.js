@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseCommand, validateApproval, approvalTransitions } from "../scripts/gate/validator.js";
+import { resolveTrustedReviewState } from "../scripts/identity/identity.js";
 
 test("parseCommand finds the command anywhere in the body", () => {
   assert.deepEqual(parseCommand("looks good!\n/approve"), { command: "approve", gate: null });
@@ -15,6 +16,13 @@ test("parseCommand finds the command anywhere in the body", () => {
 });
 
 const base = { author: "alice", authorized: ["alice", "bob"], expectedGate: "G1" };
+
+// #113: G3 approvals now also require the review guard to authorise, so any
+// test exercising a passing G3 case needs a `headSha` and a `reviewState`
+// that describes it as fresh and `mergeable`. Shared here so gate-mismatch,
+// release-kind and bot-carve-out tests can each opt in without restating it.
+const prHead = "abc1234def5678";
+const passingReviewState = { native: null, comment: { verdict: "mergeable", sha: prHead, ux: "n/a", source: "comment" } };
 
 test("valid approval", () => {
   const v = validateApproval({ ...base, body: "/approve" });
@@ -62,10 +70,25 @@ test("G4 is accepted on repos that do release", () => {
 });
 
 test("release_kind none does not touch the other gates", () => {
-  for (const gate of ["G1", "G2", "G3"]) {
+  for (const gate of ["G1", "G2"]) {
     const v = validateApproval({ ...base, expectedGate: gate, body: `/approve ${gate}`, releaseKind: "none" });
     assert.equal(v.ok, true, gate);
   }
+});
+
+test("release_kind none does not touch G3 either, given a passing review", () => {
+  // G3 now also composes the #113 review guard, so unlike G1/G2 it needs a
+  // `reviewState` to pass at all — release_kind is still what this test is
+  // about, so the review side is fixed to a passing artifact throughout.
+  const v = validateApproval({
+    ...base,
+    expectedGate: "G3",
+    body: "/approve G3",
+    releaseKind: "none",
+    headSha: prHead,
+    reviewState: passingReviewState,
+  });
+  assert.equal(v.ok, true);
 });
 
 // --- which gates transition on approval --------------------------------------
@@ -110,7 +133,7 @@ test("the label can lag reality but never lead it", () => {
 
 const bot = { author: "agentflow-bot[bot]", authorType: "Bot", authorized: ["yuchida-tamu"] };
 const authorisingVerdict = { level: "low", require: [], block: [], run: [], matched: [], sha: "abc1234" };
-const prHead = "abc1234def5678";
+// `prHead` / `passingReviewState` are shared, defined near `base` above.
 
 test("a bot may not approve a document gate, whatever the gate", () => {
   for (const gate of ["G1", "G2", "G4"]) {
@@ -155,9 +178,11 @@ test("a bot may not approve G3 on an issue, even with an authorising verdict", (
   assert.match(v.reason, /bot/i);
 });
 
-test("a bot MAY approve G3 on a PR the engine already authorised", () => {
+test("a bot MAY approve G3 on a PR the engine already authorised, given a passing review", () => {
   // The positive case matters as much as the refusals: a suite that only proved
-  // refusal would pass just as happily if the carve-out were dead code.
+  // refusal would pass just as happily if the carve-out were dead code. #113
+  // adds a further, independent condition (a fresh review of the head) — this
+  // fixture supplies one so the test still proves the verdict-based carve-out.
   const v = validateApproval({
     ...bot,
     body: "/approve G3",
@@ -165,6 +190,7 @@ test("a bot MAY approve G3 on a PR the engine already authorised", () => {
     surface: "pr",
     verdict: authorisingVerdict,
     headSha: prHead,
+    reviewState: passingReviewState,
   });
   assert.equal(v.ok, true);
   assert.equal(v.gate, "G3");
@@ -203,8 +229,159 @@ test("a bot rejection still stands — refusing to advance grants nothing", () =
   assert.equal(v.ok, false);
 });
 
-test("humans are entirely unaffected", () => {
+test("humans are entirely unaffected at G1 — the review guard only reaches G3", () => {
   const human = { author: "yuchida-tamu", authorType: "User", authorized: ["yuchida-tamu"] };
   assert.ok(validateApproval({ ...human, body: "/approve", expectedGate: "G1" }).ok);
-  assert.ok(validateApproval({ ...human, body: "/approve G3", expectedGate: "G3", surface: "pr" }).ok);
+});
+
+test("a human's G3 approval also requires the review guard (#113), given as a passing review it still works", () => {
+  const human = { author: "yuchida-tamu", authorType: "User", authorized: ["yuchida-tamu"] };
+  const v = validateApproval({
+    ...human,
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "pr",
+    headSha: prHead,
+    reviewState: passingReviewState,
+  });
+  assert.ok(v.ok, JSON.stringify(v));
+});
+
+test("a human's G3 approval is refused with no review artifact, same as the bot carve-out", () => {
+  const human = { author: "yuchida-tamu", authorType: "User", authorized: ["yuchida-tamu"] };
+  const v = validateApproval({
+    ...human,
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "pr",
+    headSha: prHead,
+    // reviewState omitted — no artifact recorded at all.
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /review guard/);
+  assert.match(v.reason, /no review recorded/);
+});
+
+// --- the review guard composition (#113) --------------------------------------
+//
+// `validateApproval`'s G3 branch is the second of the guard's two
+// enforcement points, alongside `decideAutoMerge` (scripts/actions/auto-merge.js).
+// Every case below is otherwise-valid (a human on the approvers list, or the
+// bot carve-out with an authorising verdict) so a failure can only be the
+// review guard, never the existing checks regressing.
+
+test("an untrusted-only artifact refuses G3 exactly like no artifact — pre-collapse filtering holds", () => {
+  const rawComments = [
+    {
+      body: "<!-- agentflow-review -->\nverdict: mergeable\nsha: " + prHead + "\nux: n/a",
+      author: { login: "pr-author", association: "OWNER" }, // not the trusted login
+    },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { headless: { review: true } }, // solo-comment, trusts only github-actions[bot]
+    nativeReviews: [],
+    comments: rawComments,
+  });
+  assert.equal(trust.comment, null, "the untrusted post was never a candidate");
+  const v = validateApproval({
+    author: "alice",
+    authorized: ["alice", "bob"],
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "pr",
+    headSha: prHead,
+    reviewState: { native: trust.native, comment: trust.comment },
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /review guard/);
+});
+
+test("a trusted mergeable review authorises a human's G3 approval end to end", () => {
+  const rawComments = [
+    {
+      body: "<!-- agentflow-review -->\nverdict: mergeable\nsha: " + prHead + "\nux: n/a",
+      author: { login: "github-actions[bot]", association: "NONE" },
+    },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { headless: { review: true } },
+    nativeReviews: [],
+    comments: rawComments,
+  });
+  const v = validateApproval({
+    author: "alice",
+    authorized: ["alice", "bob"],
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "pr",
+    headSha: prHead,
+    reviewState: { native: trust.native, comment: trust.comment },
+  });
+  assert.equal(v.ok, true, JSON.stringify(v));
+});
+
+test("a trusted not-mergeable review vetoes a human's G3 approval", () => {
+  const rawComments = [
+    {
+      body: "<!-- agentflow-review -->\nverdict: not-mergeable\nsha: " + prHead + "\nux: n/a",
+      author: { login: "github-actions[bot]", association: "NONE" },
+    },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { headless: { review: true } },
+    nativeReviews: [],
+    comments: rawComments,
+  });
+  const v = validateApproval({
+    author: "alice",
+    authorized: ["alice", "bob"],
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "pr",
+    headSha: prHead,
+    reviewState: { native: trust.native, comment: trust.comment },
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /review guard/);
+  assert.match(v.reason, /not-mergeable/);
+});
+
+test("a stale trusted artifact refuses a human's G3 approval, naming the head it does not describe", () => {
+  const rawComments = [
+    {
+      body: "<!-- agentflow-review -->\nverdict: mergeable\nsha: 0000000000000000\nux: n/a",
+      author: { login: "github-actions[bot]", association: "NONE" },
+    },
+  ];
+  const trust = resolveTrustedReviewState({
+    config: { headless: { review: true } },
+    nativeReviews: [],
+    comments: rawComments,
+  });
+  const v = validateApproval({
+    author: "alice",
+    authorized: ["alice", "bob"],
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "pr",
+    headSha: prHead,
+    reviewState: { native: trust.native, comment: trust.comment },
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, new RegExp(prHead));
+});
+
+test("a bot's G3 carve-out is refused with no review artifact, quoting the review guard's reason", () => {
+  const v = validateApproval({
+    ...bot,
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "pr",
+    verdict: authorisingVerdict,
+    headSha: prHead,
+    // reviewState omitted.
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /review guard/);
+  assert.match(v.reason, /no review recorded/);
 });

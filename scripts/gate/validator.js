@@ -4,8 +4,22 @@
 // allowed to mint that flag.
 
 import { botApprovalAllowed, isBotAuthor } from "../identity/identity.js";
+import { reviewAuthorises } from "../review/core.js";
 
 export const GATES = ["G1", "G2", "G3", "G4"];
+
+// The #113 review guard, composed into G3 alongside every other condition
+// already checked there — bot-verdict carve-out and human approvers-list
+// membership both stay exactly as they were; this only adds a further
+// AND-ed refusal that is specific to G3. Returns the refusal reason string,
+// or `null` when the review authorises. `reviewAuthorises` is called with
+// whatever it was handed (default `{}` reads as no artifact), so a caller
+// that forgot to pass `reviewState` fails closed rather than silently
+// skipping the check.
+function g3ReviewRefusal({ reviewState, headSha, uiTouched }) {
+  const review = reviewAuthorises(reviewState ?? {}, { headSha, uiTouched });
+  return review.authorised ? null : `G3 review guard: ${review.reason}`;
+}
 
 // Parse the first command line of a comment body.
 //   /approve            → approve the pending gate
@@ -47,6 +61,22 @@ export function approvalTransitions({ gate, releaseKind = null }) {
 // `surface` is where the comment was posted — "issue" or "pr". It defaults to
 // "issue" because that is the only surface the gate workflow watches, and the
 // bot carve-out below must never be reachable by omission.
+//
+// `reviewState`/`uiTouched` compose the #81/#111 review guard into G3 — the
+// second of the guard's two enforcement points, alongside `decideAutoMerge`
+// (scripts/actions/auto-merge.js). It is independent of, not folded into, the
+// verdict-based bot carve-out below: a clean risk verdict already authorises
+// the carve-out on its own record, and a human's own approvers-list
+// membership already authorises theirs — the review guard adds a THIRD,
+// separately-refusable condition for G3 specifically, exactly the way
+// CLAUDE.md says to keep predicates apart ("do not fold review presence into
+// authorises/botApprovalAllowed"). `reviewState` is expected pre-filtered to
+// a trusted reviewer and pre-collapsed to "the latest" by the caller
+// (`resolveTrustedReviewState`, scripts/identity/identity.js) before it ever
+// reaches here — this module has no `gh` access to do that filtering itself,
+// and stays pure by construction. Absent (the default) reads as no review at
+// all, which is the correct fail-closed answer for a caller that forgot to
+// pass it.
 export function validateApproval({
   author,
   authorType = null,
@@ -57,6 +87,8 @@ export function validateApproval({
   surface = "issue",
   verdict = null,
   headSha = null,
+  reviewState = null,
+  uiTouched = false,
 }) {
   if (!GATES.includes(expectedGate)) {
     return { ok: false, reason: `unknown expected gate "${expectedGate}"` };
@@ -98,6 +130,14 @@ export function validateApproval({
           `no such verdict describes this head`,
       };
     }
+    // The verdict authorises the bot's carve-out; it says nothing about
+    // whether anyone reviewed the change. Independent, AND-ed condition —
+    // the App transcribing an engine decision must not be able to do so over
+    // a change nobody reviewed either.
+    if (expectedGate === "G3") {
+      const refusal = g3ReviewRefusal({ reviewState, headSha, uiTouched });
+      if (refusal) return { ok: false, reason: refusal };
+    }
     // Name what authorised it, or the record shows a bot approving a merge with
     // no visible reason it was permitted to.
     return {
@@ -111,6 +151,13 @@ export function validateApproval({
   const allowed = (authorized ?? []).map((u) => u.toLowerCase());
   if (!allowed.includes((author ?? "").toLowerCase())) {
     return { ok: false, reason: `"${author}" is not an authorized approver` };
+  }
+  // A human's presence on `approvers` authorises approving G3 in general; it
+  // says nothing about whether this particular head was reviewed. Same
+  // independent, AND-ed condition as the bot carve-out above.
+  if (expectedGate === "G3") {
+    const refusal = g3ReviewRefusal({ reviewState, headSha, uiTouched });
+    if (refusal) return { ok: false, reason: refusal };
   }
   return { ok: true, gate: expectedGate, approver: author };
 }
