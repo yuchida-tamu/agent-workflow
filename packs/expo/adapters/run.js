@@ -8,11 +8,20 @@
 // first — Metro is always this adapter's own managed background process in
 // both paths, so `log_stream`/pid bookkeeping stays uniform. See
 // `decideStartPath` and the "start sequence" comment below.
+//
+// Once Metro is spawned, everything up to `saveSession` runs inside a single
+// try/catch that kills Metro (by process group, identity-checked) before
+// rethrowing: without that, a failure between spawning Metro and durably
+// recording the session (a slow first boot, agent-device unreachable) leaks
+// the bundler holding the port, AND dooms core's one bounded retry — the
+// retry's own spawnBackground hits the still-held port and fails the same
+// way, turning a transient 10 into a guaranteed escalation (see #138 review).
 
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { readFile as fsReadFile } from "node:fs/promises";
-import { runMain, recoverable, fatal, diagnostic } from "./lib/contract.js";
+import { get as httpGet } from "node:http";
+import { runMain, recoverable, fatal, diagnostic, AdapterError } from "./lib/contract.js";
 import {
   resolveWorkspace,
   resolveTarget,
@@ -20,7 +29,14 @@ import {
   assertWorkspace,
   assertXcode,
 } from "./lib/workspace.js";
-import { defaultRunner, spawnForeground, spawnBackground, isAlive, kill } from "./lib/proc.js";
+import {
+  defaultRunner,
+  spawnForeground,
+  spawnBackground,
+  isAlive,
+  kill,
+  captureIdentity,
+} from "./lib/proc.js";
 import * as agentDevice from "./lib/agent-device.js";
 import { saveSession, loadSession, resolveStateDir } from "./lib/session.js";
 import { appendManifest } from "./lib/evidence.js";
@@ -31,8 +47,10 @@ export const DEFAULT_METRO_PORT = 8081;
 export const BUILD_TIMEOUT_MS = Number(process.env.AGENTFLOW_EXPO_BUILD_TIMEOUT_MS) || 15 * 60 * 1000; // 15min: first `expo run:ios` build is Xcode + CocoaPods
 export const METRO_READY_TIMEOUT_MS = Number(process.env.AGENTFLOW_EXPO_METRO_TIMEOUT_MS) || 30 * 1000;
 
+// 128 bits of randomness (a full v4 UUID) — this is a durable global handle
+// that outlives the process that minted it, not a short-lived local counter.
 export function generateSessionId() {
-  return `sess-${randomUUID().split("-")[0]}`;
+  return `sess-${randomUUID()}`;
 }
 
 export function agentDeviceSessionName(sessionId) {
@@ -90,22 +108,41 @@ function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Polls Metro's own log output for its ready banner. Every dependency is
-// injectable so this is testable without a real bundler.
+// Metro's own /status endpoint is the actual readiness signal (200 once it
+// can serve bundles) — a boot-banner grep in the log can fire on a line
+// Metro prints at the *start* of boot, before it can serve anything.
+function defaultProbe(port, { timeoutMs = 1000 } = {}) {
+  return new Promise((resolve) => {
+    const req = httpGet({ host: "127.0.0.1", port, path: "/status", timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on("error", () => resolve(false));
+  });
+}
+
+// Polls Metro's real readiness (HTTP /status) rather than its log output;
+// the log is still watched for an EADDRINUSE line so a port conflict fails
+// fast instead of waiting out the full timeout. Every dependency is
+// injectable so this is testable without a real bundler or a real socket.
 export async function waitForMetroReady({
+  port,
   logPath,
   timeoutMs = METRO_READY_TIMEOUT_MS,
   intervalMs = 250,
+  probe = defaultProbe,
   readFile = defaultReadFile,
   sleep = defaultSleep,
   clock = Date.now,
 }) {
   const deadline = clock() + timeoutMs;
   do {
+    if (port && (await probe(port).catch(() => false))) return true;
     const text = await readFile(logPath).catch(() => "");
-    if (/Metro waiting on|Logs for your project will appear below|Starting Metro Bundler/i.test(text)) {
-      return true;
-    }
     if (/EADDRINUSE|address already in use/i.test(text)) {
       throw recoverable(`Metro port already in use (see ${logPath})`);
     }
@@ -120,6 +157,7 @@ function defaultHandlerDeps() {
     spawnForeground,
     spawnBackground,
     waitForMetroReady,
+    captureIdentity,
     isAlive,
     kill,
     saveSession,
@@ -129,6 +167,18 @@ function defaultHandlerDeps() {
     env: process.env,
     stderr: process.stderr,
   };
+}
+
+// A session's stop/status handling needs to tell "no such session" (the file
+// was never written — a genuinely unknown session_id, fatal/20) apart from
+// "the file exists but couldn't be read" (SessionCorruptError or any other
+// I/O surprise — recoverable/10, naming the path, since retrying may see a
+// concurrent writer finish). ENOENT is the only case that means "unknown".
+function loadSessionOrThrow(deps, sessionId) {
+  return deps.loadSession(sessionId).catch((err) => {
+    if (err && err.code === "ENOENT") throw fatal(`unknown session_id: ${sessionId}`);
+    throw recoverable(`session state for ${sessionId} is unreadable: ${err.message}`, { cause: err });
+  });
 }
 
 // Builds the {start, stop, status} handler map runMain dispatches on. Every
@@ -179,20 +229,29 @@ export function createHandlers(overrides = {}) {
       }
     }
 
-    const metroProc = await deps.spawnBackground(expoBin, ["start", "--port", String(port)], {
-      cwd: workspace,
-      env: spawnEnv,
-      logPath,
-    });
-
-    const ready = await deps.waitForMetroReady({ logPath });
-    if (!ready) {
-      throw recoverable(`Metro did not report ready within ${METRO_READY_TIMEOUT_MS}ms (port ${port} may be in use)`);
+    let metroProc;
+    try {
+      metroProc = await deps.spawnBackground(expoBin, ["start", "--port", String(port)], {
+        cwd: workspace,
+        env: spawnEnv,
+        logPath,
+      });
+    } catch (err) {
+      throw recoverable(`failed to start Metro (${expoBin} start --port ${port}): ${err.message}`);
     }
 
-    const entryPoint = `exp://127.0.0.1:${port}`;
+    const metroIdentity = await deps.captureIdentity(metroProc.pid, { runner: deps.runner });
+    const metro = { pid: metroProc.pid, port, log: logPath, identity: metroIdentity };
 
+    let entryPoint;
     try {
+      const ready = await deps.waitForMetroReady({ logPath, port });
+      if (!ready) {
+        throw recoverable(`Metro did not report ready within ${METRO_READY_TIMEOUT_MS}ms (port ${port} may be in use)`);
+      }
+
+      entryPoint = `exp://127.0.0.1:${port}`;
+
       await agentDevice.openSession({
         app: bundleId,
         url: entryPoint,
@@ -202,6 +261,12 @@ export function createHandlers(overrides = {}) {
         runner: deps.runner,
       });
     } catch (err) {
+      // Metro is live and the session is not yet durably recorded — kill it
+      // before rethrowing, or a bounded retry inherits a held port and is
+      // doomed to fail the same way (see the file-header note and the HIGH
+      // finding on #138).
+      await deps.kill(metro.pid, metro.identity, { group: true, runner: deps.runner }).catch(() => {});
+      if (err instanceof AdapterError) throw err;
       throw recoverable(`agent-device could not open a session for ${bundleId}: ${err.message}`);
     }
 
@@ -213,7 +278,7 @@ export function createHandlers(overrides = {}) {
       bundle_id: bundleId,
       agent_device_session: adSession,
       start_path: startPath,
-      metro: { pid: metroProc.pid, port, log: logPath },
+      metro,
       entry_point: entryPoint,
       log_stream: logPath,
       evidence_dir: evidenceDir,
@@ -230,12 +295,7 @@ export function createHandlers(overrides = {}) {
   async function stop(request) {
     const sessionId = request.session_id;
     if (!sessionId) throw fatal("stop requires session_id");
-    let record;
-    try {
-      record = await deps.loadSession(sessionId);
-    } catch {
-      throw fatal(`unknown session_id: ${sessionId}`);
-    }
+    const record = await loadSessionOrThrow(deps, sessionId);
 
     try {
       await agentDevice.closeSession({
@@ -250,8 +310,10 @@ export function createHandlers(overrides = {}) {
       diagnostic(`[run] agent-device close failed for ${sessionId}: ${err.message}`, deps.stderr);
     }
 
-    if (record.metro?.pid && deps.isAlive(record.metro.pid)) {
-      deps.kill(record.metro.pid);
+    if (record.metro?.pid) {
+      // kill() itself verifies identity before signalling anything — no
+      // separate isAlive pre-check needed here.
+      await deps.kill(record.metro.pid, record.metro.identity, { group: true, runner: deps.runner });
     }
 
     await deps.saveSession({ ...record, state: "stopped" });
@@ -261,16 +323,12 @@ export function createHandlers(overrides = {}) {
   async function status(request) {
     const sessionId = request.session_id;
     if (!sessionId) throw fatal("status requires session_id");
-    let record;
-    try {
-      record = await deps.loadSession(sessionId);
-    } catch {
-      throw fatal(`unknown session_id: ${sessionId}`);
-    }
+    const record = await loadSessionOrThrow(deps, sessionId);
 
     let state = record.state;
-    if (state === "running" && record.metro?.pid && !deps.isAlive(record.metro.pid)) {
-      state = "crashed";
+    if (state === "running" && record.metro?.pid) {
+      const alive = await deps.isAlive(record.metro.pid, record.metro.identity, { runner: deps.runner });
+      if (!alive) state = "crashed";
     }
     if (state !== record.state) {
       await deps.saveSession({ ...record, state });

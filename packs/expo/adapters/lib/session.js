@@ -8,10 +8,19 @@
 // (interfaces/run.md's stop/status examples carry only `session_id`), so the
 // state dir is independent of it: AGENTFLOW_EXPO_STATE_DIR env override, else
 // a fixed spot under the OS tmp dir.
+//
+// Writes are atomic (write to a sibling temp file, then rename onto the
+// final path) so a reader never observes a half-written file — `rename` is
+// atomic on the same filesystem, which the temp file always is since it's
+// written next to its target. `loadSession` distinguishes "no such session"
+// (ENOENT — a genuinely unknown session_id) from "the file exists but isn't
+// valid JSON" (a `SessionCorruptError`, `.code === "ECORRUPT"`, naming the
+// path) so a caller doesn't misreport corruption as an unknown session.
 
-import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 export function resolveStateDir(env = process.env) {
   return env.AGENTFLOW_EXPO_STATE_DIR || join(tmpdir(), "agentflow-expo", "sessions");
@@ -28,12 +37,28 @@ function sessionPath(sessionId, stateDir) {
   return join(stateDir, `${safe}.json`);
 }
 
+export class SessionCorruptError extends Error {
+  constructor(path, cause) {
+    super(`corrupt session state file: ${path} (${cause.message})`);
+    this.name = "SessionCorruptError";
+    this.code = "ECORRUPT";
+    this.path = path;
+    this.cause = cause;
+  }
+}
+
+async function writeFileAtomic(finalPath, contents) {
+  const tmpPath = `${finalPath}.tmp-${process.pid}-${randomUUID()}`;
+  await writeFile(tmpPath, contents);
+  await rename(tmpPath, finalPath);
+}
+
 // record shape (see packs/expo/adapters/lib/README.md for the field-by-field
 // contract):
 //   {
 //     session_id, workspace, target, profile, bundle_id,
 //     agent_device_session, start_path: "reuse"|"build",
-//     simulator_udid, metro: {pid,port,log,managed} | null,
+//     metro: {pid, port, log, identity} | null,
 //     entry_point, log_stream, evidence_dir, state,
 //     created_at, updated_at
 //   }
@@ -41,6 +66,8 @@ export async function saveSession(record, { stateDir = resolveStateDir() } = {})
   if (!record || !record.session_id) throw new TypeError("record.session_id is required");
   await mkdir(stateDir, { recursive: true });
   const now = new Date().toISOString();
+  // A corrupt existing file must not block saving a fresh record over it —
+  // treat unreadable-existing the same as no-existing for the merge below.
   const existing = await loadSession(record.session_id, { stateDir }).catch(() => null);
   const full = {
     ...existing,
@@ -48,13 +75,18 @@ export async function saveSession(record, { stateDir = resolveStateDir() } = {})
     created_at: existing?.created_at ?? record.created_at ?? now,
     updated_at: now,
   };
-  await writeFile(sessionPath(record.session_id, stateDir), `${JSON.stringify(full, null, 2)}\n`);
+  await writeFileAtomic(sessionPath(record.session_id, stateDir), `${JSON.stringify(full, null, 2)}\n`);
   return full;
 }
 
 export async function loadSession(sessionId, { stateDir = resolveStateDir() } = {}) {
-  const raw = await readFile(sessionPath(sessionId, stateDir), "utf8");
-  return JSON.parse(raw);
+  const path = sessionPath(sessionId, stateDir);
+  const raw = await readFile(path, "utf8"); // ENOENT propagates as-is: a genuinely unknown session
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new SessionCorruptError(path, err);
+  }
 }
 
 export async function deleteSession(sessionId, { stateDir = resolveStateDir() } = {}) {

@@ -69,6 +69,22 @@ export function describeResponse(interfaceName, version = "1") {
 // answered automatically (handlers never need to implement it themselves).
 // Every dependency is injectable so tests can drive this without a child
 // process or the exit call actually terminating the test runner.
+//
+// A top-level `uncaughtException`/`unhandledRejection` net is installed on
+// `errorSource` (the real `process` by default) for the duration of this
+// call: a handler that fires-and-forgets a rejecting promise, or any other
+// genuinely uncaught throw, would otherwise crash the process with a bare
+// stack trace on stderr and *nothing* on stdout — core's retry scripts
+// expect exit 0/10/20 with a JSON body on every path, including a crash
+// path. `errorSource` is injectable — separately from `exit` et al. —
+// specifically so tests can simulate one of these events (`errorSource.emit(...)`)
+// without raising a *real* process-level uncaughtException, which the test
+// runner's own crash detection would otherwise attribute to the test itself
+// regardless of this net. `settleOnce` guards every exit path (including the
+// net) so a race between the net and the handler's own completion can never
+// produce two responses. The net is torn down again once this invocation
+// settles, so it never leaks a listener into whatever calls runMain next
+// (tests call it many times in one process).
 export async function runMain({
   interfaceName,
   interfaceVersion = "1",
@@ -77,31 +93,54 @@ export async function runMain({
   stdout = process.stdout,
   stderr = process.stderr,
   exit = process.exit,
+  errorSource = process,
 }) {
-  let request;
-  try {
-    request = await readStdinJSON(stdin);
-  } catch (err) {
-    return fail(err, stdout, stderr, exit);
-  }
-
-  const op = request.op;
-  if (op === "describe") {
-    writeStdout(describeResponse(interfaceName, interfaceVersion), stdout);
-    return exit(EXIT_OK);
-  }
-
-  const handler = handlers?.[op];
-  if (typeof handler !== "function") {
-    return fail(fatal(`unknown op: ${JSON.stringify(op)}`), stdout, stderr, exit);
-  }
+  let settled = false;
+  const settleOnce = (fn) => {
+    if (settled) return;
+    settled = true;
+    fn();
+  };
+  const onUncaught = (err) => settleOnce(() => fail(err, stdout, stderr, exit));
+  errorSource.on("uncaughtException", onUncaught);
+  errorSource.on("unhandledRejection", onUncaught);
 
   try {
-    const response = await handler(request);
-    writeStdout(response, stdout);
-    return exit(EXIT_OK);
-  } catch (err) {
-    return fail(err, stdout, stderr, exit);
+    let request;
+    try {
+      request = await readStdinJSON(stdin);
+    } catch (err) {
+      settleOnce(() => fail(err, stdout, stderr, exit));
+      return;
+    }
+
+    const op = request.op;
+    if (op === "describe") {
+      settleOnce(() => {
+        writeStdout(describeResponse(interfaceName, interfaceVersion), stdout);
+        exit(EXIT_OK);
+      });
+      return;
+    }
+
+    const handler = handlers?.[op];
+    if (typeof handler !== "function") {
+      settleOnce(() => fail(fatal(`unknown op: ${JSON.stringify(op)}`), stdout, stderr, exit));
+      return;
+    }
+
+    try {
+      const response = await handler(request);
+      settleOnce(() => {
+        writeStdout(response, stdout);
+        exit(EXIT_OK);
+      });
+    } catch (err) {
+      settleOnce(() => fail(err, stdout, stderr, exit));
+    }
+  } finally {
+    errorSource.off("uncaughtException", onUncaught);
+    errorSource.off("unhandledRejection", onUncaught);
   }
 }
 

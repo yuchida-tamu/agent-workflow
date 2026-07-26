@@ -8,7 +8,6 @@ import {
   recoverable,
   fatal,
   readStdinJSON,
-  writeStdout,
   describeResponse,
   runMain,
 } from "../lib/contract.js";
@@ -158,4 +157,134 @@ test("runMain: bad stdin JSON exits 20 before any handler runs", async () => {
   });
   assert.equal(exitCode, EXIT_FATAL);
   assert.equal(handlerRan, false);
+});
+
+// ---- top-level uncaught net: no path emits non-JSON stdout -------------
+//
+// A handler that fires off a promise or a callback without awaiting/catching
+// it can throw *outside* runMain's own try/catch entirely. Without a net,
+// that becomes a bare stack trace on stderr, process exit code 1, and
+// nothing at all on stdout — undefined behaviour for a caller expecting exit
+// 0/10/20 with a JSON body on every path (see the #138 review).
+//
+// The net attaches to an injectable `errorSource` (real `process` by
+// default) precisely so these tests can simulate the event without raising
+// a genuine process-level uncaughtException/unhandledRejection: node's own
+// test runner listens for those globally too, for its own crash detection,
+// and would attribute a real one to this test regardless of what runMain
+// does with it. A fake emitter exercises the exact same runMain code path
+// (listener registration, settleOnce, cleanup) without that collision.
+function fakeErrorSource() {
+  const listeners = new Map();
+  return {
+    on(event, fn) {
+      if (!listeners.has(event)) listeners.set(event, new Set());
+      listeners.get(event).add(fn);
+    },
+    off(event, fn) {
+      listeners.get(event)?.delete(fn);
+    },
+    emit(event, err) {
+      for (const fn of listeners.get(event) ?? []) fn(err);
+    },
+    listenerCount(event) {
+      return listeners.get(event)?.size ?? 0;
+    },
+  };
+}
+
+test("runMain: an uncaughtException on errorSource while a handler is still pending yields exactly one JSON body and exit 20", async () => {
+  const stdout = fakeStream();
+  const stderr = fakeStream();
+  const exitCalls = [];
+  const errorSource = fakeErrorSource();
+  let releaseHandler;
+  const handlerSettled = new Promise((resolve) => { releaseHandler = resolve; });
+
+  const runPromise = runMain({
+    interfaceName: "run",
+    handlers: {
+      start: async () => {
+        await handlerSettled; // stays pending until the test releases it below
+        return { ok: true }; // must lose the race to the net
+      },
+    },
+    stdin: [JSON.stringify({ op: "start" })],
+    stdout,
+    stderr,
+    exit: (code) => exitCalls.push(code),
+    errorSource,
+  });
+
+  // Give runMain a turn to register its listeners before firing the event.
+  await Promise.resolve();
+  errorSource.emit("uncaughtException", new Error("boom, nobody awaited this"));
+  releaseHandler();
+  await runPromise;
+
+  assert.equal(exitCalls.length, 1, "exactly one exit call, even though the handler's own success path also settled later");
+  assert.equal(exitCalls[0], EXIT_FATAL);
+  assert.equal(stdout.written.length, 1, "exactly one JSON body on stdout");
+  assert.ok(JSON.parse(stdout.written[0]).error.includes("boom"));
+});
+
+test("runMain: an unhandledRejection on errorSource is caught by the same net", async () => {
+  const stdout = fakeStream();
+  const errorSource = fakeErrorSource();
+  let releaseHandler;
+  const handlerSettled = new Promise((resolve) => { releaseHandler = resolve; });
+  let exitCode;
+
+  const runPromise = runMain({
+    interfaceName: "run",
+    handlers: {
+      start: async () => {
+        await handlerSettled;
+        return { ok: true };
+      },
+    },
+    stdin: [JSON.stringify({ op: "start" })],
+    stdout,
+    stderr: fakeStream(),
+    exit: (code) => (exitCode = code),
+    errorSource,
+  });
+
+  await Promise.resolve();
+  errorSource.emit("unhandledRejection", new Error("dangling rejection"));
+  releaseHandler();
+  await runPromise;
+
+  assert.equal(exitCode, EXIT_FATAL);
+  assert.ok(JSON.parse(stdout.written.join("")).error.includes("dangling rejection"));
+});
+
+test("runMain: the uncaught net is torn down after the call — it never leaks a listener for the next runMain", async () => {
+  const errorSource = fakeErrorSource();
+  await runMain({
+    interfaceName: "run",
+    handlers: { start: async () => ({ ok: true }) },
+    stdin: [JSON.stringify({ op: "start" })],
+    stdout: fakeStream(),
+    stderr: fakeStream(),
+    exit: () => {},
+    errorSource,
+  });
+  assert.equal(errorSource.listenerCount("uncaughtException"), 0);
+  assert.equal(errorSource.listenerCount("unhandledRejection"), 0);
+});
+
+test("runMain: with the real process as errorSource (the production default), the net still installs and tears down cleanly", async () => {
+  const before = process.listenerCount("uncaughtException");
+  await runMain({
+    interfaceName: "run",
+    handlers: { start: async () => ({ ok: true }) },
+    stdin: [JSON.stringify({ op: "start" })],
+    stdout: fakeStream(),
+    stderr: fakeStream(),
+    exit: () => {},
+    // errorSource omitted: defaults to the real `process`
+  });
+  assert.equal(process.listenerCount("uncaughtException"), before);
+  assert.equal(process.listenerCount("unhandledRejection"), before);
 });
