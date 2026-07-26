@@ -33,6 +33,11 @@ verdict-reader:
   criticality: high
   paths: ["scripts/verdict/**"]
 
+review-reader:
+  description: "Reading the G3 review artifact (native review or marker comment) back out of the record to authorise the gate"
+  criticality: high
+  paths: ["scripts/review/**"]
+
 dispatch:
   description: "Who acts next: the crawl-phase dispatcher and its dispatch table"
   criticality: medium
