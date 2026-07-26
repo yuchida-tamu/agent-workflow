@@ -24,10 +24,25 @@ free text only where choices can't capture it:
 
 - App skeleton: `create-expo-app`, wire the local check loop (lint,
   typecheck, unit tests) so it passes green on the empty app.
-- Repo + loop wiring: `gh repo create`, `agentflow-init labels`,
-  `agentflow-init project` — then fill in what the interview decided:
-  config (`maturity: "genesis"`, approvers, intake questions), `domains.yml`,
-  the business policy pack.
+- Repo + loop wiring: `gh repo create`, then one
+  `agentflow-init adopt --target . --repo <owner/name>` — it scaffolds the
+  project files, creates the 18 labels, and reports the repo settings the
+  loop needs. Then fill in what the interview decided: config
+  (`maturity: "genesis"`, approvers, intake questions), `domains.yml`, the
+  business policy pack — and re-run `adopt`. The settings report can only
+  print the G4 environment command once `approvers` names real logins, and
+  a second run is safe: the scaffold never overwrites and labels are
+  additive.
+- **Do not hand-configure repo settings.** `adopt` detects the three the
+  loop needs — toolkit Actions access, G3 branch protection, the G4 release
+  Environment — and prints the exact command for each one that is missing.
+  It never runs them, and neither do you, even though you created the repo:
+  settings outlive the bootstrap run, so they are worth the human's
+  deliberate keystroke. Copy `adopt`'s printed settings block into your
+  precondition checklist verbatim. Never retype, paraphrase or re-derive a
+  command — each printed body is merged against the repo's current state so
+  that pasting it cannot weaken protection, and a hand-written one loses
+  that.
 - `CLAUDE.md` conventions doc: file layout, navigation, state, styling
   idioms, and the `testID` rule. Keep it short enough that agents actually
   follow it — conventions no one can hold in their head don't exist.
@@ -40,7 +55,11 @@ dependency-ordered, priorities set. Write each with enough context that the
 Product Shaper's interview will be short.
 
 **Hand off explicitly.** Post a genesis summary issue: what was decided, what
-was scaffolded, and what `agentflow-next` will dispatch first. Then stop —
+was scaffolded, and what `agentflow-next` will dispatch first. Give the
+unrun settings commands their own **outstanding human steps** section in that
+issue, quoted exactly as `adopt` printed them. A command that lives only in
+your scrollback is a setting nobody ever applies; in the issue it is a
+checklist the human can close. Then stop —
 you do not shape briefs, plan features, or write product code. If you're
 tempted to "just implement the first screen," that's the loop's job, and
 doing it here would skip every gate the loop exists to provide.
