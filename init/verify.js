@@ -10,6 +10,7 @@
 
 import { CRITICALITIES, validateConfig } from "./config-schema.js";
 import { g3Mode } from "../scripts/identity/identity.js";
+import { stageEnabled } from "../scripts/headless/core.js";
 
 // What `projectPlan()` substitutes into every workflow stub it installs. A stub
 // that still carries it was copied by hand, not scaffolded.
@@ -106,15 +107,37 @@ function domainsCheck({ value, error }) {
 // ---------------------------------------------------------------------------
 // 4. workflow stubs
 
-function workflowsCheck(installed, expected) {
+// Stubs that serve an opt-in capability, mapped to the config that turns it on.
+// A repo may legitimately not have these installed, so their absence is a note
+// rather than a failure — unless the config says the stage is enabled, in which
+// case a missing stub means a flag that can never fire.
+//
+// This makes the check *less* strict, which is only correct because every
+// headless flag ships off. If headless ever defaults on, absence must become a
+// failure again. Required-ness follows the config, not the template directory
+// listing — without this, adding a template silently makes it mandatory for
+// every already-adopted repo (see the #83 plan amendment).
+const OPTIONAL_STUBS = new Map([["agentflow-review.yml", "review"]]);
+
+function workflowsCheck(installed, expected, config = {}) {
   const name = ".github/workflows";
   const contents = new Map((installed ?? []).map((f) => [f.name, f.content]));
   const problems = [];
+  const skipped = [];
 
   for (const stub of expected) {
     const content = contents.get(stub);
     if (content === undefined) {
-      problems.push(`${stub} is not installed`);
+      const stage = OPTIONAL_STUBS.get(stub);
+      if (stage && !stageEnabled(config, stage)) {
+        skipped.push(`${stub} (headless.${stage} is off)`);
+        continue;
+      }
+      problems.push(
+        stage
+          ? `${stub} is not installed, but headless.${stage} is enabled — the flag cannot fire`
+          : `${stub} is not installed`,
+      );
       continue;
     }
     if (content.includes(TOOLKIT_PLACEHOLDER)) {
@@ -130,9 +153,11 @@ function workflowsCheck(installed, expected) {
       if (!REPO_SHAPE.test(ref)) problems.push(`${stub} points at "${ref}", which is not shaped owner/name`);
     }
   }
+  const note = skipped.length ? `not installed, and not needed: ${skipped.join(", ")}` : null;
+  const wanted = expected.length - skipped.length;
   return problems.length
-    ? fail(name, problems.join("; "))
-    : pass(name, `${expected.length} stub(s) installed and pointed at the toolkit`);
+    ? fail(name, problems.join("; "), note)
+    : pass(name, `${wanted} stub(s) installed and pointed at the toolkit`, note);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +240,7 @@ export function verifyChecks({
     configCheck(config),
     labelsCheck(labels, expectedLabels),
     domainsCheck(domains),
-    workflowsCheck(workflows, expectedWorkflows),
+    workflowsCheck(workflows, expectedWorkflows, config.value ?? {}),
     nextCheck(next),
     g3ModeCheck(config, protection),
   ];
