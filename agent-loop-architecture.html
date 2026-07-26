@@ -265,7 +265,7 @@
 
 <div class="shell">
   <header>
-    <p class="eyebrow">Planning document · v0.8 · July 26, 2026</p>
+    <p class="eyebrow">Architecture · v1.0 · July 26, 2026</p>
     <h1>A Platform-Agnostic Agentic Development Loop</h1>
     <p class="lead">A closed-loop development workflow built on GitHub, designed as a reusable toolkit. The core owns the loop; <strong>platform knowledge</strong> (first pack: React Native Expo) and <strong>business knowledge</strong> (per project) are both injected. Ground rule: <strong>deterministic by default</strong> — every step that a script can perform is a script; agents are reserved for inference, judgment, and synthesis, and each agent call is routed to the cheapest model that can do the job.</p>
     <div class="legend">
@@ -276,9 +276,16 @@
     </div>
   </header>
 
+  <h2>What changed: v0.8 → v1.0</h2>
+  <p class="prose">v0.8 was a plan. v1.0 describes the loop that runs this repo's own backlog. This document is now reconciled against shipped code — every section and every wiring-graph node reflects behaviour that exists, and the few things that are still <em>specified but not built</em> are labelled as such rather than described in the present tense.</p>
+  <div class="principle prose">
+    <p><strong>Landed since v0.8 (deterministic, tested):</strong> the <strong>risk engine</strong> (fact/operator packs, monotonic obligation union, locked rules) with a widened <strong>self-modification guard</strong> (now covering <code>init/templates/**</code> and <code>actions/**</code> — the workflows consuming repos install — plus <code>policies/**</code>, <code>domains.yml</code>, and <code>e2e/traces/**</code>) and a <strong>high-criticality-domain</strong> rule that finally makes the domain map's criticality axis load-bearing; the <strong>run ledger &amp; audit</strong> (<code>agentflow-log</code>); the <strong>verdict reader</strong> whose governing rule is <em>absence-is-refusal</em>; the <strong>G3 auto-merge authority record</strong> (a PR merges itself only on a verdict that demands no human, and always leaves a record — never a forged <code>/approve</code>); the <strong>approval-inbox</strong> module (G1/G2/G4 queue + artifact selection); <strong>agentflow's own GitHub App identity</strong> (work as the App, decisions as the human, bot approvals refused in code); the <strong>sub-issue hierarchy</strong> reader (native GitHub sub-issues with a <code>Child of #N</code> text fallback, reporting which answered); <strong><code>release_kind</code></strong> semantics; the eleven <strong>agent definitions</strong> at their routed tiers; and <strong>headless review</strong> (stage 1) on a runner.</p>
+    <p><strong>Still specified, not yet shipped:</strong> the <code>pack-expo</code> <strong>capability adapters</strong> (<code>run</code> · <code>verify</code> · <code>execute-step</code> · <code>ship</code>) and skills — so anything that drives the real app (implementer self-verify, UX review pixels, E2E <strong>trace derivation and replay execution</strong>) is wired in core but cannot run end-to-end until a pack implements the seams; <strong>headless dispatch launch</strong> (built, shipped off for every state); <strong>nightly QA</strong> headless (deferred, needs a self-hosted macOS runner); and the second platform pack that truly validates the interfaces.</p>
+  </div>
+
   <h2>Decisions locked in</h2>
   <ul class="prose">
-    <li><strong>Backlog home: GitHub Issues.</strong> Labels encode the state machine, comments carry approvals, GitHub Actions is the event bus, and Environments provide the release gate. One platform holds all state.</li>
+    <li><strong>Backlog home: GitHub Issues.</strong> Labels encode the state machine, comments carry approvals (the release gate among them, as a validated <code>/approve G4</code> whose transition follows the tag it authorises), and GitHub Actions is the event bus. One platform holds all state.</li>
     <li><strong>E2E model: agent-compiled, deterministically replayed.</strong> Maestro is out (selector maintenance toil, slow). Scenarios are Gherkin; an agent interprets each step <em>once</em> and emits a compiled trace, which the runner replays deterministically ever after. Tokens scale with UI change, not suite size.</li>
     <li><strong>Platform-agnostic core.</strong> This repo (<code>agent-workflow</code>) is the toolkit, not an app — and nothing platform-specific lives in it. Platform capabilities are extracted into packs (<code>pack-expo</code> first); any project installs core + a pack and gets the full loop with a per-project config.</li>
     <li><strong>Determinism-first + model routing.</strong> The two ground rules below govern every step in the wiring diagram.</li>
@@ -309,7 +316,7 @@
     </table>
   </div>
   <div class="principle prose">
-    <p><strong>Don't over-abstract on day one:</strong> the interfaces are named and specified now because they're cheap to define and keep the core clean — but Phase 1 builds only <code>pack-expo</code> against them. The second pack (likely web) is what truly validates the seams, and it waits until the loop works end-to-end.</p>
+    <p><strong>Don't over-abstract on day one:</strong> the interfaces are named and specified now because they're cheap to define and keep the core clean. As of v1.0 the four seams are documented in <code>interfaces/</code> and every core consumer calls them, but <code>pack-expo</code> has <em>not yet implemented</em> its adapters — <code>packs/expo/</code> ships its policy pack and runner declaration only. Until a pack fills the seams, everything that drives a real app is inert. The second pack (likely web) is what truly validates the seams, and it waits until the loop works end-to-end against the first.</p>
   </div>
 
   <h2>Ground rule 1 — the determinism ladder</h2>
@@ -317,8 +324,8 @@
   <ul class="ladder">
     <li><div><strong>Scripts &amp; static checks — zero tokens</strong><span>Anything decidable by rules over structured data: state transitions, label management, template validation, dependency checks, lint / typecheck / unit tests, worktree setup, E2E scenario execution, issue filing from structured reports, version bumps, changelogs, EAS submit.</span></div></li>
     <li><div><strong>Small model (Haiku) — bounded classification</strong><span>Classify, extract, or summarize against a clear rubric where a wrong answer is cheap to detect and correct: issue triage, duplicate detection, diff summaries, E2E failure clustering, risk-score tie-breaks.</span></div></li>
-    <li><div><strong>Mid model (Sonnet) — code within a plan</strong><span>Writing and modifying code against an approved plan, authoring tests, producing review findings, fix loops, exploratory QA passes. The workhorse tier.</span></div></li>
-    <li><div><strong>Frontier model (Opus / Fable) — open-ended judgment</strong><span>Shaping briefs from fuzzy intent, architecture plans, task decomposition, adversarial verification of review findings, diagnosing why something is stuck. Rare, deliberate, and worth it.</span></div></li>
+    <li><div><strong>Mid model (Sonnet) — code within a plan</strong><span>Writing and modifying code against an approved plan, authoring tests, fix loops, exploratory QA passes, compiling E2E traces. The workhorse tier.</span></div></li>
+    <li><div><strong>Frontier model (Opus / Fable) — open-ended judgment</strong><span>Shaping briefs from fuzzy intent, architecture plans, task decomposition, independent code and UX review, adversarial verification of review findings, diagnosing why something is stuck. Rare, deliberate, and worth it.</span></div></li>
   </ul>
   <div class="principle prose">
     <p><strong>Escalation rule:</strong> a step may move up exactly one rung when it fails, and the escalation is logged with a reason. Nothing routes to a higher tier for mechanical work, and no agent runs before the deterministic checks in front of it pass.</p>
@@ -381,7 +388,7 @@ rules:
   <div class="principle prose">
     <p><strong>Cross-check drift detector:</strong> the brief's declared impact and the diff's domain footprint must agree. If the brief said <code>revenue_impact: false</code> but the PR lands in the <code>checkout</code> domain, the engine flags the contradiction and escalates — either the brief was wrong or the implementation wandered. Deterministic either way, like the plan-vs-diff scope check.</p>
   </div>
-  <p class="prose"><strong>Unmapped code</strong> is a per-project policy choice: assign a default criticality, or let a logged Haiku call classify the change against the domain descriptions (per the routing policy — and a nudge to grow the map). The engine also warns when the unmapped fraction of <code>src/</code> crosses a threshold, so the domain map can't silently rot.</p>
+  <p class="prose"><strong>Unmapped code</strong> is a per-project policy choice, and the engine takes no default position: <code>unmapped_criticality</code> is a config value that defaults to <code>null</code>, in which case unmapped files contribute nothing to the criticality of a change (and only apply at all once a <code>domains.yml</code> exists to be unmapped <em>from</em>). A project that wants unmapped code to count sets that value, or lets a logged Haiku call classify the change against the domain descriptions (per the routing policy — and a nudge to grow the map). The engine surfaces <code>domains.unmapped_fraction</code> as a first-class fact, so a project can write its own rule to catch a map that is silently rotting; there is no hardcoded threshold in core.</p>
 
   <h3>Policy pack schema — one rule shape for everything</h3>
   <p class="prose">Hard triggers, additive score factors, and business rules are all the <em>same rule shape</em> — they differ only in which obligations they emit. That keeps the engine tiny and every criterion, technical or business, equally injectable:</p>
@@ -441,7 +448,7 @@ rules:
   <p class="prose">The <strong>verdict</strong> is a deterministic JSON document — every rule evaluated, the facts that matched, the union of obligations, the resulting level — rendered as the factor-by-factor comment and applied as <code>risk:*</code> / obligation labels, which are themselves the dispatch events for the next stage. Same engine, run twice: plan time over <code>plan.* + brief.*</code>, PR time over <code>diff.*</code> where the <code>drift.*</code> facts activate.</p>
 
   <h2>The wiring — interactive</h2>
-  <p class="prose">GitHub is the event bus: every column below is one stage, triggered left-to-right by a GitHub event, flowing down through deterministic scripts, then micro-agents, then full agents, and ending at a human gate where one exists. <strong>Click any node</strong> for what it does, why it sits on that rung of the ladder, and what it emits. The dashed teal edge is the loop closing: QA findings re-enter intake as new issues. The graph shows the loop <em>instantiated with</em> <code>pack-expo</code> — wherever a node says simulator, agent-device, or EAS, that's the pack's implementation of a core capability interface, not a core assumption.</p>
+  <p class="prose">GitHub is the event bus: every column below is one stage, triggered left-to-right by a GitHub event, flowing down through deterministic scripts, then micro-agents, then full agents, and ending at a human gate where one exists. <strong>Click any node</strong> for what it does, why it sits on that rung of the ladder, and what it emits. The dashed teal edge is the loop closing: QA findings re-enter intake as new issues. The graph shows the loop <em>instantiated with</em> <code>pack-expo</code> — wherever a node says simulator, agent-device, or EAS, that's the pack's implementation of a core capability interface, not a core assumption. As of v1.0 those pack adapters are specified but not yet built, so any node that drives the real app (Implementer self-verify, UX review, the E2E runner) describes the intended instantiation rather than something that runs end-to-end today.</p>
 
   <div class="graph-wrap">
     <svg id="wiring" width="1270" height="512" viewBox="0 0 1270 512" role="img" aria-label="Wiring diagram: GitHub events trigger scripts, micro-agents, agents, and human gates across seven stages"></svg>
@@ -461,11 +468,12 @@ rules:
       <tbody>
         <tr><td>Work item state</td><td><code>state:*</code> labels (<code>idea → spec → planned → ready → in-progress → in-review → merged → verified</code>); every label change is a webhook event</td></tr>
         <tr><td>Stage dispatch</td><td>GitHub Actions on <code>issues</code>, <code>pull_request</code>, <code>issue_comment</code>, <code>check_suite</code>, <code>push</code>, <code>schedule</code>, <code>workflow_dispatch</code></td></tr>
-        <tr><td>Human approvals (G1, G2)</td><td><code>/approve</code> issue comments, validated by a script against an authorized-user list</td></tr>
-        <tr><td>Merge gate (G3)</td><td>Native PR review approval + branch protection; <code>auto-merge</code> label for graduated low-risk classes</td></tr>
-        <tr><td>Release gate (G4)</td><td>GitHub Environment with a required reviewer — the platform's own deterministic approval primitive</td></tr>
-        <tr><td>Artifacts &amp; audit trail</td><td>Briefs and plans as issue comments; screenshots on PRs; every agent run logged as a check run with its model tier and token count</td></tr>
-        <tr><td>Platform runners</td><td>Declared by the platform pack — rn-expo requires a self-hosted macOS runner for simulator jobs (self-verify, UX review, E2E); cloud runners handle everything else</td></tr>
+        <tr><td>Human approvals (G1, G2, G4)</td><td><code>/approve [gate]</code> issue comments, validated by <code>agentflow-gate</code> against the <code>approvers</code> list. A bot-authored approval is refused <em>before</em> the approver list is even consulted — enforced in <code>validateApproval</code>, not by convention</td></tr>
+        <tr><td>Merge gate (G3)</td><td>PR-native, in one of two modes: <code>native-review</code> (a real approving review, when an App identity authors agent PRs) or <code>solo-comment</code> (a SHA-naming <code>/approve</code> comment then merge, when they're the human's own). Change classes whose recorded verdict demands no human graduate to auto-merge, which posts an authority record rather than a forged approval</td></tr>
+        <tr><td>Release gate (G4)</td><td>A validated <code>/approve G4</code> issue comment <em>authorises</em> but does not transition; <code>agentflow-release</code> cuts the annotated tag + GitHub Release and performs the <code>verified → released</code> transition only once the release exists. <code>release_kind</code> governs: <code>tag</code> (this path), <code>store</code> (delegated to the pack's <code>ship</code> adapter), or <code>none</code> (<code>verified</code> is terminal, no G4)</td></tr>
+        <tr><td>Parent ↔ child structure</td><td>Native GitHub sub-issues where available, with a <code>Child of #N</code> line at a child's body-top as fallback; <code>agentflow-hierarchy</code> derives children from what <em>declares</em> a parent and reports which path answered</td></tr>
+        <tr><td>Artifacts &amp; audit trail</td><td>Briefs, plans, and risk verdicts as marker-managed issue comments; screenshots on PRs; a <strong>run ledger</strong> comment per work item (<code>agentflow-log</code>), whose human-readable table <em>is</em> its storage. <code>agentflow-log audit</code> flags model-tier violations, unknown agents, and phase gaps — silence is a finding, not a pass</td></tr>
+        <tr><td>Platform runners</td><td>Declared by the platform pack — rn-expo requires a self-hosted macOS runner for simulator jobs (self-verify, UX review, E2E); cloud runners handle everything else. Headless review runs today on a cloud runner</td></tr>
       </tbody>
     </table>
   </div>
@@ -523,8 +531,8 @@ rules:
       <dl>
         <dt class="t-trigger">Trigger</dt><dd><code>pull_request.opened</code> / <code>synchronize</code>.</dd>
         <dt class="t-script">Scripts</dt><dd>Full CI — lint, typecheck, unit tests, build. Red CI blocks all agent review: zero tokens on broken code.</dd>
-        <dt>Agents</dt><dd>Diff summary (Haiku). <strong>Code Reviewer</strong> + <strong>UX Reviewer</strong> (Sonnet); findings adversarially verified (Opus) before anyone acts on them.</dd>
-        <dt class="t-gate">Gate</dt><dd><strong>G3 — PR approval</strong>; low-risk classes graduate to auto-merge.</dd>
+        <dt>Agents</dt><dd>Diff summary (Haiku). <strong>Code Reviewer</strong> + <strong>UX Reviewer</strong> (Opus) — each spawned as a fresh subagent with no shared context with the implementer; findings adversarially verified (Opus) before anyone acts on them. This is the first stage to run <strong>headless</strong>: with <code>headless.review</code> on, the code-reviewer launches on a runner with no session, read-only and in plan mode, billed to a Claude subscription (<code>ANTHROPIC_API_KEY</code> is stripped from its environment).</dd>
+        <dt class="t-gate">Gate</dt><dd><strong>G3 — PR approval</strong> (native-review or solo-comment); classes whose recorded verdict demands no human graduate to auto-merge, which leaves an authority record rather than a forged approval.</dd>
       </dl>
     </div>
   </div>
@@ -573,18 +581,19 @@ rules:
     <li><span class="gid">G1</span><div><strong>Brief approval</strong><span><code>/approve</code> comment on the shaped issue. Cheapest place to correct course.</span></div></li>
     <li><span class="gid">G2</span><div><strong>Plan approval</strong><span>Required only when the risk engine's obligations say so — driven by the project's own domain map and policy rules; trivial fixes flow through.</span></div></li>
     <li><span class="gid">G3</span><div><strong>Merge approval</strong><span>Native PR review where <code>agent_identity</code> gives agentflow its own GitHub App to author work as; a SHA-naming <code>/approve</code> comment where it does not, since GitHub forbids approving your own PR. <code>adopt --verify</code> reports which mode a repo is in and why. Graduates toward label-driven auto-merge for proven low-risk classes.</span></div></li>
-    <li><span class="gid">G4</span><div><strong>Release approval</strong><span>GitHub Environment required-reviewer — approve once, and the release script does the rest.</span></div></li>
+    <li><span class="gid">G4</span><div><strong>Release approval</strong><span>A validated <code>/approve G4</code> comment authorises the release but deliberately does not move the label; <code>agentflow-release</code> then cuts the annotated tag and GitHub Release and performs the <code>verified → released</code> transition only once that release exists — the label follows the artifact, so <code>state:released</code> can never be true with nothing behind it. <code>release_kind</code> decides whether this path runs, the pack's <code>ship</code> adapter does, or the item was already terminal.</span></div></li>
   </ul>
-  <p class="prose"><strong>Standing rules:</strong> interrupt any stage at any time; every agent escalates via notification instead of spinning when its bounded retries run out. Silence always means progress, never a stall. And gates meet the human where they are: in an interactive session, agents collect decisions via multi-choice prompts and post the <code>/approve</code> artifact through the human's own <code>gh</code> account — GitHub is the record, not the conversation; comment-driven approval remains the async path.</p>
-  <p class="prose"><strong>Work and decisions have different authors.</strong> Agents author work — branches, commits, PRs, review and verdict comments — as the agentflow GitHub App. Humans author decisions: <code>/approve</code>, review approvals, merges. This is enforced rather than agreed: the gate validator refuses any bot-authored approval before it consults the approver list, and <code>approvers</code> is validated as human logins only. One exception exists, and its authority is the engine's rather than the agent's — G3 on a pull request whose recorded risk verdict already carries no <code>human-merge</code>, no <code>auto-merge</code> block, and demonstrably describes the head being merged. That is precisely the condition under which the loop already merges unattended, so the App transcribes a decision instead of minting one. The App is optional everywhere; a repo without one runs the same loop on the human's own auth.</p>
+  <p class="prose"><strong>Standing rules:</strong> interrupt any stage at any time; every agent escalates via notification instead of spinning when its bounded retries run out. Silence always means progress, never a stall. And gates meet the human where they are: in an interactive session, agents collect decisions via multi-choice prompts and post the <code>/approve</code> artifact through the human's own <code>gh</code> account — GitHub is the record, not the conversation; comment-driven approval remains the async path. A pure <strong>approval-inbox</strong> module collects everything currently waiting at G1, G2, or G4, pairs each item with the exact artifact it should be judged against (the Brief, Plan, or Release comment), and refuses to present an item that has none — so a human working the queue never approves a brief nobody wrote. G3 is deliberately absent from that queue: a merge is judged on the diff, not from a list.</p>
+  <p class="prose"><strong>Work and decisions have different authors.</strong> Agents author work — branches, commits, PRs, review and verdict comments — as the agentflow GitHub App. Humans author decisions: <code>/approve</code>, review approvals, merges. This is enforced rather than agreed: the gate validator refuses any bot-authored approval before it consults the approver list, and <code>approvers</code> is validated as human logins only. One exception exists, and its authority is the engine's rather than the agent's — G3 on a pull request whose recorded risk verdict already carries no <code>human-merge</code>, no <code>auto-merge</code> block, and demonstrably describes the head being merged. That is precisely the condition under which the loop already merges unattended, so the App transcribes a decision instead of minting one. The verdict reader that adjudicates this rests on a single rule — <em>absence is refusal</em>: a missing, unparseable, or SHA-less verdict, or one computed over different code, authorises nothing. And when the loop does merge unattended it records the merge first and merges second, leaving an authority record that names what allowed it — a record structurally forbidden from ever resembling a <code>/approve</code> line. The App is optional everywhere; a repo without one runs the same loop on the human's own auth.</p>
 
   <h2>E2E model — compile once, replay forever</h2>
   <p class="prose">Scenarios are written in Gherkin — behavioral, readable, tagged (<code>@checkout</code> binds to the domain map, <code>@smoke</code> marks the post-merge subset). Underneath the behavioral layer sits a compiled artifact no human writes:</p>
   <ul class="prose">
     <li><strong>First run — the agent interprets (L2).</strong> A Sonnet agent reads the step ("When the user taps Checkout"), drives the app through the pack's <code>verify</code> primitives, and emits a <strong>compiled trace</strong>: the ordered primitive actions with resolved selectors (fixed resolution order: <code>testID</code> → accessibility label → visible text), waits, and assertions. Traces are committed to <code>e2e/traces/</code> — versioned, reviewable code.</li>
     <li><strong>Every later run — deterministic replay (L0).</strong> The runner replays traces directly against the driver: no model in the loop, fast, zero tokens, identical verdicts. This is the nightly suite.</li>
-    <li><strong>Replay failure — the ladder decides.</strong> The agent re-derives the step (one-rung escalation, logged). If it succeeds, the UI changed but the behavior holds: trace updated via PR — which passes G3, so a trace that quietly weakens an assertion still meets a human. If the agent also fails, the behavior broke: evidence bundle → triage → issue into intake.</li>
+    <li><strong>Replay failure — the ladder decides.</strong> The <code>trace-deriver</code> agent re-derives the step (one-rung escalation, logged). If it succeeds, the UI changed but the behavior holds: trace updated via PR — which passes G3, so a trace that quietly weakens an assertion still meets a human. If the agent also fails, the behavior broke: evidence bundle → triage → issue into intake.</li>
   </ul>
+  <p class="prose"><strong>v1.0 status:</strong> the runner core is built and tested — the Gherkin parser, tag selection, trace replay over the <code>execute-step</code> adapter, and <code>needs-derivation</code> emission — and the <code>trace-deriver</code> agent is defined. But both compiling a trace (driving <code>verify</code>) and replaying one (driving <code>execute-step</code>) run through a platform pack's adapters, and <code>pack-expo</code> has not implemented them yet. So this whole model is specified and wired in core but does not run end-to-end until a pack fills the seams.</p>
   <div class="principle prose">
     <p><strong>The economics:</strong> tokens are spent only on new scenarios and changed UI — proportional to change, not to suite size. A 50-scenario nightly run on an unchanged app costs nothing. And "flaky selector" vs. "actual regression" becomes a deterministic distinction, not a judgment call.</p>
   </div>
@@ -592,19 +601,19 @@ rules:
   <h2>Toolkit packaging — core, pack, project</h2>
   <p class="prose">Three artifacts, one per knowledge layer. The installer wires a project to core plus its declared platform pack, pinning versions of both; everything of substance upgrades in one place.</p>
   <pre class="block">agent-workflow/                     # CORE — this repo, platform-blind
-├── actions/          # composite GitHub Actions: intake, plan, implement, review, qa…
-├── scripts/          # state-machine CLI, risk policy engine, gate validator, issue filer
-├── policies/         # platform-neutral baseline pack (diff size, shared modules, tests, self-mod guard)
+├── actions/          # composite GitHub Actions: gate-check · risk-verdict · dispatch · post-merge · auto-merge
+├── scripts/          # state · policy engine · facts · gate validator · verdict reader · log (ledger/audit) · release · identity · hierarchy · next · e2e
+├── policies/         # platform-neutral baseline pack (diff size, shared modules, tests, widened self-mod guard, high-domain rule)
 ├── scenarios/        # behavioral DSL grammar + runner core (executor-agnostic)
-├── agents/           # product-shaper · architect · implementer · reviewers · sentinel · qa-explorer
+├── agents/           # 11 defs: product-shaper · architect · implementer · code/ux reviewers (Opus) · sentinel · qa-explorer · trace-deriver · triage · project-genesis · adoption-auditor
 ├── interfaces/       # run · verify · execute-step · ship — the core↔pack contract
 └── init/             # installer: wires an app repo to core + its declared pack
 
-pack-expo/                          # PLATFORM PACK — React Native Expo
-├── skills/           # expo-dev · mobile-verify · release (EAS)
-├── policies/         # platform hard triggers: ios/**, app.config.*, SDK bumps, native deps
-├── adapters/         # run/verify → simulator + agent-device · execute-step · ship → EAS
-└── runners.yml       # declares: self-hosted macOS runner for simulator jobs
+packs/expo/                         # PLATFORM PACK — React Native Expo
+├── policies/         # ✅ platform hard triggers: ios/**, app.config.*, SDK bumps, native deps
+├── runners.yml       # ✅ declares: self-hosted macOS runner for simulator jobs
+├── skills/           # ⏳ specified, not built: expo-dev · mobile-verify · release (EAS)
+└── adapters/         # ⏳ specified, not built: run/verify → simulator + agent-device · execute-step · ship → EAS
 
 your-app/                           # PROJECT — any consuming repo
 ├── .github/workflows/agentflow-*.yml   # thin stubs calling pinned core actions
@@ -617,27 +626,27 @@ your-app/                           # PROJECT — any consuming repo
   <h2>Adoption path — crawl, walk, run</h2>
   <div class="phases">
     <div class="phase">
-      <span class="ph-label">Phase 1 · Crawl</span>
+      <span class="ph-label">Phase 1 · Crawl — shipped</span>
       <h3>Scripts + manual dispatch</h3>
-      <p>Build the L0 layer first: state-machine CLI, labels, gate validator, E2E runner. Agents run from one local session via <code>/next</code>. Proves the deterministic skeleton before any automation.</p>
+      <p>The L0 layer: state-machine CLI, labels, gate validator, risk engine + facts, verdict reader, run ledger, E2E runner core, <code>agentflow-next</code>. Built and tested; agents run from one local session via <code>/next</code>. This is the deterministic skeleton that runs this repo's own backlog today.</p>
     </div>
     <div class="phase">
-      <span class="ph-label">Phase 2 · Walk</span>
+      <span class="ph-label">Phase 2 · Walk — mostly shipped</span>
       <h3>Actions-driven + parallel</h3>
-      <p>Wire the GitHub Actions triggers; Implementers run in parallel worktrees; nightly QA on schedule against the self-hosted macOS runner.</p>
+      <p>The eleven agent definitions, the installer (<code>init labels/project/adopt</code>), the App identity, and the composite Actions (<code>gate-check</code>, <code>risk-verdict</code>, <code>dispatch</code>, <code>post-merge</code>, <code>auto-merge</code>) are shipped. Still open: the <code>pack-expo</code> adapters that let Implementers self-verify in parallel worktrees, and the first real consuming-app loop run. Nightly QA on the self-hosted macOS runner is deferred on cost.</p>
     </div>
     <div class="phase">
-      <span class="ph-label">Phase 3 · Run</span>
+      <span class="ph-label">Phase 3 · Run — partial</span>
       <h3>Graduated autonomy</h3>
-      <p>Auto-merge for proven change classes, auto-pass G2 for low-risk plans, and the installer makes any new repo loop-ready in minutes. A second platform pack (web) validates the capability seams.</p>
+      <p>Verdict-gated auto-merge for proven change classes and auto-pass G2 for low-risk plans are shipped; the installer makes a repo loop-ready in minutes. <strong>Headless review</strong> (stage 1) runs on a runner today; <strong>headless dispatch launch</strong> is built but ships off for every state. A second platform pack (web) — the true test of the capability seams — is still ahead.</p>
     </div>
   </div>
 
-  <h2>Planning status: complete</h2>
-  <p class="prose">All open questions are resolved. <strong>Unmapped code</strong> defaults to <code>criticality: medium</code> (can't auto-merge, doesn't demand G2) with a rot warning above 20% unmapped; Haiku classification is opt-in per project. <strong>Runner topology:</strong> one self-hosted Mac, queued by GitHub Actions concurrency groups (simulator jobs capped at 2); the scale trigger is mechanical — sustained median queue wait above ~10 minutes adds a machine. <strong>Interface signatures:</strong> each adapter is an executable, JSON on stdin/stdout, shared exit codes (0 ok · 10 recoverable · 20 fatal) feeding the bounded-retry scripts; specs live in <code>interfaces/</code>. <strong>E2E:</strong> the compile-and-replay model above. Phase 1 construction has begun in this repo.</p>
+  <h2>Build status — v1.0</h2>
+  <p class="prose">The deterministic core is built, tested, and runs this repo's own backlog; what remains is the platform pack and the headless stages past review. <strong>Unmapped code</strong> carries no built-in default: <code>unmapped_criticality</code> is a per-project config value (default <code>null</code> — no contribution, and applied only where a <code>domains.yml</code> exists), and <code>domains.unmapped_fraction</code> is a first-class fact a project can gate on; Haiku classification is opt-in per project. <strong>Runner topology:</strong> one self-hosted Mac, queued by GitHub Actions concurrency groups (simulator jobs capped at 2); the scale trigger is mechanical — sustained median queue wait above ~10 minutes adds a machine. <strong>Interface signatures</strong> are specified in <code>interfaces/</code> — each adapter an executable, JSON on stdin/stdout, shared exit codes (0 ok · 10 recoverable · 20 fatal) feeding the bounded-retry scripts — but no pack implements them yet. <strong>E2E:</strong> the compile-and-replay model above, core-complete and awaiting those adapters.</p>
 
   <footer>
-    agent-workflow · loop architecture v0.7 · revised July 26, 2026 · planning complete — Phase 1 built; Phase 2 (agents, installer) underway
+    agent-workflow · loop architecture v1.0 · revised July 26, 2026 · reconciled against shipped code — deterministic core, the agent roster, App identity, and headless review are live; pack-expo adapters and headless dispatch launch are still ahead
   </footer>
 </div>
 
@@ -724,10 +733,10 @@ your-app/                           # PROJECT — any consuming repo
       what: "Code Reviewer checks correctness, conventions, and security. UX Reviewer runs the branch on the simulator and judges real pixels against acceptance criteria. Both are spawned as fresh subagents — no shared context with the implementer, so the review judges what the code does, never why it was written. Findings are adversarially verified before the Implementer acts on them.",
       why: "Review is the loop's load-bearing quality gate: its word merges critical code, so it earns the frontier model — and independence from the implementer's reasoning is what makes the judgment worth paying for.",
       emits: "Verified findings → Implementer fix loop, or a clean summary for G3." },
-    { id: "g3", col: 3, lane: "G", t: "G3 · PR approval", s: "auto-merge low-risk", type: "gate",
-      what: "The human reads the review summary and screenshots, then approves via native PR review. Change classes with a proven track record graduate to label-driven auto-merge.",
-      why: "Branch protection makes this gate impossible to bypass, including by agents.",
-      emits: "Merge to main." },
+    { id: "g3", col: 3, lane: "G", t: "G3 · PR approval", s: "two modes · auto-merge", type: "gate",
+      what: "PR-native, in one of two modes decided by who authors the agent PR. native-review: an App identity authors the PR, so a human submits a real approving review. solo-comment: the PR is the human's own (GitHub forbids self-review), so the artifact is a SHA-naming /approve comment then a merge. adopt --verify reports which mode a repo is in and why. Change classes whose recorded verdict demands no human graduate to auto-merge — which records the merge first and merges second, leaving an authority record naming what allowed it, never a forged /approve.",
+      why: "Branch protection makes this gate impossible to bypass, including by agents; the one unattended path is authorised by the engine's recorded verdict, not by any agent.",
+      emits: "Merge to main, plus a native review or an authority-record comment." },
 
     { id: "e4", col: 4, lane: "E", t: "push: main", s: "check_suite result", type: "event",
       what: "Every merge to main fires the integration pipeline; the completed check suite fires again with the result.",
@@ -747,7 +756,7 @@ your-app/                           # PROJECT — any consuming repo
       why: "Time-based and merge-based triggers combined keep feedback latency low without running the full suite constantly.",
       emits: "Dispatches the E2E runner (and, nightly, the QA Explorer)." },
     { id: "d5", col: 5, lane: "D", t: "E2E replay runner", s: "compiled traces · zero tokens", type: "script",
-      what: "Replays agent-compiled traces (resolved selectors, waits, assertions) step-by-step against the driver — no model in the loop. On replay failure, an agent re-derives the step once: success means the UI changed (trace updated via PR), failure means the behavior broke (bug filed). Suite grows as features ship — acceptance criteria compile into scenario skeletons.",
+      what: "Replays agent-compiled traces (resolved selectors, waits, assertions) step-by-step against the driver — no model in the loop. On replay failure, the trace-deriver agent re-derives the step once: success means the UI changed (trace updated via PR), failure means the behavior broke (bug filed). The runner core is shipped — Gherkin parse, tag selection, replay over the execute-step adapter, needs-derivation emission — but both replay and derivation drive an app through the pack's execute-step and verify adapters, which pack-expo has not built yet, so no trace runs end-to-end today. Suite grows as features ship — acceptance criteria compile into scenario skeletons.",
       why: "Regression must be deterministic, fast, and free. Tokens are spent only on new scenarios and changed UI, never on the nightly run of an unchanged app.",
       emits: "Structured pass/fail results with evidence; trace-update PRs; real failures to triage." },
     { id: "m5", col: 5, lane: "M", t: "failure triage + filer", s: "cluster · file issues", type: "micro", tier: "Haiku",
@@ -763,14 +772,14 @@ your-app/                           # PROJECT — any consuming repo
       what: "The human decides a release is ready and triggers the release workflow manually (or a milestone-complete label can propose it).",
       why: "Releases are intent, not automation — the trigger itself is a human act.",
       emits: "Dispatches the release pipeline into G4." },
-    { id: "g6", col: 6, lane: "G", t: "G4 · release approval", s: "environment reviewer", type: "gate",
-      what: "A GitHub Environment with a required reviewer holds the deployment until the human approves — the platform's own gate primitive, no custom code.",
-      why: "The only gate touching the outside world gets the most tamper-proof mechanism available.",
-      emits: "Unblocks the release script." },
-    { id: "d6", col: 6, lane: "D", t: "release script", s: "EAS submit · version · notes", type: "script",
-      what: "Version bump, changelog generated from merged PR metadata, EAS build + submit to TestFlight / Play, GitHub Release created.",
-      why: "Every step is mechanical once approved — zero tokens between approval and store submission.",
-      emits: "A shipped build." }
+    { id: "g6", col: 6, lane: "G", t: "G4 · release approval", s: "/approve · authorises only", type: "gate",
+      what: "The human approves the release with a validated /approve G4 comment. That comment authorises but deliberately does not move any label — the transition to state:released happens only once the release actually exists. release_kind decides what 'release' means: tag runs agentflow-release, store hands off to the pack's ship adapter, none makes 'verified' terminal with no G4 at all.",
+      why: "The label must follow the artifact, not the approval: a G4 that moved the label directly once left an item marked released with no tag behind it (#45).",
+      emits: "Authorises agentflow-release; no state change yet." },
+    { id: "d6", col: 6, lane: "D", t: "release script", s: "tag · release · transition", type: "script",
+      what: "agentflow-release, for release_kind: tag. Reads the version from package.json, confirms a validated G4 approval it never mints, then cuts an annotated git tag, pushes it, creates a GitHub Release with generated notes, and only then transitions verified → released. It does not bump the version, write a changelog file, or submit to a store — store shipping is the pack's ship adapter. --verify asserts no item is state:released without a tag behind it.",
+      why: "Every step is mechanical once approved — zero tokens between approval and the release existing; the transition is gated on the artifact, not on trust.",
+      emits: "A tag + GitHub Release, then state:released." }
   ];
 
   var chains = [
