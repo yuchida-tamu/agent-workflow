@@ -8,6 +8,8 @@
 // consuming repo may carry its own and a validator that rejects them would make
 // the config un-extensible.
 
+import { isBotLogin, normaliseSlug, resolveIdentity } from "../scripts/identity/identity.js";
+
 // The template ships `approvers: ["CHANGE_ME"]`. That is not a login, and until
 // a human replaces it nobody can pass G3 or G4 — so it fails validation rather
 // than looking configured.
@@ -55,6 +57,7 @@ const KNOWN_KEYS = [
   "unmapped_warn_fraction",
   "model_overrides",
   "release_kind",
+  "agent_identity",
 ];
 
 const typeName = (v) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
@@ -87,6 +90,11 @@ export function validateConfig(config) {
     error("maturity", oneOf(MATURITIES));
   }
 
+  // `approvers` decides who may cross a gate, so it is human logins only. The
+  // App gets its own key: two lists that can never be confused is the whole
+  // point of giving agentflow an identity of its own, and a bot that reached
+  // this list would be a gate approver by configuration rather than by rule.
+  const agentSlug = resolveIdentity(config).slug;
   if (present("approvers")) {
     const approvers = config.approvers;
     if (!Array.isArray(approvers)) {
@@ -98,6 +106,13 @@ export function validateConfig(config) {
         if (typeof login !== "string") error(`approvers[${i}]`, `must be a string (got ${typeName(login)})`);
         else if (login === PLACEHOLDER_APPROVER) {
           error(`approvers[${i}]`, `is still the template placeholder "${PLACEHOLDER_APPROVER}"`);
+        } else if (isBotLogin(login)) {
+          error(`approvers[${i}]`, `"${login}" is a bot — approvers is human logins only`);
+        } else if (agentSlug && normaliseSlug(login) === agentSlug) {
+          error(
+            `approvers[${i}]`,
+            `"${login}" is this repo's agent_identity — an agent may not be a gate approver`,
+          );
         }
       });
     }
@@ -136,6 +151,23 @@ export function validateConfig(config) {
   // an error — a typo must not silently infer something else.
   if (Object.hasOwn(config, "release_kind") && !RELEASE_KINDS.includes(config.release_kind)) {
     error("release_kind", oneOf(RELEASE_KINDS));
+  }
+
+  // Also optional — the App is optional everywhere, and a repo that never creates
+  // one has a complete config. Present-but-malformed is an error, because
+  // `resolveIdentity` deliberately falls back to *unconfigured* rather than
+  // throwing on a gate path: reporting the typo here is the only way a human
+  // learns their App was quietly ignored.
+  if (Object.hasOwn(config, "agent_identity") && config.agent_identity !== null) {
+    const raw = config.agent_identity;
+    const shape = 'must be an App slug string, or { slug, app_id } — e.g. "agentflow-bot"';
+    if (typeof raw === "string") {
+      if (!normaliseSlug(raw)) error("agent_identity", shape);
+    } else if (isPlainObject(raw)) {
+      if (!normaliseSlug(raw.slug)) error("agent_identity", shape);
+    } else {
+      error("agent_identity", `${shape} (got ${typeName(raw)})`);
+    }
   }
 
   for (const key of Object.keys(config)) {

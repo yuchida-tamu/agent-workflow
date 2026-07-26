@@ -477,3 +477,64 @@ test("release_kind is a known key, so it draws no unknown-key warning", () => {
   const issues = validateConfig({ ...validConfig, release_kind: "tag" });
   assert.equal(issues.find((i) => i.path === "release_kind"), undefined);
 });
+
+// --- agent_identity ----------------------------------------------------------
+//
+// The App is optional everywhere, so an absent key is a complete config, not a
+// half-finished adoption. `approvers` is the list that decides *authority*, and
+// it stays human-only: the whole point of giving agentflow its own identity is
+// that work and decisions have different authors.
+
+test("a config with no agent_identity is still valid — the App is optional everywhere", () => {
+  assert.ok(!Object.hasOwn(validConfig, "agent_identity"), "fixture carries no identity");
+  assert.deepEqual(validateConfig(validConfig).filter((i) => i.level === "error"), []);
+});
+
+test("agent_identity is a known key, so it draws no unknown-key warning", () => {
+  for (const value of [null, "agentflow-bot", { slug: "agentflow-bot", app_id: 12345 }]) {
+    const issues = validateConfig({ ...validConfig, agent_identity: value });
+    assert.deepEqual(issues, [], JSON.stringify(value));
+  }
+});
+
+test("a malformed agent_identity is an error, never a silent 'unconfigured'", () => {
+  // resolveIdentity() deliberately falls back to unconfigured rather than
+  // throwing on a gate path. That makes reporting the typo *here* the only way
+  // a human ever learns their App was quietly ignored.
+  for (const bad of [42, [], "", { app_id: 1 }]) {
+    const found = validateConfig({ ...validConfig, agent_identity: bad }).find(
+      (i) => i.path === "agent_identity",
+    );
+    assert.equal(found?.level, "error", JSON.stringify(bad));
+  }
+});
+
+test("approvers is human logins only: a bot-shaped login is refused by name", () => {
+  const issues = validateConfig({ ...validConfig, approvers: ["yuchida-tamu", "dependabot[bot]"] });
+  const found = issues.find((i) => i.path === "approvers[1]");
+  assert.equal(found.level, "error");
+  assert.match(found.message, /dependabot\[bot\]/);
+  assert.match(found.message, /human/i);
+});
+
+test("approvers may not name the agent identity, in either spelling", () => {
+  for (const login of ["agentflow-bot", "agentflow-bot[bot]"]) {
+    const issues = validateConfig({
+      ...validConfig,
+      agent_identity: "agentflow-bot",
+      approvers: [login],
+    });
+    const found = issues.find((i) => i.path === "approvers[0]");
+    assert.equal(found?.level, "error", login);
+    assert.match(found.message, /agentflow-bot/);
+  }
+});
+
+test("a human approver is unaffected by any of this", () => {
+  const issues = validateConfig({
+    ...validConfig,
+    agent_identity: "agentflow-bot",
+    approvers: ["yuchida-tamu"],
+  });
+  assert.deepEqual(issues, []);
+});
