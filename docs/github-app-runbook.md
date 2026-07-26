@@ -168,7 +168,7 @@ every issue comment, refuses a bot outright.
 
 ## The G3 review-artifact guard
 
-Identity and headless review (above, and `docs/headless-runbook.md`) exist so that
+**Planned:** identity and headless review (above, and `docs/headless-runbook.md`) exist so that
 every PR gets reviewed automatically. The guard is what makes that fact
 *mechanically checked* rather than a habit: G3 refuses to authorise a merge —
 whether by `/approve G3`, or by `auto-merge` acting unattended — unless a fresh

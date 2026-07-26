@@ -82,10 +82,16 @@ marker-managed artifact, upserted in place on re-review the same way the risk
 verdict is:
 
 - marker `<!-- agentflow-review -->`
-- `` review verdict: `mergeable` `` / `` `not-mergeable` ``
-- `reviewed-sha: <head sha>`
+- **`verdict: mergeable`** / **`not-mergeable`** — canonical; this is what
+  code-reviewer's marker comments already post on PRs #109/#110/#116. (`review
+  verdict:` is accepted by the reader as an alias.)
+- **`sha: <head sha>`** — canonical, same live-artifact basis. (`reviewed-sha:`
+  is accepted as an alias.)
 - `` ux: `mergeable` `` / `` `not-mergeable` `` / `` `n/a` `` (present only when
-  the diff touches pack-declared UI surface)
+  the diff touches pack-declared UI surface) — **not yet emitted by any live
+  artifact.** The field name and its values are defined by the review-artifact
+  reader (`scripts/review/core.js`'s doc comment is the contract), and the
+  reviewer starts emitting it from Child #112 onward.
 
 This artifact is posted in **both** G3 modes, even when a native GitHub review
 is also submitted for `native-review` repos — the comment is what a
