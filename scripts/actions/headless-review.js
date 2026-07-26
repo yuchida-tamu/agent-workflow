@@ -28,10 +28,24 @@ import { METERED_VAR, TOKEN_VAR, classify, launchPlan, summaryLine } from "../he
 import { reviewEnabled } from "../headless/config.js";
 import { loadTiers } from "../log/cli.js";
 import { runId } from "./dispatch-comment.js";
+// The review-artifact contract (#111, merged): marker + verdict/sha/ux lines
+// the G3 guard's reader parses back. This is what #112 exists to emit —
+// reusing the reader's own exported constants rather than restating the
+// grammar here keeps the writer and reader from drifting apart.
+import { MARKER, VERDICTS } from "../review/core.js";
+import { resolveIdentity, botLogin } from "../identity/identity.js";
 
 const TOOLKIT = process.env.AGENTFLOW_TOOLKIT ?? join(dirname(fileURLToPath(import.meta.url)), "../..");
-const MARKER = "<!-- agentflow-headless-review -->";
 const AGENT = "code-reviewer";
+// The only severity that flips the verdict on its own. Matches the three-tier
+// scale (`high`/`medium`/`low`) agents/code-reviewer.md's Artifact format
+// section now instructs the agent to use — "blocking" per #112's brief.
+const BLOCKING_SEVERITY = "high";
+
+// Named from the reader's own array rather than restated, so the two literal
+// words this module is allowed to write can never drift from what
+// `parseReviewComment`/`VERDICTS` accept.
+const [MERGEABLE, NOT_MERGEABLE] = VERDICTS;
 
 const sh = (args) => execFileSync("gh", args, { encoding: "utf8" });
 
@@ -48,13 +62,64 @@ export function reviewPrompt({ repo, prNumber, baseSha, headSha }) {
   ].join("\n");
 }
 
+// Extracts the `findings` array the agent's own JSON output carries, if any.
+// Anything that doesn't parse as `{ findings: [...] }` is not a shape this
+// can trust — `verdictFromFindings` treats that the same as a review that
+// produced nothing usable.
+export function findingsFromText(text) {
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed?.findings) ? parsed.findings : null;
+  } catch {
+    return null;
+  }
+}
+
+// The deterministic half of the contract (Determinism-first, CLAUDE.md ground
+// rule 1): a script decides the verdict from the agent's own structured
+// findings, rather than trusting free text the agent might phrase as
+// "Verdict: APPROVE" — see agents/code-reviewer.md's Artifact format section
+// for the live incident that phrasing caused (the guard read it as no review
+// at all). Any finding at the blocking severity makes the run
+// `not-mergeable`; an empty or all-lower-severity list is `mergeable`. A
+// findings value that isn't even an array is NOT mergeable — an unreadable
+// result must not be trusted as a pass, same "absence is refusal" posture
+// scripts/review/core.js keeps for a missing artifact.
+export function verdictFromFindings(findings) {
+  if (!Array.isArray(findings)) return NOT_MERGEABLE;
+  return findings.some((f) => f?.severity === BLOCKING_SEVERITY) ? NOT_MERGEABLE : MERGEABLE;
+}
+
+// The single place both the posted comment and the native review (if any)
+// derive their verdict from, so the two artifacts can never disagree about
+// the same run (the "native vs comment divergence" risk #81's plan calls
+// out). A non-"ok" outcome (disabled, unauthenticated, rate-limited, failed)
+// never produced findings to read, so it is `not-mergeable` unconditionally —
+// the PR was not reviewed, and the guard must refuse rather than pass on a
+// run that did not happen.
+export function reviewVerdict({ outcome, text }) {
+  if (outcome !== "ok") return NOT_MERGEABLE;
+  return verdictFromFindings(findingsFromText(text));
+}
+
 // The comment posted to the PR. A failed or refused run still posts, because a
 // review that silently did not happen is indistinguishable from one that found
 // nothing — which is the failure mode this whole issue exists to remove.
-export function reviewBody({ outcome, reason, text, model, usage }) {
-  const head = `${MARKER}\n## Headless review — \`${AGENT}\` (${model ?? "no model"})`;
+//
+// The first three lines after the marker are the review-artifact contract
+// (#111's scripts/review/core.js): `verdict:`, `sha:`, `ux:`, each on its own
+// line with no other text — the exact shape `parseReviewComment` requires.
+// `sha` is always the full head commit, never abbreviated, so a later commit
+// can never be mistaken for the one this artifact describes. `ux` is always
+// `n/a` here: the headless path only ever runs code-reviewer, never
+// ux-reviewer (see agents/ux-reviewer.md's Artifact format section for when a
+// UX pass records something else on this same artifact).
+export function reviewBody({ outcome, reason, text, model, usage, headSha }) {
+  const verdict = reviewVerdict({ outcome, text });
+  const contract = `${MARKER}\nverdict: ${verdict}\nsha: ${headSha}\nux: n/a`;
+  const head = `## Headless review — \`${AGENT}\` (${model ?? "no model"})`;
   if (outcome === "ok") {
-    return `${head}\n\n${text}\n\n---\n\`${summaryLine({ agent: AGENT, model, outcome, usage })}\``;
+    return `${contract}\n\n${head}\n\n${text}\n\n---\n\`${summaryLine({ agent: AGENT, model, outcome, usage })}\``;
   }
   const explanation = {
     disabled: "Headless review is switched off for this repo, so no review ran.",
@@ -62,8 +127,43 @@ export function reviewBody({ outcome, reason, text, model, usage }) {
     "rate-limited": "The subscription's rate-limit window was already spent, so no review ran.",
     failed: "The review run failed.",
   }[outcome] ?? "The review run did not complete.";
-  return `${head}\n\n**${outcome}** — ${explanation}\n\n> ${reason ?? "no reason reported"}\n\n` +
+  return `${contract}\n\n${head}\n\n**${outcome}** — ${explanation}\n\n> ${reason ?? "no reason reported"}\n\n` +
     "This comment exists so the absence of a review is visible. A stage that fails silently is how review disappeared across #30–#69.";
+}
+
+// Should this run also submit a native GitHub review, alongside the comment
+// artifact? Pure, mirroring scripts/actions/auto-merge.js's decideBotReview:
+// every "no" names itself, and an unknown acting login still attempts the
+// review rather than skipping it on a guess — the comment artifact is the G3
+// record either way, so trying costs nothing worse than an ignorable API
+// error.
+//
+// Unlike decideBotReview, there is no risk-verdict gate here: the authority
+// for *this* review is the review itself (this run's own verdict), not a
+// separately-recorded risk level — so the only questions are "is there an
+// identity to act as" and "would this be a forbidden self-review".
+export function decideNativeReview({ identity, prAuthor = null, actingLogin = null }) {
+  if (!identity?.configured) {
+    return { review: false, reason: "no agent_identity configured — the comment artifact is the G3 record" };
+  }
+  if (actingLogin && prAuthor && actingLogin.toLowerCase() === prAuthor.toLowerCase()) {
+    return {
+      review: false,
+      reason: `@${actingLogin} authored this PR — GitHub forbids approving your own pull request`,
+    };
+  }
+  return {
+    review: true,
+    reason: `agent_identity configured (@${botLogin(identity.slug)}) — submitting a native review alongside the comment`,
+  };
+}
+
+// The native review's body. Short on purpose: the findings live in the
+// comment artifact (both modes keep it, per #112's plan, so solo and
+// native-review repos audit identically); this is only the record that a
+// native review exists and what it says.
+export function renderNativeReview({ verdict, headSha }) {
+  return `⚙️ agentflow headless review: \`${verdict}\` at \`${headSha}\`. Findings are in the review-artifact comment on this PR.`;
 }
 
 function upsertComment(repo, prNumber, body) {
@@ -74,6 +174,43 @@ function upsertComment(repo, prNumber, body) {
     sh(["api", "--method", "PATCH", `repos/${repo}/issues/comments/${existing.id}`, "-f", `body=${body}`]);
   } else {
     sh(["pr", "comment", String(prNumber), "--repo", repo, "--body", body]);
+  }
+}
+
+// Where an App identity is configured, the comment above is joined by a
+// native review — the artifact the guard treats as authoritative in
+// native-review mode (scripts/review/core.js's precedence). The comment
+// artifact is kept in both modes regardless (auto-merge.js's record-vs-review
+// split, mirrored here): a native review that fails to submit must never lose
+// the record, and a solo-comment repo must audit identically to a
+// native-review one.
+function submitNativeReview({ config, repo, prNumber, pr, verdict, headSha }) {
+  let actingLogin = null;
+  try {
+    actingLogin = sh(["api", "user", "--jq", ".login"]).trim() || null;
+  } catch {
+    actingLogin = null; // an App installation token cannot read /user; decide without it
+  }
+  const decision = decideNativeReview({
+    identity: resolveIdentity(config),
+    prAuthor: pr.user?.login ?? null,
+    actingLogin,
+  });
+  if (!decision.review) {
+    console.log(`headless review: no native review — ${decision.reason}`);
+    return;
+  }
+  try {
+    sh([
+      "pr", "review", String(prNumber), "--repo", repo,
+      verdict === MERGEABLE ? "--approve" : "--request-changes",
+      "--body", renderNativeReview({ verdict, headSha }),
+    ]);
+    console.log(`headless review: native review submitted (${verdict}) — ${decision.reason}`);
+  } catch (err) {
+    // Never fatal. The comment artifact is the record either way — mirrors
+    // auto-merge.js's posture on a review that fails to submit.
+    console.log(`headless review: native review could not be submitted (${err.message}) — the comment artifact stands`);
   }
 }
 
@@ -137,8 +274,9 @@ async function main() {
     upsertComment(
       repo,
       prNumber,
-      reviewBody({ outcome: "unauthenticated", reason: message, text: "", model: tier, usage: null }),
+      reviewBody({ outcome: "unauthenticated", reason: message, text: "", model: tier, usage: null, headSha: pr.head.sha }),
     );
+    submitNativeReview({ config, repo, prNumber, pr, verdict: NOT_MERGEABLE, headSha: pr.head.sha });
     return 0;
   }
 
@@ -177,14 +315,18 @@ async function main() {
     result = { outcome: "failed", reason: err.message, usage: null, model: null, stdout: "" };
   }
 
+  const text = reviewText(result.stdout ?? "");
+  const headSha = pr.head.sha;
   const body = reviewBody({
     outcome: result.outcome,
     reason: result.reason,
-    text: reviewText(result.stdout ?? ""),
+    text,
     model: result.model,
     usage: result.usage,
+    headSha,
   });
   upsertComment(repo, prNumber, body);
+  submitNativeReview({ config, repo, prNumber, pr, verdict: reviewVerdict({ outcome: result.outcome, text }), headSha });
 
   const ledgerOutcome = result.outcome === "ok" ? "ok" : result.outcome === "disabled" ? "abandoned" : "failed";
   log(["end", "--issue", String(prNumber), "--run", run, "--outcome", ledgerOutcome, "--repo", repo]);

@@ -1,9 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { reviewBody, reviewPrompt, reviewText } from "../scripts/actions/headless-review.js";
+import {
+  reviewBody,
+  reviewPrompt,
+  reviewText,
+  findingsFromText,
+  verdictFromFindings,
+  reviewVerdict,
+  decideNativeReview,
+  renderNativeReview,
+} from "../scripts/actions/headless-review.js";
 import { verifyChecks } from "../init/verify.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
+// The real contract test: round-trip what headless-review.js emits through
+// the MERGED reader (#111) it is written for. A hand-rolled regex here would
+// only prove this file agrees with itself.
+import { MARKER as REVIEW_MARKER, parseReviewComment } from "../scripts/review/core.js";
+
+const sha = "64665f52b6cfd4f688deda8677b27dc008e49009"; // full 40 hex chars, on purpose
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 
@@ -31,8 +46,8 @@ test("every non-ok outcome still produces a comment", () => {
   // A stage that fails silently is exactly how review disappeared across
   // #30–#69. Absence has to be as visible as a finding.
   for (const outcome of ["disabled", "unauthenticated", "rate-limited", "failed"]) {
-    const body = reviewBody({ outcome, reason: "because", text: "", model: null, usage: null });
-    assert.match(body, /^<!-- agentflow-headless-review -->/);
+    const body = reviewBody({ outcome, reason: "because", text: "", model: null, usage: null, headSha: sha });
+    assert.match(body, new RegExp(`^${REVIEW_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(body, new RegExp(`\\*\\*${outcome}\\*\\*`));
     assert.match(body, /because/);
     assert.match(body, /absence of a review is visible/);
@@ -45,6 +60,7 @@ test("a successful review posts the findings and how it was billed", () => {
     text: '{ "findings": [] }',
     model: "opus",
     usage: { inputTokens: 10, outputTokens: 3, costUsd: 0 },
+    headSha: sha,
   });
   assert.match(body, /"findings"/);
   assert.match(body, /subscription-billed/);
@@ -52,10 +68,170 @@ test("a successful review posts the findings and how it was billed", () => {
 });
 
 test("the comment marker is stable, so reviews update in place", () => {
-  const a = reviewBody({ outcome: "ok", text: "x", model: "opus", usage: null });
-  const b = reviewBody({ outcome: "failed", reason: "y", text: "", model: null, usage: null });
-  const marker = "<!-- agentflow-headless-review -->";
-  assert.equal(a.startsWith(marker) && b.startsWith(marker), true);
+  const a = reviewBody({ outcome: "ok", text: "x", model: "opus", usage: null, headSha: sha });
+  const b = reviewBody({ outcome: "failed", reason: "y", text: "", model: null, usage: null, headSha: sha });
+  assert.equal(a.startsWith(REVIEW_MARKER) && b.startsWith(REVIEW_MARKER), true);
+});
+
+// --- the review artifact contract (#111's reader, #112's writer) -------------
+//
+// The real contract test: what headless-review.js emits has to round-trip
+// through the MERGED `scripts/review/core.js` reader, not just match a regex
+// this file invented independently.
+
+test("a mergeable review round-trips through the merged reader", () => {
+  const body = reviewBody({
+    outcome: "ok",
+    text: JSON.stringify({ findings: [{ file: "a.js", line: 1, claim: "nit", scenario: "-", severity: "low" }] }),
+    model: "opus",
+    usage: null,
+    headSha: sha,
+  });
+  const parsed = parseReviewComment(body);
+  assert.ok(parsed, "the emitted comment must parse as a review artifact");
+  assert.equal(parsed.verdict, "mergeable", "a low-severity finding alone does not block");
+  assert.equal(parsed.sha, sha);
+  assert.equal(parsed.sha.length, 40, "the full head sha, never abbreviated");
+  assert.equal(parsed.ux, "n/a", "headless mode only ever runs code-reviewer");
+  assert.equal(parsed.source, "comment");
+});
+
+test("a high-severity finding round-trips as not-mergeable", () => {
+  const body = reviewBody({
+    outcome: "ok",
+    text: JSON.stringify({
+      findings: [{ file: "a.js", line: 1, claim: "bug", scenario: "crashes on empty input", severity: "high" }],
+    }),
+    model: "opus",
+    usage: null,
+    headSha: sha,
+  });
+  const parsed = parseReviewComment(body);
+  assert.equal(parsed.verdict, "not-mergeable");
+  assert.equal(parsed.sha, sha);
+});
+
+test("every non-ok outcome round-trips as a fresh not-mergeable veto", () => {
+  // Fresh, not merely "not-mergeable": a stale artifact has no veto power
+  // (scripts/review/core.js's isHeadFresh), so a failed run must still name
+  // the real head — otherwise the failure silently loses its refusal power.
+  for (const outcome of ["disabled", "unauthenticated", "rate-limited", "failed"]) {
+    const body = reviewBody({ outcome, reason: "x", text: "", model: null, usage: null, headSha: sha });
+    const parsed = parseReviewComment(body);
+    assert.ok(parsed, outcome);
+    assert.equal(parsed.verdict, "not-mergeable", outcome);
+    assert.equal(parsed.sha, sha, outcome);
+  }
+});
+
+test("unparseable agent output is not trusted as a pass", () => {
+  // An empty findings list is a valid pass; output that fails to parse as
+  // `{ findings: [...] }` at all is not the same thing and must not be read
+  // as one — "absence is refusal" applies to the writer, not only the reader.
+  const body = reviewBody({ outcome: "ok", text: "not json at all", model: "opus", usage: null, headSha: sha });
+  const parsed = parseReviewComment(body);
+  assert.equal(parsed.verdict, "not-mergeable");
+});
+
+// --- the deterministic verdict, unit-tested at its own seam -------------------
+
+test("verdictFromFindings blocks only on the high severity", () => {
+  assert.equal(verdictFromFindings([]), "mergeable");
+  assert.equal(verdictFromFindings([{ severity: "low" }, { severity: "medium" }]), "mergeable");
+  assert.equal(verdictFromFindings([{ severity: "medium" }, { severity: "high" }]), "not-mergeable");
+  assert.equal(verdictFromFindings(null), "not-mergeable", "not an array — cannot be trusted as a pass");
+  assert.equal(verdictFromFindings(undefined), "not-mergeable");
+});
+
+test("findingsFromText degrades to null rather than throwing", () => {
+  assert.deepEqual(findingsFromText('{"findings":[{"severity":"low"}]}'), [{ severity: "low" }]);
+  assert.equal(findingsFromText("not json"), null);
+  assert.equal(findingsFromText('{"findings":"not an array"}'), null);
+  assert.equal(findingsFromText('{"no findings key":true}'), null);
+});
+
+test("reviewVerdict refuses unconditionally on any non-ok outcome", () => {
+  for (const outcome of ["disabled", "unauthenticated", "rate-limited", "failed"]) {
+    assert.equal(reviewVerdict({ outcome, text: '{"findings":[]}' }), "not-mergeable", outcome);
+  }
+  assert.equal(reviewVerdict({ outcome: "ok", text: '{"findings":[]}' }), "mergeable");
+  assert.equal(reviewVerdict({ outcome: "ok", text: '{"findings":[{"severity":"high"}]}' }), "not-mergeable");
+});
+
+// --- native-mode: submitting a review as the App, alongside the comment ------
+//
+// Mirrors test/auto-merge.test.js's coverage of decideBotReview — same shape,
+// deliberately: an unconfigured repo attempts nothing, a self-review is
+// refused (GitHub forbids it), an unknown acting login still tries, and every
+// refusal names itself. Unlike decideBotReview there is no risk-verdict gate:
+// the authority for this review is this run's own verdict.
+
+const identity = { configured: true, slug: "agentflow-bot", appId: null, source: "config" };
+
+test("a configured identity submits a native review", () => {
+  const d = decideNativeReview({ identity, prAuthor: "yuchida-tamu", actingLogin: "agentflow-bot[bot]" });
+  assert.equal(d.review, true);
+  assert.match(d.reason, /agent_identity/i);
+});
+
+test("no identity configured means no native review — the comment stands alone", () => {
+  const d = decideNativeReview({ identity: { configured: false, slug: null }, prAuthor: "yuchida-tamu" });
+  assert.equal(d.review, false);
+  assert.match(d.reason, /agent_identity|not configured/i);
+});
+
+test("the acting identity never tries to approve its own PR", () => {
+  // The ordinary case once agent PRs are authored by the App: the reviewer
+  // and the PR author are the same bot.
+  const d = decideNativeReview({
+    identity,
+    prAuthor: "agentflow-bot[bot]",
+    actingLogin: "agentflow-bot[bot]",
+  });
+  assert.equal(d.review, false);
+  assert.match(d.reason, /own pull request/i);
+});
+
+test("a different acting login may review an App-authored PR", () => {
+  const d = decideNativeReview({ identity, prAuthor: "agentflow-bot[bot]", actingLogin: "github-actions[bot]" });
+  assert.equal(d.review, true);
+});
+
+test("an unknown acting login still attempts the review", () => {
+  // Better to try and let GitHub refuse than to silently skip the artifact on
+  // a guess — the comment artifact is the record either way.
+  const d = decideNativeReview({ identity, prAuthor: "agentflow-bot[bot]", actingLogin: null });
+  assert.equal(d.review, true);
+});
+
+test("every native-review refusal names itself", () => {
+  const refusals = [
+    { identity: { configured: false }, prAuthor: "x" },
+    { identity, prAuthor: "agentflow-bot[bot]", actingLogin: "agentflow-bot[bot]" },
+  ];
+  for (const input of refusals) {
+    const d = decideNativeReview(input);
+    assert.equal(d.review, false);
+    assert.ok(d.reason && d.reason.length > 10, JSON.stringify(d));
+  }
+});
+
+test("the native review's own event matches the verdict — approve vs request-changes", () => {
+  // decideNativeReview only decides WHETHER to review; the caller (main())
+  // picks --approve/--request-changes from the same reviewVerdict() this file
+  // already pins above. This test locks the two literal review bodies so a
+  // refactor can't silently swap which verdict maps to which GitHub review
+  // event without a test noticing.
+  assert.match(renderNativeReview({ verdict: "mergeable", headSha: sha }), /`mergeable`/);
+  assert.match(renderNativeReview({ verdict: "not-mergeable", headSha: sha }), /`not-mergeable`/);
+  assert.match(renderNativeReview({ verdict: "mergeable", headSha: sha }), new RegExp(sha));
+});
+
+test("main() picks --approve for mergeable and --request-changes for not-mergeable", () => {
+  // Line-level check of the seam this file's other tests can't reach without
+  // mocking `gh`: the ternary that turns a verdict into a `gh pr review` flag.
+  const source = read("scripts/actions/headless-review.js");
+  assert.match(source, /verdict === MERGEABLE \? "--approve" : "--request-changes"/);
 });
 
 test("a shape change in the CLI output degrades to posting what we got", () => {
