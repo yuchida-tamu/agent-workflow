@@ -16,6 +16,20 @@ import { execFileSync } from "node:child_process";
 import { planTransition, stateFromLabels, transitionsFrom } from "./machine.js";
 import { releaseKindOf } from "../config/load.js";
 import { latestVerdict, authorises } from "../verdict/core.js";
+import { childrenOf } from "../hierarchy/gh.js";
+
+// A parent completes when its children do. Resolved here (I/O) and handed to
+// machine.js as a plain fact, so the machine stays pure.
+function parentFacts(repo, issue) {
+  try {
+    const { children } = childrenOf(repo ?? repoSlug(repo), Number(issue));
+    if (!children.length) return { hasChildren: false, allChildrenDone: false };
+    const done = children.every((c) => c.closed);
+    return { hasChildren: true, allChildrenDone: done, children };
+  } catch {
+    return { hasChildren: false, allChildrenDone: false };
+  }
+}
 
 function parseArgs(argv) {
   const flags = {};
@@ -62,7 +76,8 @@ try {
         gh(["issue", "view", flags.issue, ...repoArgs, "--json", "labels"])
       );
       const labels = issue.labels.map((l) => l.name);
-      const plan = planTransition(labels, flags.to, { releaseKind: releaseKindOf() });
+      const parent = flags.to === "verified" ? parentFacts(flags.repo, flags.issue) : null;
+      const plan = planTransition(labels, flags.to, { releaseKind: releaseKindOf(), parent });
       // A gate can be satisfied two ways: a validated human approval, or — for
       // G2 only — a recorded risk verdict that required no gate. The second is
       // read from the item's own verdict comment here, never asserted by the

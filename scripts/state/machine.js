@@ -56,9 +56,35 @@ export function releasesAtAll(releaseKind = DEFAULT_RELEASE_KIND) {
 
 // The states reachable from `state` for this repo. Under `none`, `verified` is
 // terminal — expressed here once, so no caller has to special-case it.
-export function transitionsFrom(state, { releaseKind = DEFAULT_RELEASE_KIND } = {}) {
+// A parent delegates all its work to children and never opens a PR of its own,
+// so `ready → in-progress → in-review → merged` are states it can never
+// legitimately occupy. Before this edge existed a parent sat at `ready` forever
+// and the dispatcher kept nominating an implementer to build work that had
+// already shipped.
+//
+// `verified` is the right landing point rather than a shortcut: each child was
+// merged under its own G3 and smoke-verified on the way to `verified`. A parent
+// asserting `verified` summarises verification that happened, it does not claim
+// verification it skipped. The transition comment should say so — on a parent,
+// `verified` means "my children were", not "I was".
+//
+// Ungated deliberately: every child already cost a human a G3. Requiring a fifth
+// approval to acknowledge four already given is the interrupt #16 exists to
+// remove. It is guarded instead — children must exist and all be done.
+export const PARENT_COMPLETION = { from: "ready", to: "verified" };
+
+export function parentMayComplete({ hasChildren = false, allChildrenDone = false } = {}) {
+  return Boolean(hasChildren && allChildrenDone);
+}
+
+// The states reachable from `state` for this repo. Under `none`, `verified` is
+// terminal — expressed here once, so no caller has to special-case it.
+export function transitionsFrom(state, { releaseKind = DEFAULT_RELEASE_KIND, parent = null } = {}) {
   const targets = TRANSITIONS[state] ?? [];
   if (state === "verified" && !releasesAtAll(releaseKind)) return [];
+  if (state === PARENT_COMPLETION.from && parentMayComplete(parent ?? {})) {
+    return [...targets, PARENT_COMPLETION.to];
+  }
   return targets;
 }
 
