@@ -21,6 +21,24 @@ and impact domains.
    ordered (`gh issue create`, link with "Blocked by #N", label
    `state:ready` plus priority). Each child carries: its slice of the plan,
    its acceptance criteria, and its declared file surface.
+
+   Attach each child as a **native sub-issue** of the parent, so the
+   relationship is structural rather than prose:
+
+   ```sh
+   id=$(gh api repos/{owner}/{repo}/issues/<child> --jq .id)   # the id, NOT the number
+   gh api --method POST repos/{owner}/{repo}/issues/<parent>/sub_issues -F sub_issue_id=$id
+   ```
+
+   The endpoint takes the numeric issue **id**; passing the number silently
+   addresses a different issue. If it returns 404 or 410 the feature is
+   unavailable on that repo — fall back to opening each child body with
+   `Child of #<parent>` and say in the plan that hierarchy is textual there, so
+   nobody assumes a tree that does not exist. Write that line anyway: it is what
+   the fallback reads, and it costs nothing.
+
+   Sub-issues express hierarchy, not order. Dependency ordering stays in the
+   plan comment as "Blocked by #N".
 4. **Declare the plan surface** in a `plan.json` comment block
    (`{"files": [globs]}`) so `agentflow-facts --plan` can consume it.
 
