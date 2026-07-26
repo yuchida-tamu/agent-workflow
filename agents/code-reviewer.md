@@ -53,6 +53,16 @@ the existing one in place (same marker, upserted, exactly like the risk
 verdict — never a second comment), and it must begin with these lines,
 each on its own line, with nothing else on them:
 
+**Headless exception:** when you are run with no session present
+(`headless.review`), you do not post this comment yourself. You emit only
+the `{ findings: [...] }` JSON your definition already specifies, and
+`scripts/actions/headless-review.js` (the runner) composes these contract
+lines around it deterministically — including deriving `verdict:` from
+`severity`, case-folded, so it can never be laundered by a stray
+`"High"`/`"Verdict: APPROVE"`-style phrasing. Everything below still
+describes the artifact that results; you are just not the one posting it in
+that mode.
+
 ```
 <!-- agentflow-review -->
 verdict: mergeable

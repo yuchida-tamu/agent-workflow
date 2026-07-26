@@ -143,6 +143,16 @@ test("verdictFromFindings blocks only on the high severity", () => {
   assert.equal(verdictFromFindings(undefined), "not-mergeable");
 });
 
+test("a case-mismatched severity still blocks — 'High' cannot launder into a pass", () => {
+  // The agent's findings JSON is free text, not a validated enum. A
+  // case-sensitive === comparison here would let "High"/"HIGH" downgrade a
+  // blocking finding to a false `mergeable` — exactly the class of bug this
+  // script exists to prevent by deciding the verdict itself.
+  assert.equal(verdictFromFindings([{ severity: "High" }]), "not-mergeable");
+  assert.equal(verdictFromFindings([{ severity: "HIGH" }]), "not-mergeable");
+  assert.equal(verdictFromFindings([{ severity: " high " }]), "not-mergeable");
+});
+
 test("findingsFromText degrades to null rather than throwing", () => {
   assert.deepEqual(findingsFromText('{"findings":[{"severity":"low"}]}'), [{ severity: "low" }]);
   assert.equal(findingsFromText("not json"), null);

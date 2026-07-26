@@ -87,7 +87,15 @@ export function findingsFromText(text) {
 // scripts/review/core.js keeps for a missing artifact.
 export function verdictFromFindings(findings) {
   if (!Array.isArray(findings)) return NOT_MERGEABLE;
-  return findings.some((f) => f?.severity === BLOCKING_SEVERITY) ? NOT_MERGEABLE : MERGEABLE;
+  // Folded to lowercase and trimmed before comparing: the agent's own JSON
+  // is free text, not a validated enum, and "High"/"HIGH" (or trailing
+  // whitespace) must not silently downgrade a blocking finding to a false
+  // `mergeable` — a case mismatch here is exactly the class of failure this
+  // module exists to prevent by deciding the verdict itself instead of
+  // trusting the agent's prose.
+  return findings.some((f) => String(f?.severity ?? "").trim().toLowerCase() === BLOCKING_SEVERITY)
+    ? NOT_MERGEABLE
+    : MERGEABLE;
 }
 
 // The single place both the posted comment and the native review (if any)
@@ -167,6 +175,15 @@ export function renderNativeReview({ verdict, headSha }) {
 }
 
 function upsertComment(repo, prNumber, body) {
+  // `.find()` edits the FIRST marker comment it sees, while the reader
+  // (scripts/review/core.js's latestReviewComment) trusts the LAST one when
+  // several exist — safe ONLY because this workflow is the single writer of
+  // this marker and its concurrency group is `cancel-in-progress: true`
+  // (.github/workflows/agentflow-review.yml), so at most one marker comment
+  // is ever live at a time. A second concurrent writer to this same marker
+  // (another workflow, ux-reviewer posting independently, a human pasting
+  // the marker by hand) would create a first/last split this function does
+  // not detect or reconcile.
   const existing = JSON.parse(
     sh(["api", `repos/${repo}/issues/${prNumber}/comments`, "--jq", "[.[] | {id, body}]"]),
   ).find((c) => c.body.startsWith(MARKER));
