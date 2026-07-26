@@ -336,7 +336,8 @@
         <tr><td>Diff summary for reviewers</td><td>Haiku (L1)</td><td>Compression, not judgment; feeds humans and reviewers cheaply</td></tr>
         <tr><td>E2E failure clustering &amp; report drafting</td><td>Haiku (L1)</td><td>Pattern grouping over structured runner output</td></tr>
         <tr><td>Implementation, test authoring, fix loops</td><td>Sonnet (L2)</td><td>Code generation guided by an approved plan — the plan carries the hard decisions</td></tr>
-        <tr><td>Code review, UX review, exploratory QA</td><td>Sonnet (L2)</td><td>Judgment within a defined rubric (conventions, acceptance criteria)</td></tr>
+        <tr><td>Code review, UX review</td><td>Opus (L3)</td><td>The load-bearing quality gate — runs as a fresh subagent, independent of the implementer's context, and its word merges critical code</td></tr>
+        <tr><td>Exploratory QA</td><td>Sonnet (L2)</td><td>Judgment within a defined rubric (flows, edge-case probing)</td></tr>
         <tr><td>Product shaping, architecture, decomposition</td><td>Opus (L3)</td><td>Open-ended synthesis; a bad decision here is the most expensive kind</td></tr>
         <tr><td>Adversarial verification of review findings</td><td>Opus (L3)</td><td>Kills false positives before they cost an Implementer fix cycle</td></tr>
         <tr><td>Stuck diagnosis after bounded retries</td><td>Opus (L3)</td><td>Last resort before escalating to the human</td></tr>
@@ -719,9 +720,9 @@ your-app/                           # PROJECT — any consuming repo
       what: "Summarizes the diff and maps it to the brief's acceptance criteria, giving both agent reviewers and the human a cheap orientation pass.",
       why: "Compression, not judgment.",
       emits: "Summary comment on the PR." },
-    { id: "a3", col: 3, lane: "A", t: "Code + UX Reviewers", s: "findings verified", type: "agent", tier: "Sonnet",
-      what: "Code Reviewer checks correctness, conventions, and security. UX Reviewer runs the branch on the simulator and judges real pixels against acceptance criteria. Findings are adversarially verified (Opus) before the Implementer acts on them — false positives die here, not in a fix cycle.",
-      why: "Judgment within a rubric is mid-tier work; only the verification pass, which kills expensive false alarms, earns the frontier model.",
+    { id: "a3", col: 3, lane: "A", t: "Code + UX Reviewers", s: "fresh context · verified", type: "agent", tier: "Opus",
+      what: "Code Reviewer checks correctness, conventions, and security. UX Reviewer runs the branch on the simulator and judges real pixels against acceptance criteria. Both are spawned as fresh subagents — no shared context with the implementer, so the review judges what the code does, never why it was written. Findings are adversarially verified before the Implementer acts on them.",
+      why: "Review is the loop's load-bearing quality gate: its word merges critical code, so it earns the frontier model — and independence from the implementer's reasoning is what makes the judgment worth paying for.",
       emits: "Verified findings → Implementer fix loop, or a clean summary for G3." },
     { id: "g3", col: 3, lane: "G", t: "G3 · PR approval", s: "auto-merge low-risk", type: "gate",
       what: "The human reads the review summary and screenshots, then approves via native PR review. Change classes with a proven track record graduate to label-driven auto-merge.",

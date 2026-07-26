@@ -29,6 +29,13 @@ Build status: `README.md`. Repo: `yuchida-tamu/agent-workflow`.
    artifact. **Asking permission mid-stage is a defect, not politeness.**
    When several items wait at the same gate, batch them into one approval
    round rather than prompting per item.
+6. **Review is independent and Opus-tier.** code-reviewer and ux-reviewer run
+   as **freshly spawned subagents** (Task tool), never inline in the context
+   that implemented — a reviewer that knows *why* the code was written is
+   contaminated and must be re-run cold. Their inputs are the PR, the brief's
+   acceptance criteria, and the codebase; nothing else. Structural enforcement
+   arrives with headless auto-review (#83); until then this rule is the
+   enforcement.
 
 ## Operating the loop (crawl phase)
 
