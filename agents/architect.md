@@ -89,6 +89,22 @@ The integration PR's risk verdict covers the whole stack, because facts are
 extracted over `base...head` — the merge-base form. Do not propose narrowing
 that range; `test/facts.test.js` pins it.
 
+**How a stack comes apart matters as much as how it goes together.** Children
+merge into the integration branch *before* the integration branch merges to
+main. If the base merges first, every remaining child is left targeting a branch
+that is no longer on any path to main — the merge succeeds, GitHub reports
+MERGED, and nothing lands.
+
+The specific trap: `gh pr merge --delete-branch=false`. GitHub retargets a
+child PR to main when its base branch is **deleted**, and only then. Suppressing
+the delete suppresses the retarget. On 2026-07-26 that stranded #38, #39 and
+#40 — three green, merged, empty PRs that took a manual read of main to notice.
+
+So: merge children first, or let the base branch be deleted so the remaining
+children retarget. Never both suppress the delete and merge the base early.
+The post-merge handler now asserts the merged head is an ancestor of the
+default branch, so a stranding is caught rather than discovered.
+
 ## Plan amendments
 
 Plans are wrong sometimes, and a plan quietly diverging from its children is

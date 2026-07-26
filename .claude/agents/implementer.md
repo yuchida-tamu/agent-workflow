@@ -42,6 +42,17 @@ If you discover mid-build that you need a sibling's unmerged work and the plan
 did not anticipate it, that is a scope finding: say so on the issue rather
 than quietly merging their branch into yours.
 
+**Unwind order.** Your PR merges into the integration branch before that branch
+merges to main. If the base goes first, your PR is left targeting a branch that
+is no longer on any path to main: the merge will succeed, GitHub will say
+MERGED, and your work will not be there. `gh pr merge --delete-branch=false`
+is the specific trap — GitHub retargets a child to main only when its base is
+*deleted*, so suppressing the delete suppresses the retarget. That stranded
+three PRs on 2026-07-26.
+
+After any stacked merge, confirm delivery rather than trusting the badge:
+`git merge-base --is-ancestor <your head> origin/main`.
+
 ## When the plan's file surface is wrong
 
 Staying inside the declared surface is a hard constraint, but the plan is
