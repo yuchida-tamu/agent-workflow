@@ -40,8 +40,16 @@ Run the named agent by following its definition — they're spawnable from
 `.claude/agents/` (installed copies) with source of truth in `agents/`.
 If you edit `agents/*.md`, update the copy in `.claude/agents/` too.
 
-Gates: the `agentflow · gate` workflow validates `/approve` comments and
-applies transitions automatically. Manual fallback:
+Gates: `/approve` is an **issue** command, for G1/G2/G4 only — the
+`agentflow · gate` workflow validates it and applies the transition
+(it deliberately ignores PR comments). G3 on this repo runs in **solo mode**:
+agent PRs are authored by the human's own account, so native review approval
+is impossible (GitHub forbids approving your own PR) and branch protection is
+unavailable (private free plan). Interim G3 artifact: an `/approve` comment
+on the PR naming the head SHA, then merge, then transition the issue manually
+— #18 wires this up properly (SHA-stamped validation + merge-event
+transition). Native-review G3 returns when agents get their own GitHub App
+identity (Phase 3). Manual fallback:
 `node scripts/state/cli.js apply --issue N --to <state> --approved-gate G1..G4`.
 
 Work-item states: `idea → spec → planned → ready → in-progress → in-review
@@ -58,3 +66,8 @@ PRs get risk verdicts from baseline + `policies/business.yml`.
   `node scripts/policy/cli.js test policies/baseline.yaml packs/expo/policies/expo.yaml`.
 - Commit style: imperative subject, body explains why; every commit leaves
   `npm test` green.
+- Dependent children may stack on an `integrate/<topic>` branch and merge to
+  main through one integration PR (G3 on that PR; its body lists the children
+  it subsumes). Independent children go one-PR-to-main. A mid-run change to an
+  approved plan is a **Plan amendment** comment linking the original plan, with
+  every affected child issue edited to match — see `agents/architect.md`.

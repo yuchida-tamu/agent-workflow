@@ -29,6 +29,12 @@ const sh = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
 const loadYaml = (path) => parseYaml(readFileSync(path, "utf8"));
 
 // --- facts from the real diff ---
+// Three dots, deliberately: `base...head` is `merge-base(base, head)..head`.
+// On an integration branch carrying a stack of child merges, that is what makes
+// the verdict see the whole stack rather than only the final merge commit —
+// measured on PR #15, three-dot saw all 11 files where the merge commit alone
+// saw 8. Changing this to two dots would silently under-report risk at G3.
+// test/facts.test.js pins the difference.
 const numstat = sh("git", ["diff", "--numstat", `${baseSha}...${headSha}`])
   .split("\n")
   .filter(Boolean)
