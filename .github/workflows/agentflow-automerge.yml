@@ -1,0 +1,23 @@
+# Optional: create the agentflow GitHub App and set AGENTFLOW_APP_ID and
+# AGENTFLOW_APP_PRIVATE_KEY as repo secrets, and every agentflow action below
+# acts as the App rather than as this workflow. Unset secrets evaluate to empty
+# strings, so leaving them unset changes nothing. See docs/github-app-runbook.md.
+name: agentflow · auto-merge
+# Fires when checks finish, which is the moment both inputs the decision needs
+# — a green CI rollup and a posted verdict — are first available together.
+on:
+  check_suite:
+    types: [completed]
+permissions:
+  pull-requests: write
+  contents: write
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: yuchida-tamu/agent-workflow/actions/auto-merge@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          app-id: ${{ secrets.AGENTFLOW_APP_ID }}
+          app-private-key: ${{ secrets.AGENTFLOW_APP_PRIVATE_KEY }}

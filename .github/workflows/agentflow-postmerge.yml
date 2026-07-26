@@ -1,0 +1,27 @@
+# Optional: create the agentflow GitHub App and set AGENTFLOW_APP_ID and
+# AGENTFLOW_APP_PRIVATE_KEY as repo secrets, and every agentflow action below
+# acts as the App rather than as this workflow. Unset secrets evaluate to empty
+# strings, so leaving them unset changes nothing. See docs/github-app-runbook.md.
+name: agentflow · post-merge
+on:
+  pull_request:
+    types: [closed]
+permissions:
+  issues: write
+  contents: read
+jobs:
+  post-merge:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The delivery check compares the merged head against the default
+          # branch. A shallow clone has no history to compare, which would
+          # produce false "did not deliver" findings and block real merges.
+          fetch-depth: 0
+      - uses: yuchida-tamu/agent-workflow/actions/post-merge@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          app-id: ${{ secrets.AGENTFLOW_APP_ID }}
+          app-private-key: ${{ secrets.AGENTFLOW_APP_PRIVATE_KEY }}
