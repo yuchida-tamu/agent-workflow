@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The delivery check compares the merged head against the default
+          # branch. A shallow clone has no history to compare, which would
+          # produce false "did not deliver" findings and block real merges.
+          fetch-depth: 0
       - uses: __TOOLKIT_REPO__/actions/post-merge@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
