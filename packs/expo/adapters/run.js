@@ -89,8 +89,11 @@ export function bundleIdFromConfig(config) {
 // an install that may not exist.
 export async function decideStartPath({ bundleId, target, runner }) {
   try {
-    const apps = await agentDevice.listApps({ platform: "ios", device: target, runner });
-    const list = Array.isArray(apps) ? apps : (apps?.apps ?? []);
+    // listApps already unwraps the {success, data:{apps:[...]}} envelope and
+    // hands back the bare array (see lib/agent-device.js#listApps, #142) —
+    // this used to re-derive the array itself via `apps?.apps`, which never
+    // matched the real payload shape and defeated the reuse path entirely.
+    const list = await agentDevice.listApps({ platform: "ios", device: target, runner });
     const installed = list.some((a) =>
       typeof a === "string" ? a === bundleId : a?.id === bundleId || a?.bundleId === bundleId
     );
