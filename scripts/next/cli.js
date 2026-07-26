@@ -9,6 +9,7 @@
 
 import { execFileSync } from "node:child_process";
 import { pickNext } from "./core.js";
+import { childrenOf } from "../hierarchy/gh.js";
 import { releaseKindOf } from "../config/load.js";
 
 function parseArgs(argv) {
@@ -19,6 +20,10 @@ function parseArgs(argv) {
     else if (flags.repo === null) flags.repo = arg;
   }
   return flags;
+}
+
+function repoSlug() {
+  return execFileSync("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { encoding: "utf8" }).trim();
 }
 
 const flags = parseArgs(process.argv.slice(2));
@@ -33,7 +38,20 @@ try {
     )
   ).map((i) => ({ ...i, labels: i.labels.map((l) => l.name) }));
 
-  const next = pickNext(issues, { releaseKind: releaseKindOf() });
+  // Resolved here (I/O) and injected, so core.js stays pure. Called at most
+  // once per `ready` candidate, and only until an actionable one is found.
+  const parentFactsFor = (number) => {
+    try {
+      const { children } = childrenOf(flags.repo ?? repoSlug(), number);
+      if (!children.length) return null;
+      const open = children.filter((c) => !c.closed).map((c) => c.number);
+      return { hasChildren: true, allChildrenDone: open.length === 0, openChildren: open };
+    } catch {
+      return null; // cannot tell — treat as an ordinary item rather than block it
+    }
+  };
+
+  const next = pickNext(issues, { releaseKind: releaseKindOf(), parentFactsFor });
   if (!next) {
     console.log(flags.json ? JSON.stringify({ idle: true }) : "backlog idle — nothing actionable");
     process.exit(1);

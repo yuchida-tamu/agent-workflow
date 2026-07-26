@@ -113,3 +113,44 @@ test("parent facts do not leak into other states", () => {
     assert.deepEqual(dispatchFor(state, { parent }), DISPATCH[state], state);
   }
 });
+
+test("a parent waiting on children is skipped, not reported as next", () => {
+  // The dispatcher's question is "who acts next". A parent with open children
+  // has no answer, so reporting it puts an untouchable item at the top of the
+  // queue — which is how it spent a whole session nominating implementers to
+  // rebuild work that had already shipped.
+  const next = pickNext(
+    [issue(1, ["state:ready", "priority:p1"]), issue(2, ["state:ready", "priority:p2"])],
+    { parentFactsFor: (n) => (n === 1 ? { hasChildren: true, allChildrenDone: false, openChildren: [9] } : null) }
+  );
+  assert.equal(next.issue, 2, "skips the blocked parent and names someone who can act");
+});
+
+test("a parent whose children are done is reported, with the script as actor", () => {
+  const next = pickNext([issue(1, ["state:ready", "priority:p1"])], {
+    parentFactsFor: () => ({ hasChildren: true, allChildrenDone: true, openChildren: [] }),
+  });
+  assert.equal(next.issue, 1);
+  assert.equal(next.dispatch.actor, "script");
+});
+
+test("parent facts are only consulted for ready items", () => {
+  const asked = [];
+  pickNext([issue(1, ["state:planned", "priority:p1"]), issue(2, ["state:idea", "priority:p2"])], {
+    parentFactsFor: (n) => { asked.push(n); return null; },
+  });
+  assert.deepEqual(asked, [], "no API calls for states where the answer cannot matter");
+});
+
+test("a queue of nothing but blocked parents reports idle", () => {
+  const next = pickNext([issue(1, ["state:ready", "priority:p1"])], {
+    parentFactsFor: () => ({ hasChildren: true, allChildrenDone: false, openChildren: [9] }),
+  });
+  assert.equal(next, null);
+});
+
+test("omitting parentFactsFor preserves the previous behaviour", () => {
+  const next = pickNext([issue(1, ["state:ready", "priority:p1"])]);
+  assert.equal(next.issue, 1);
+  assert.equal(next.dispatch.who, "implementer");
+});

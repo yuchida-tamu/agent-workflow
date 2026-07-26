@@ -83,14 +83,26 @@ export function pickNext(issues, options = {}) {
   candidates.sort(
     (a, b) => a.priority - b.priority || Date.parse(a.issue.createdAt) - Date.parse(b.issue.createdAt)
   );
-  const top = candidates[0];
-  if (!top) return null;
-  return {
-    issue: top.issue.number,
-    title: top.issue.title,
-    state: top.state,
-    priority: top.priority,
-    dispatch: dispatchFor(top.state, options),
-    queue: candidates.length,
-  };
+  // Parent facts are resolved lazily, and only for `ready` items — asking for
+  // every candidate would cost one API call each to answer a question that only
+  // changes the answer for parents.
+  //
+  // A parent waiting on open children is skipped rather than reported: the
+  // dispatcher's question is "who acts next", and nobody can act on it. Without
+  // this, the top of the queue is an item no one should touch, which is how it
+  // spent this session telling implementers to rebuild shipped work.
+  const parentFactsFor = options.parentFactsFor ?? (() => null);
+  for (const candidate of candidates) {
+    const parent = candidate.state === "ready" ? parentFactsFor(candidate.issue.number) : null;
+    if (parent?.hasChildren && !parent.allChildrenDone) continue; // nobody can act
+    return {
+      issue: candidate.issue.number,
+      title: candidate.issue.title,
+      state: candidate.state,
+      priority: candidate.priority,
+      dispatch: dispatchFor(candidate.state, { ...options, parent }),
+      queue: candidates.length,
+    };
+  }
+  return null;
 }
