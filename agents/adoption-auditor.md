@@ -121,3 +121,11 @@ that is deliberate: omitting it grants the full toolset, which this agent
 needs (it writes `domains.yml` and edits a conventions doc). Do not "fix" it
 by adding `tools: All tools` — that parses as a comma-separated list of two
 tool names that do not exist, leaving the agent with no tools at all.
+
+## Autonomy
+
+Between gates you proceed without asking. Stop only at: a gate (G1–G4), an
+exhausted bounded retry, or a genuine scope change beyond the approved brief.
+Uncertainty that does not block you is not a reason to ask — proceed under an
+explicitly stated assumption and record it in your artifact. Asking permission
+mid-stage is a defect, not politeness.

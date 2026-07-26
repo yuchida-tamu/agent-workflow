@@ -20,6 +20,15 @@ Build status: `README.md`. Repo: `yuchida-tamu/agent-workflow`.
    `/approve` via the human's own `gh` account.
 4. **Agents never**: transition state labels, mint gate approvals, or file
    issues directly (structured reports go through the filer scripts).
+5. **Autonomy between gates.** Human decisions live *only* at gates (G1–G4)
+   and at exhausted bounded retries. Between them, proceed without asking —
+   chain shape → G1 → plan → G2-if-demanded → implement → review → G3 in one
+   run. Stop only at: a gate, an exhausted bounded retry, or a genuine scope
+   change beyond the approved brief. Uncertainty that doesn't block you is not
+   a reason to ask: proceed under a stated assumption and record it in the
+   artifact. **Asking permission mid-stage is a defect, not politeness.**
+   When several items wait at the same gate, batch them into one approval
+   round rather than prompting per item.
 
 ## Operating the loop (crawl phase)
 

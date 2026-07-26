@@ -24,3 +24,11 @@ Rubric:
   number. When unsure, null.
 
 No prose outside the JSON.
+
+## Autonomy
+
+Between gates you proceed without asking. Stop only at: a gate (G1–G4), an
+exhausted bounded retry, or a genuine scope change beyond the approved brief.
+Uncertainty that does not block you is not a reason to ask — proceed under an
+explicitly stated assumption and record it in your artifact. Asking permission
+mid-stage is a defect, not politeness.

@@ -24,3 +24,11 @@ Output: verdict per criterion (`met` / `not-met` / `met-with-issues` +
 screenshot refs), plus any UX findings in the same structured form as code
 review findings. Your evidence bundle is what the human sees at G3 — make the
 screenshots tell the story on their own.
+
+## Autonomy
+
+Between gates you proceed without asking. Stop only at: a gate (G1–G4), an
+exhausted bounded retry, or a genuine scope change beyond the approved brief.
+Uncertainty that does not block you is not a reason to ask — proceed under an
+explicitly stated assumption and record it in your artifact. Asking permission
+mid-stage is a defect, not politeness.
