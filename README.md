@@ -19,6 +19,7 @@ live there; this README tracks what's built.
 | `scripts/facts/` | core | Diff/domain/drift fact extraction + `agentflow-facts` CLI |
 | `scripts/e2e/` | core | Gherkin parser, trace replay runner + `agentflow-e2e` CLI |
 | `scripts/next/` | core | Crawl-phase dispatcher + `agentflow-next` CLI |
+| `scripts/release/` | core | G4 release: tag + GitHub release + `agentflow-release` CLI |
 | `policies/baseline.yaml` | core | Platform-neutral baseline pack (locked guards + scoring) |
 | `interfaces/` | core | The four core↔pack contracts: `run` · `verify` · `execute-step` · `ship` |
 | `scenarios/SPEC.md` | core | Gherkin grammar, compiled-trace format, runner semantics |
