@@ -21,7 +21,8 @@
     "agentflow-init": "init/cli.js",
     "agentflow-log": "scripts/log/cli.js",
     "agentflow-release": "scripts/release/cli.js",
-    "agentflow-verdict": "scripts/verdict/cli.js"
+    "agentflow-verdict": "scripts/verdict/cli.js",
+    "agentflow-review": "scripts/review/cli.js"
   },
   "dependencies": {
     "yaml": "^2.4.0"

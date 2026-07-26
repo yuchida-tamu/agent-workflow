@@ -12,13 +12,46 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { latestVerdict, authorises } from "../verdict/core.js";
-import { botApprovalAllowed, resolveIdentity } from "../identity/identity.js";
+import { botApprovalAllowed, resolveIdentity, resolveTrustedReviewState } from "../identity/identity.js";
+import { reviewAuthorises, uiSurfaceTouched } from "../review/core.js";
 
 export const MARKER = "<!-- agentflow-automerge -->";
 
+// Where a repo's UI-surface glob list would come from, once a pack declares
+// one (#81's UX-inclusion rule; a `ui_surface:` list on `packs/**` is #112's
+// declared surface and has not shipped, and this repo's own domains.yml
+// declares no such list either). Read defensively off a top-level
+// `ui_surface` config key rather than hard-coded here, so a future
+// pack/config source only has to populate it — this function IS the
+// derivation seam #113 was asked to leave in place. Today nothing sets this
+// key anywhere in this repo, so it always resolves to an empty list, and
+// `uiSurfaceTouched` therefore always answers `false` here — exactly the
+// "no pack declares it, so uiTouched=false" case #81's plan calls out by
+// name (assumption 3).
+export function uiGlobsFor(config) {
+  const raw = config?.ui_surface;
+  return Array.isArray(raw) ? raw.filter((g) => typeof g === "string") : [];
+}
+
 // Pure. Every "no" names itself, because an auto-merge that silently declines is
 // indistinguishable from one that never ran.
-export function decideAutoMerge({ verdict, headSha, checksPassing, draft = false, mergeable = true }) {
+//
+// `reviewState`/`uiTouched` compose the #81/#111 review guard alongside the
+// risk verdict rather than folded into it (CLAUDE.md: "do not fold review
+// presence into authorises/botApprovalAllowed") — a clean risk verdict alone
+// must never be enough to merge a change nobody reviewed. `reviewState` is
+// expected pre-filtered to a trusted reviewer and pre-collapsed to "the
+// latest" by the caller (`resolveTrustedReviewState`, scripts/identity/identity.js)
+// — this function only asks whether what it was handed authorises crossing G3.
+export function decideAutoMerge({
+  verdict,
+  headSha,
+  checksPassing,
+  draft = false,
+  mergeable = true,
+  reviewState = null,
+  uiTouched = false,
+}) {
   if (draft) return { merge: false, reason: "PR is a draft" };
   if (!mergeable) return { merge: false, reason: "PR is not mergeable (conflicts or unknown state)" };
   if (!checksPassing) return { merge: false, reason: "CI is not green" };
@@ -35,7 +68,22 @@ export function decideAutoMerge({ verdict, headSha, checksPassing, draft = false
     }
     return { merge: false, reason: "verdict does not describe this head — it predates the current commit" };
   }
-  return { merge: true, reason: `verdict \`${verdict.level}\` carries no obligation requiring a human` };
+
+  // The risk verdict authorises a merge with no human — that is a statement
+  // about *risk*, not about whether anyone reviewed the change. Independent
+  // predicate, composed here (not folded in): absence, a `not-mergeable`
+  // verdict from either source, or a stale SHA all refuse, however clean the
+  // risk verdict looks.
+  const review = reviewAuthorises(reviewState ?? {}, { headSha, uiTouched });
+  if (!review.authorised) {
+    return { merge: false, reason: `review guard: ${review.reason}`, review };
+  }
+
+  return {
+    merge: true,
+    reason: `verdict \`${verdict.level}\` carries no obligation requiring a human, and the ${review.source} review is \`mergeable\` at head`,
+    review,
+  };
 }
 
 // Should the engine's decision also be recorded as a native approving review?
@@ -75,8 +123,13 @@ No agent decided this. Had the verdict required \`human-merge\`, blocked
 not exist and the PR would be waiting for a person.`;
 }
 
-export function renderRecord({ verdict, headSha }) {
+// `review` is the `reviewAuthorises` result that authorised this merge — the
+// caller only ever calls this once `decideAutoMerge` has already said yes, so
+// it is always present in production, but stays optional so a test can still
+// exercise the verdict-only shape.
+export function renderRecord({ verdict, headSha, review = null }) {
   const rules = verdict.matched.map((m) => `\`${m.pack}/${m.rule}\``).join(", ") || "no rules matched";
+  const reviewRow = review ? `\n| review | \`${review.source}\` review, \`${review.code}\` |` : "";
   return `${MARKER}
 ⚙️ **G3 auto-merged** — no human approval was required for this change.
 
@@ -86,11 +139,13 @@ export function renderRecord({ verdict, headSha }) {
 | requires | ${verdict.require.join(", ") || "—"} |
 | blocks | ${verdict.block.join(", ") || "—"} |
 | rules | ${rules} |
-| head | \`${headSha}\` |
+| head | \`${headSha}\` |${reviewRow}
 
 The verdict above was computed over this exact commit. Had it required
 \`human-merge\`, blocked \`auto-merge\`, described a different SHA, or been absent,
-this PR would have waited for a person.`;
+this PR would have waited for a person. Crossing G3 also required a fresh
+\`mergeable\` review of this exact head — absence, a \`not-mergeable\` verdict from
+either source, or a stale SHA on the review would have left this PR waiting too.`;
 }
 
 // --- I/O --------------------------------------------------------------------
@@ -110,7 +165,10 @@ if (isMain) {
   const number = pr.number;
 
   const view = JSON.parse(
-    sh(["pr", "view", String(number), "--repo", repo, "--json", "headRefOid,isDraft,mergeable,state,statusCheckRollup"])
+    sh([
+      "pr", "view", String(number), "--repo", repo, "--json",
+      "headRefOid,isDraft,mergeable,state,statusCheckRollup,files",
+    ])
   );
   if (view.state !== "OPEN") {
     console.log(`auto-merge: #${number} is ${view.state}`);
@@ -121,8 +179,35 @@ if (isMain) {
   const checksPassing =
     checks.length > 0 && checks.every((c) => ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(c.conclusion ?? c.state));
 
-  const comments = JSON.parse(sh(["api", `repos/${repo}/issues/${number}/comments`, "--jq", "[.[] | {body}]"]));
+  // Both fetches carry `author: {login, association}` — the risk-verdict
+  // reader ignores the extra field, and the review guard needs it to filter
+  // to a trusted reviewer before collapsing to "the latest" (see
+  // `resolveTrustedReviewState` below). One fetch each, two readers.
+  const comments = JSON.parse(
+    sh([
+      "api", `repos/${repo}/issues/${number}/comments`, "--jq",
+      "[.[] | {body, author: {login: .user.login, association: .author_association}}]",
+    ])
+  );
   const verdict = latestVerdict(comments);
+
+  const nativeReviews = JSON.parse(
+    sh([
+      "api", `repos/${repo}/pulls/${number}/reviews`, "--jq",
+      "[.[] | {state, commit_id, body, author: {login: .user.login, association: .author_association}}]",
+    ])
+  );
+
+  const config = existsSync("agentflow.config.json")
+    ? JSON.parse(readFileSync("agentflow.config.json", "utf8"))
+    : {};
+
+  // Resolve who is trusted from config, THEN filter the raw lists to that
+  // trust, THEN collapse to "the latest" — never the reverse (scripts/review/core.js's
+  // documented obligation; `resolveTrustedReviewState` is where #113 does this).
+  const trust = resolveTrustedReviewState({ config, nativeReviews, comments });
+  const changedFiles = (view.files ?? []).map((f) => f.path);
+  const uiTouched = uiSurfaceTouched(changedFiles, uiGlobsFor(config));
 
   const decision = decideAutoMerge({
     verdict,
@@ -130,6 +215,8 @@ if (isMain) {
     checksPassing,
     draft: view.isDraft,
     mergeable: view.mergeable === "MERGEABLE",
+    reviewState: { native: trust.native, comment: trust.comment },
+    uiTouched,
   });
 
   if (!decision.merge) {
@@ -140,14 +227,14 @@ if (isMain) {
   // Record first, merge second. If the merge fails the record is a harmless
   // extra comment; if the merge succeeded and the record failed, a gate would
   // have been crossed with no artifact at all.
-  sh(["pr", "comment", String(number), "--repo", repo, "--body", renderRecord({ verdict, headSha: view.headRefOid })]);
+  sh([
+    "pr", "comment", String(number), "--repo", repo, "--body",
+    renderRecord({ verdict, headSha: view.headRefOid, review: decision.review }),
+  ]);
 
   // The review is an addition to that record, never a replacement for it: the
   // comment is the artifact that survives a repo with no App, and deleting it
   // would make the two configurations audit differently.
-  const config = existsSync("agentflow.config.json")
-    ? JSON.parse(readFileSync("agentflow.config.json", "utf8"))
-    : {};
   let actingLogin = null;
   try {
     actingLogin = sh(["api", "user", "--jq", ".login"]).trim() || null;

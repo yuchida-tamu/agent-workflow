@@ -8,6 +8,8 @@
 // text. This module is where that becomes mechanical.
 
 import { authorises } from "../verdict/core.js";
+import { filterByAuthor, latestNativeReview, latestReviewComment } from "../review/core.js";
+import { reviewEnabled } from "../headless/config.js";
 
 // The config key naming the App whose identity agents act as. Optional
 // everywhere: the toolkit ships to repos that will never create an App, and
@@ -136,5 +138,106 @@ export function g3Mode({ config = {}, protection } = {}) {
     why:
       `agent PRs are authored by @${botLogin(identity.slug)} and the default branch is protected, ` +
       "so G3 is a native review and it is required",
+  };
+}
+
+// --- who the G3 review guard trusts (#113) -----------------------------------
+//
+// scripts/review/core.js parses whatever artifact it is handed and refuses to
+// pick a trusted identity on its own (see that module's header, at length): it
+// is the composing caller's job to filter the RAW comment/native-review lists
+// down to a trusted login BEFORE collapsing them to "the latest" — filtering
+// after collapse can lose a genuine veto to a newer, untrusted, fake pass.
+// This is that caller's identity half: which login(s) earn that trust, and
+// why.
+//
+// Reuses g3Mode() for the mode question rather than re-deriving "configured or
+// not" a second way — the same "one source of truth" reasoning `botApprovalAllowed`
+// and every other identity predicate here already follows.
+export const HEADLESS_REVIEW_BOT_LOGIN = "github-actions[bot]";
+
+// → { logins: [string], mode, why }
+//
+// native-review: the only identity that can post the artifact this guard was
+// designed to trust is the App itself — `decideBotReview` (auto-merge.js) and
+// the headless reviewer's native-review submission both act as it, and
+// `actions/headless-review/action.yml`/`actions/auto-merge/action.yml`
+// authenticate `gh` as the App whenever its credentials are supplied. Trusted
+// login: the App's bot login, derived from the same `agent_identity` config
+// key `resolveIdentity` already reads — a second key naming the reviewer
+// would be a second source of truth for an identity this repo already has one
+// name for.
+//
+// solo-comment: there is no App, so a marker comment authored by *anyone who
+// can comment on the PR* — including the PR's own author — is not
+// distinguishable from a fake pass by login alone (scripts/review/core.js's
+// header covers this at length: solo mode has no GitHub-side protection at
+// all). The one poster in solo mode that is provably not the human is the
+// headless reviewer, and it is that poster ONLY when `headless.review` is
+// actually turned on for this repo: `actions/headless-review/action.yml`
+// falls back to `secrets.GITHUB_TOKEN` when no App credentials are supplied,
+// which GitHub always attributes to `github-actions[bot]` — never to the
+// human, however the human authenticated the workflow run itself. So
+// `headless.review: true` is the config signal this resolves from, read via
+// `scripts/headless/config.js`'s own resolver rather than a second reading of
+// the key (the same "do not re-derive" discipline `resolveHeadless` already
+// enforces for `dispatchEnabled`).
+//
+// When headless review is OFF, config names nobody who is provably not the
+// human — not "trust nobody's individual posts" (which would still imply
+// someone to distrust), literally no identity is derivable at all. This
+// returns an empty login list for that case, and every caller that feeds it
+// into `filterByAuthor` gets that module's own documented fail-closed
+// behaviour for free: an empty trusted list filters out everything, which
+// `reviewAuthorises` then reads as `no-artifact`. Unconfigurable trust and
+// absent trust resolve to the same refusal on purpose — this is the
+// "fail closed when unconfigurable" decision #113 was asked to make and
+// record.
+export function trustedReviewerLogins({ config = {} } = {}) {
+  const { mode } = g3Mode({ config });
+  if (mode === "native-review") {
+    const identity = resolveIdentity(config);
+    const login = botLogin(identity.slug);
+    return {
+      logins: login ? [login] : [],
+      mode,
+      why: `native-review: @${login} is the only identity that can post the artifact this guard trusts`,
+    };
+  }
+  if (reviewEnabled(config)) {
+    return {
+      logins: [HEADLESS_REVIEW_BOT_LOGIN],
+      mode,
+      why:
+        `solo-comment with headless.review enabled: @${HEADLESS_REVIEW_BOT_LOGIN} is the only ` +
+        "poster that is provably not the PR's own human author",
+    };
+  }
+  return {
+    logins: [],
+    mode,
+    why:
+      "solo-comment with headless.review not enabled: no identity in config is provably not the " +
+      "PR's own author — fails closed, same posture as no artifact at all",
+  };
+}
+
+// → { native, comment, mode, trustedLogins, why }
+//
+// The full composition a G3 enforcement point needs: resolve who is trusted,
+// filter the RAW lists to that trust BEFORE collapsing (never after — see
+// scripts/review/core.js's header and its pinned ATTACK/ANTI-PATTERN tests for
+// why the order is load-bearing), then hand the collapsed pair to
+// `reviewAuthorises` at the call site. Pure — `nativeReviews`/`comments` are
+// already-fetched plain data; no `gh` here, so this stays testable without a
+// network.
+export function resolveTrustedReviewState({ config = {}, nativeReviews = [], comments = [] } = {}) {
+  const { logins, mode, why } = trustedReviewerLogins({ config });
+  return {
+    native: latestNativeReview(filterByAuthor(nativeReviews, logins)),
+    comment: latestReviewComment(filterByAuthor(comments, logins)),
+    mode,
+    trustedLogins: logins,
+    why,
   };
 }

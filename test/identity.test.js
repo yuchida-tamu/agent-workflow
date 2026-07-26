@@ -2,12 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   IDENTITY_KEY,
+  HEADLESS_REVIEW_BOT_LOGIN,
   botLogin,
   botApprovalAllowed,
   g3Mode,
   isBotAuthor,
   isBotLogin,
   resolveIdentity,
+  trustedReviewerLogins,
+  resolveTrustedReviewState,
 } from "../scripts/identity/identity.js";
 
 // --- resolveIdentity ---------------------------------------------------------
@@ -182,4 +185,102 @@ test("unreadable protection is reported as unknown, never as protected", () => {
   assert.equal(mode, "native-review");
   assert.equal(enforced, false);
   assert.match(why, /could not be read|unreadable/i);
+});
+
+// --- trustedReviewerLogins (#113) ---------------------------------------------
+//
+// Who the G3 review guard trusts, resolved from config the same way every
+// other identity decision here is: reusing g3Mode() for the mode question
+// rather than re-deriving "configured or not" a second way.
+
+test("native-review mode trusts only the App's bot login", () => {
+  const { logins, mode, why } = trustedReviewerLogins({ config: { [IDENTITY_KEY]: "agentflow-bot" } });
+  assert.equal(mode, "native-review");
+  assert.deepEqual(logins, ["agentflow-bot[bot]"]);
+  assert.match(why, /agentflow-bot\[bot\]/);
+});
+
+test("solo-comment mode with headless.review enabled trusts github-actions[bot]", () => {
+  const { logins, mode, why } = trustedReviewerLogins({ config: { headless: { review: true } } });
+  assert.equal(mode, "solo-comment");
+  assert.deepEqual(logins, [HEADLESS_REVIEW_BOT_LOGIN]);
+  assert.match(why, /headless\.review|github-actions/);
+});
+
+test("solo-comment mode with headless.review NOT enabled trusts nobody — fails closed", () => {
+  for (const config of [{}, { headless: { review: false } }, { headless: {} }]) {
+    const { logins, mode, why } = trustedReviewerLogins({ config });
+    assert.equal(mode, "solo-comment", JSON.stringify(config));
+    assert.deepEqual(logins, [], JSON.stringify(config));
+    assert.match(why, /fails closed|no identity/i);
+  }
+});
+
+test("an unconfigurable trust list is documented as the same posture as no artifact, not a special case", () => {
+  const { why } = trustedReviewerLogins({ config: {} });
+  assert.match(why, /same posture as no artifact/);
+});
+
+// --- resolveTrustedReviewState (#113) -----------------------------------------
+//
+// The full composition: resolve trust, filter RAW lists to it BEFORE
+// collapsing to "the latest", then hand the pair to a caller's
+// `reviewAuthorises`. Pins the pre-collapse filtering obligation
+// (scripts/review/core.js's header) at this composition layer too.
+
+const soloEnabled = { headless: { review: true } };
+const HEAD = "abc1234def5678deadbeef";
+
+function comment(login, verdict, sha = HEAD) {
+  return { body: `<!-- agentflow-review -->\nverdict: ${verdict}\nsha: ${sha}\nux: n/a`, author: { login } };
+}
+
+test("resolveTrustedReviewState with no raw artifacts at all yields nothing", () => {
+  const state = resolveTrustedReviewState({ config: soloEnabled, nativeReviews: [], comments: [] });
+  assert.equal(state.native, null);
+  assert.equal(state.comment, null);
+  assert.deepEqual(state.trustedLogins, [HEADLESS_REVIEW_BOT_LOGIN]);
+});
+
+test("resolveTrustedReviewState filters out an untrusted-only artifact", () => {
+  const comments = [comment("pr-author", "mergeable")];
+  const state = resolveTrustedReviewState({ config: soloEnabled, nativeReviews: [], comments });
+  assert.equal(state.comment, null);
+});
+
+test("resolveTrustedReviewState keeps a trusted artifact", () => {
+  const comments = [comment(HEADLESS_REVIEW_BOT_LOGIN, "mergeable")];
+  const state = resolveTrustedReviewState({ config: soloEnabled, nativeReviews: [], comments });
+  assert.equal(state.comment.verdict, "mergeable");
+  assert.equal(state.comment.sha, HEAD);
+});
+
+test("ATTACK (PR #123 finding 3, pinned again at this composition layer): an untrusted newer post cannot launder away a trusted veto", () => {
+  const comments = [
+    comment(HEADLESS_REVIEW_BOT_LOGIN, "not-mergeable"), // trusted, posted first
+    comment("pr-author", "mergeable"), // untrusted, posted after — must never win
+  ];
+  const state = resolveTrustedReviewState({ config: soloEnabled, nativeReviews: [], comments });
+  assert.equal(state.comment.verdict, "not-mergeable", "pre-collapse filtering keeps the trusted veto, not the fake");
+});
+
+test("with headless.review off, even a github-actions[bot]-authored post is not trusted — fails closed", () => {
+  const comments = [comment(HEADLESS_REVIEW_BOT_LOGIN, "mergeable")];
+  const state = resolveTrustedReviewState({ config: {}, nativeReviews: [], comments });
+  assert.equal(state.comment, null, "no config-derivable trust means nothing is trusted, however it's authored");
+  assert.deepEqual(state.trustedLogins, []);
+});
+
+test("native-review mode keeps a trusted native review and ignores an untrusted marker comment", () => {
+  const nativeReviews = [
+    { state: "APPROVED", commit_id: HEAD, body: null, author: { login: "agentflow-bot[bot]" } },
+  ];
+  const comments = [comment("pr-author", "mergeable")]; // untrusted in this mode
+  const state = resolveTrustedReviewState({
+    config: { [IDENTITY_KEY]: "agentflow-bot" },
+    nativeReviews,
+    comments,
+  });
+  assert.equal(state.native.verdict, "mergeable");
+  assert.equal(state.comment, null);
 });
