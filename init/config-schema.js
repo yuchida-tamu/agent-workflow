@@ -1,8 +1,10 @@
 // The shape of `agentflow.config.json`, written down as code for the first time.
 // Pure: no fs, no network, no `gh`.
 //
-// It describes *today's* config exactly — the eight keys the template ships,
-// with only the value constraints the loop actually depends on. It deliberately
+// It describes *today's* config exactly — every key the loop reads, seven of
+// them required and `release_kind` and `agent_identity` optional because both
+// postdate the template — with only the value constraints the loop actually
+// depends on. It deliberately
 // does not tighten: `platform` is any string (the pack it names need not exist
 // yet), and an unrecognised key is a warning, never a failure, because a
 // consuming repo may carry its own and a validator that rejects them would make
