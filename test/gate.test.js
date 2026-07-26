@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseCommand, validateApproval } from "../scripts/gate/validator.js";
+import { parseCommand, validateApproval, approvalTransitions } from "../scripts/gate/validator.js";
 
 test("parseCommand finds the command anywhere in the body", () => {
   assert.deepEqual(parseCommand("looks good!\n/approve"), { command: "approve", gate: null });
@@ -66,4 +66,37 @@ test("release_kind none does not touch the other gates", () => {
     const v = validateApproval({ ...base, expectedGate: gate, body: `/approve ${gate}`, releaseKind: "none" });
     assert.equal(v.ok, true, gate);
   }
+});
+
+// --- which gates transition on approval --------------------------------------
+
+test("G1, G2 and G3 approvals are themselves the act", () => {
+  for (const gate of ["G1", "G2", "G3"]) {
+    for (const releaseKind of ["tag", "store", "none", null]) {
+      assert.equal(approvalTransitions({ gate, releaseKind }), true, `${gate}/${releaseKind}`);
+    }
+  }
+});
+
+test("a G4 approval on a releasing repo does NOT transition", () => {
+  // It authorises a release that has not happened. Moving the label here would
+  // assert a release that does not exist — and lock agentflow-release out,
+  // since it requires `verified`. This is the #45 defect.
+  for (const releaseKind of ["tag", "store"]) {
+    assert.equal(approvalTransitions({ gate: "G4", releaseKind }), false, releaseKind);
+  }
+});
+
+test("under release_kind none the question is moot", () => {
+  // No G4 exists there — the validator already refuses it — so the ordinary
+  // path applies and nothing special-cases a gate that cannot occur.
+  assert.equal(approvalTransitions({ gate: "G4", releaseKind: "none" }), true);
+});
+
+test("the label can lag reality but never lead it", () => {
+  // The invariant this encodes: for every gate, either the approval performs
+  // the transition, or something that produces an artifact does. There is no
+  // gate where the label moves ahead of the thing it describes.
+  const releasing = ["G1", "G2", "G3", "G4"].map((gate) => approvalTransitions({ gate, releaseKind: "tag" }));
+  assert.deepEqual(releasing, [true, true, true, false]);
 });
