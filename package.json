@@ -4,6 +4,7 @@
   "description": "Platform-agnostic agentic development loop: deterministic core, injectable platform packs and risk policies",
   "type": "module",
   "private": true,
+  "license": "MIT",
   "engines": {
     "node": ">=18"
   },
