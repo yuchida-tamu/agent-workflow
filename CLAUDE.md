@@ -71,6 +71,15 @@ single exception is G3 on a PR whose recorded verdict already authorises an
 unattended merge — there the App transcribes an engine decision, it does not
 mint one.
 
+**Headless stages (Phase 3).** `headless.review` is shipped: a `pull_request`
+launches the code-reviewer on a runner with no session. Dispatch launch
+(`headless.dispatch.<state>`) is built but not yet enabled for any state, and
+nightly QA is deferred. Every flag ships off, so a repo that sets nothing is
+unchanged. Runs are billed to a Claude subscription via
+`CLAUDE_CODE_OAUTH_TOKEN` — `ANTHROPIC_API_KEY` is unsupported by design and is
+stripped from the child environment. Setup and token rotation:
+`docs/headless-runbook.md`.
+
 Work-item states: `idea → spec → planned → ready → in-progress → in-review
 → merged → verified → released`; gates G1 (brief) G2 (plan, risk-based)
 G3 (merge) G4 (release). `domains.yml` here maps the toolkit's own code;
