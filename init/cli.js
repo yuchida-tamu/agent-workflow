@@ -7,6 +7,7 @@
 //                          [--default-branch main] [--required-check <ctx>]…
 //                          [--environment release] [--toolkit owner/name]
 //   agentflow-init adopt --verify --target <dir> --repo owner/name
+//   agentflow-init adopt --coverage --target <dir> [--json]
 //
 // `labels` creates/updates the label set idempotently via `gh label create
 // --force`. `project` scaffolds a consuming app: config, domains map, business
@@ -22,6 +23,14 @@
 //
 // `adopt --verify` re-reads an already-adopted repo and reports, per check,
 // whether the step actually landed. It reports; it never repairs.
+//
+// `adopt --coverage` reports how much of the target's tracked source
+// `domains.yml` leaves unmapped, against the `unmapped_warn_fraction` its
+// config sets. It needs no repo — it reads git and two files. Exceeding the
+// threshold is a warning, not a failure: an under-grown map is a backlog item,
+// not a broken adoption, so the exit code stays 0 and the `!` line does the
+// talking.
+//
 // Exit codes: 0 ok · 1 a --verify check failed · 20 usage/error.
 
 import { execFileSync } from "node:child_process";
@@ -31,13 +40,17 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import {
   DEFAULT_TOOLKIT_REPO,
+  DEFAULT_WARN_FRACTION,
   NOT_APPLICABLE,
+  coverage,
   labelCreateCommands,
   labelPlan,
   remainingItems,
+  renderCoverage,
   renderSummary,
   scaffoldSummary,
   settingsReport,
+  trackedSourceFiles,
 } from "./adopt.js";
 import { exitCode, renderChecks, verifyChecks } from "./verify.js";
 
@@ -45,7 +58,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 // Flags that take no value. Everything else consumes the next argv entry, so a
 // boolean left out of here would silently swallow the flag that follows it.
-const BOOLEAN_FLAGS = { "--dry-run": "dryRun", "--verify": "verify" };
+const BOOLEAN_FLAGS = {
+  "--dry-run": "dryRun",
+  "--verify": "verify",
+  "--coverage": "coverage",
+  "--json": "json",
+};
 
 // A repeated flag accumulates (`--required-check a --required-check b`); a flag
 // given once stays a scalar, so existing callers see no change.
@@ -205,6 +223,18 @@ function ghGet(path) {
   }
 }
 
+// Every path git tracks in the target, NUL-separated so a filename containing a
+// space or a newline survives the round trip. Throws when the target is not a
+// repo — coverage over an untracked directory would be a made-up number.
+function gitTrackedFiles(target) {
+  const stdout = execFileSync("git", ["-C", target, "ls-files", "-z"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return stdout.split("\0").filter(Boolean);
+}
+
 const [command, ...rest] = process.argv.slice(2);
 const flags = parseArgs(rest);
 
@@ -234,11 +264,45 @@ switch (command) {
     break;
   }
   case "adopt": {
+    // Coverage reads git and two files in the target; it never touches the
+    // repo, so it is the one adopt mode that does not need --repo.
+    if (flags.coverage) {
+      if (!flags.target) {
+        console.error("usage: agentflow-init adopt --coverage --target <dir> [--json]");
+        process.exit(20);
+      }
+      let files;
+      try {
+        files = trackedSourceFiles(gitTrackedFiles(flags.target));
+      } catch (err) {
+        console.error(`agentflow-init: cannot list tracked files in ${flags.target} — ${err.message}`);
+        process.exit(20);
+      }
+      const config = readIfPresent(join(flags.target, "agentflow.config.json"), JSON.parse);
+      const warnFraction =
+        typeof config?.unmapped_warn_fraction === "number"
+          ? config.unmapped_warn_fraction
+          : DEFAULT_WARN_FRACTION;
+      const unmappedCriticality = config?.unmapped_criticality ?? "medium";
+      const report = coverage(
+        readIfPresent(join(flags.target, "domains.yml"), parseYaml),
+        files,
+        { warnFraction },
+      );
+      console.log(
+        flags.json
+          ? JSON.stringify({ ...report, unmapped_criticality: unmappedCriticality }, null, 2)
+          : renderCoverage(report, { unmappedCriticality }),
+      );
+      break;
+    }
+
     if (!flags.target || !flags.repo) {
       console.error(
         "usage: agentflow-init adopt --target <dir> --repo <owner/name> [--dry-run]\n" +
           "       [--default-branch main] [--required-check <ctx>]… [--environment release]\n" +
-          "       agentflow-init adopt --verify --target <dir> --repo <owner/name>",
+          "       agentflow-init adopt --verify --target <dir> --repo <owner/name>\n" +
+          "       agentflow-init adopt --coverage --target <dir> [--json]",
       );
       process.exit(20);
     }

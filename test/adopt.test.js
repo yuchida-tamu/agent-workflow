@@ -4,8 +4,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { domainFacts } from "../scripts/facts/core.js";
 import {
+  DEFAULT_WARN_FRACTION,
   NOT_APPLICABLE,
+  coverage,
+  isTrackedSource,
   labelCreateCommands,
   labelPlan,
   mergeProtection,
@@ -13,10 +17,12 @@ import {
   protectionBaseline,
   remainingItems,
   renderCommand,
+  renderCoverage,
   renderSummary,
   scaffoldSummary,
   settingsReport,
   shellQuote,
+  trackedSourceFiles,
 } from "../init/adopt.js";
 
 const labelsDoc = {
@@ -628,4 +634,185 @@ test("adopt has no apply path: neither module offers one, under any flag", () =>
   for (const args of invocations) {
     assert.doesNotMatch(args, /--method/, `adopt never issues a mutating gh api call: ${args}`);
   }
+});
+
+// --- coverage ---------------------------------------------------------------
+
+const map = {
+  checkout: { criticality: "critical", paths: ["src/checkout/**"] },
+  ui: { criticality: "low", paths: ["src/ui/**", "*.css"] },
+};
+
+const mapped = [
+  "src/checkout/cart.ts",
+  "src/checkout/pay.ts",
+  "src/checkout/total.ts",
+  "src/ui/Button.tsx",
+  "src/ui/Modal.tsx",
+  "src/ui/Text.tsx",
+  "main.css",
+];
+
+test("coverage: every tracked file mapped → nothing unmapped, nothing to warn about", () => {
+  const report = coverage(map, mapped, { warnFraction: DEFAULT_WARN_FRACTION });
+  assert.equal(report.total, 7);
+  assert.equal(report.mapped, 7);
+  assert.equal(report.unmapped, 0);
+  assert.equal(report.unmapped_fraction, 0);
+  assert.equal(report.warn, false);
+  assert.deepEqual(report.unmapped_files, []);
+  assert.deepEqual(report.top_unmapped_dirs, []);
+  assert.deepEqual(report.domains, [
+    { name: "checkout", criticality: "critical", files: 3 },
+    { name: "ui", criticality: "low", files: 4 },
+  ]);
+});
+
+test("coverage: the template stub maps nothing → every file unmapped", () => {
+  // `domains.yml` fresh from `agentflow-init` is comments only, so `yaml`
+  // parses it to null — the exact value the CLI hands in for an unadopted map.
+  const report = coverage(null, mapped, { warnFraction: DEFAULT_WARN_FRACTION });
+  assert.equal(report.mapped, 0);
+  assert.equal(report.unmapped, 7);
+  assert.equal(report.unmapped_fraction, 1);
+  assert.equal(report.warn, true);
+  assert.deepEqual(report.domains, []);
+  assert.deepEqual(report.top_unmapped_dirs, [
+    { dir: "src/checkout", count: 3 },
+    { dir: "src/ui", count: 3 },
+    { dir: ".", count: 1 },
+  ]);
+});
+
+test("coverage: partial, above the configured threshold → warn", () => {
+  const files = [...mapped, "scripts/deploy.sh", "scripts/build.sh", "README.md"];
+  const report = coverage(map, files, { warnFraction: 0.2 });
+  assert.equal(report.total, 10);
+  assert.equal(report.mapped, 7);
+  assert.equal(report.unmapped_fraction, 0.3);
+  assert.equal(report.warn, true);
+  assert.deepEqual(report.unmapped_files, ["scripts/deploy.sh", "scripts/build.sh", "README.md"]);
+  assert.deepEqual(report.top_unmapped_dirs, [
+    { dir: "scripts", count: 2 },
+    { dir: ".", count: 1 },
+  ]);
+});
+
+test("coverage: partial, below the configured threshold → no warn", () => {
+  const files = [...mapped, "src/checkout/tax.ts", "src/ui/Card.tsx", "scripts/deploy.sh"];
+  const report = coverage(map, files, { warnFraction: 0.2 });
+  assert.equal(report.total, 10);
+  assert.equal(report.unmapped, 1);
+  assert.equal(report.unmapped_fraction, 0.1);
+  assert.equal(report.warn, false);
+});
+
+test("coverage: exactly at the threshold is inside the budget the repo set", () => {
+  const files = ["src/ui/A.tsx", "src/ui/B.tsx", "src/ui/C.tsx", "src/ui/D.tsx", "scripts/x.sh"];
+  const report = coverage(map, files, { warnFraction: 0.2 });
+  assert.equal(report.unmapped_fraction, 0.2);
+  assert.equal(report.warn, false, "strictly above, so 20% of 20% is not over budget");
+});
+
+test("coverage: no configured threshold never warns, however bad the number is", () => {
+  const report = coverage(null, mapped);
+  assert.equal(report.unmapped_fraction, 1);
+  assert.equal(report.warn_fraction, null);
+  assert.equal(report.warn, false);
+});
+
+test("coverage: an empty repo is 0% unmapped, not NaN", () => {
+  const report = coverage(map, [], { warnFraction: 0 });
+  assert.equal(report.total, 0);
+  assert.equal(report.unmapped_fraction, 0);
+  assert.equal(report.warn, false);
+});
+
+test("coverage: overlapping domains both claim the file; a dead domain reports 0", () => {
+  const overlapping = {
+    ...map,
+    payments: { criticality: "high", paths: ["src/checkout/pay.ts"] },
+    legacy: { criticality: "medium", paths: ["app/legacy/**"] },
+  };
+  const report = coverage(overlapping, ["src/checkout/pay.ts"], { warnFraction: 0.2 });
+  assert.equal(report.unmapped, 0, "a file counted twice is still one file");
+  assert.equal(report.total, 1);
+  assert.deepEqual(report.domains, [
+    { name: "checkout", criticality: "critical", files: 1 },
+    { name: "payments", criticality: "high", files: 1 },
+    { name: "legacy", criticality: "medium", files: 0 },
+    { name: "ui", criticality: "low", files: 0 },
+  ]);
+});
+
+test("coverage: a domain with no criticality gets the engine's own default", () => {
+  const report = coverage({ odd: { paths: ["src/**"] } }, ["src/a.ts"], { warnFraction: 0.2 });
+  assert.deepEqual(report.domains, [{ name: "odd", criticality: "medium", files: 1 }]);
+});
+
+// The one number that must not drift: `--coverage` is repo-scoped and
+// `domainFacts()` is diff-scoped, but over the same file list they are the same
+// question, and they answer it with the same glob compiler.
+test("coverage: agrees file-for-file with the risk engine's unmapped_fraction", () => {
+  const files = [...mapped, "scripts/deploy.sh", "scripts/build.sh", "README.md"];
+  assert.equal(coverage(map, files).unmapped_fraction, domainFacts(map, files).unmapped_fraction);
+  assert.equal(coverage(map, files).unmapped_fraction, 0.3, "and it is the number both mean");
+});
+
+test("isTrackedSource: keeps what humans author, drops what they never assign criticality to", () => {
+  for (const path of ["src/a.ts", "README.md", "policies/business.yml", "package.json", "bin/run.sh"]) {
+    assert.equal(isTrackedSource(path), true, path);
+  }
+  for (const path of [
+    "node_modules/left-pad/index.js",
+    "ios/Pods/Firebase/x.m",
+    "dist/bundle.js",
+    "coverage/lcov-report/index.html",
+    "package-lock.json",
+    "ios/Podfile.lock",
+    "assets/logo.png",
+    "assets/Inter.woff2",
+    "test/__snapshots__/a.js.snap",
+  ]) {
+    assert.equal(isTrackedSource(path), false, path);
+  }
+});
+
+test("trackedSourceFiles: filters a `git ls-files` listing and drops empty entries", () => {
+  const listed = ["src/a.ts", "", "node_modules/x/index.js", "docs/guide.md", "yarn.lock"];
+  assert.deepEqual(trackedSourceFiles(listed), ["src/a.ts", "docs/guide.md"]);
+  assert.deepEqual(trackedSourceFiles(undefined), []);
+});
+
+test("renderCoverage: over budget names the threshold and the catch-all criticality", () => {
+  const files = [...mapped, "scripts/deploy.sh", "scripts/build.sh", "README.md"];
+  const out = renderCoverage(coverage(map, files, { warnFraction: 0.2 }), {
+    unmappedCriticality: "high",
+  });
+  assert.match(out, /coverage — 10 tracked source file\(s\), 3 unmapped \(30\.0%\)/);
+  assert.match(out, /! 30\.0% exceeds unmapped_warn_fraction 20\.0%/);
+  assert.match(out, /catch-all domain at criticality "high"/);
+  assert.match(out, /^ {4}2 {2}scripts$/m);
+  assert.match(out, /^ {4}3 {2}checkout \(critical\)$/m);
+});
+
+test("renderCoverage: within budget says nothing about a threshold", () => {
+  const out = renderCoverage(coverage(map, mapped, { warnFraction: 0.2 }));
+  assert.doesNotMatch(out, /exceeds/);
+  assert.doesNotMatch(out, /top unmapped directories/);
+  assert.match(out, /coverage — 7 tracked source file\(s\), 0 unmapped \(0\.0%\)/);
+});
+
+test("renderCoverage: an unmapped repo is told its map is still the stub", () => {
+  const out = renderCoverage(coverage(null, mapped, { warnFraction: 0.2 }));
+  assert.match(out, /domains\.yml maps nothing — it is still the template stub/);
+  assert.doesNotMatch(out, /mapped by domain/);
+});
+
+test("DEFAULT_WARN_FRACTION is the value the config template actually ships", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const template = JSON.parse(
+    readFileSync(join(here, "../init/templates/agentflow.config.json"), "utf8"),
+  );
+  assert.equal(DEFAULT_WARN_FRACTION, template.unmapped_warn_fraction);
 });
