@@ -10,8 +10,9 @@
 // Env: GITHUB_EVENT_PATH, GITHUB_REPOSITORY, GH_TOKEN.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { latestVerdict, authorises } from "../verdict/core.js";
+import { botApprovalAllowed, resolveIdentity } from "../identity/identity.js";
 
 export const MARKER = "<!-- agentflow-automerge -->";
 
@@ -35,6 +36,43 @@ export function decideAutoMerge({ verdict, headSha, checksPassing, draft = false
     return { merge: false, reason: "verdict does not describe this head — it predates the current commit" };
   }
   return { merge: true, reason: `verdict \`${verdict.level}\` carries no obligation requiring a human` };
+}
+
+// Should the engine's decision also be recorded as a native approving review?
+//
+// Pure, and every "no" names itself for the same reason `decideAutoMerge`'s do.
+// The authority is identical to the merge's — the same verdict, read the same
+// way — so this adds an artifact, never a permission. Two things can still stop
+// it: a repo with no App identity has nobody to review *as*, and GitHub forbids
+// approving your own pull request, which becomes the ordinary case once agent
+// PRs are authored by the App.
+//
+// An unknown `actingLogin` attempts the review rather than skipping it: the
+// merge does not depend on the review succeeding, so trying and letting GitHub
+// refuse beats dropping the artifact on a guess.
+export function decideBotReview({ identity, verdict, headSha, prAuthor = null, actingLogin = null }) {
+  if (!identity?.configured) {
+    return { review: false, reason: "no agent_identity configured — the comment record is the G3 artifact" };
+  }
+  if (!botApprovalAllowed({ gate: "G3", surface: "pr", verdict, headSha })) {
+    return { review: false, reason: "the recorded verdict does not authorise a merge without a human" };
+  }
+  if (actingLogin && prAuthor && actingLogin.toLowerCase() === prAuthor.toLowerCase()) {
+    return {
+      review: false,
+      reason: `@${actingLogin} authored this PR — GitHub forbids approving your own pull request`,
+    };
+  }
+  return { review: true, reason: `verdict \`${verdict.level}\` authorises the merge, so it authorises the review` };
+}
+
+export function renderReview({ verdict, headSha }) {
+  return `⚙️ Approving as agentflow, on the authority of the risk verdict recorded for \`${headSha}\`:
+level \`${verdict.level}\`, requiring ${verdict.require.join(", ") || "nothing"} and blocking ${verdict.block.join(", ") || "nothing"}.
+
+No agent decided this. Had the verdict required \`human-merge\`, blocked
+\`auto-merge\`, described a different commit, or been absent, this review would
+not exist and the PR would be waiting for a person.`;
 }
 
 export function renderRecord({ verdict, headSha }) {
@@ -103,6 +141,37 @@ if (isMain) {
   // extra comment; if the merge succeeded and the record failed, a gate would
   // have been crossed with no artifact at all.
   sh(["pr", "comment", String(number), "--repo", repo, "--body", renderRecord({ verdict, headSha: view.headRefOid })]);
+
+  // The review is an addition to that record, never a replacement for it: the
+  // comment is the artifact that survives a repo with no App, and deleting it
+  // would make the two configurations audit differently.
+  const config = existsSync("agentflow.config.json")
+    ? JSON.parse(readFileSync("agentflow.config.json", "utf8"))
+    : {};
+  let actingLogin = null;
+  try {
+    actingLogin = sh(["api", "user", "--jq", ".login"]).trim() || null;
+  } catch {
+    actingLogin = null; // an App installation token cannot read /user; decide without it
+  }
+  const reviewDecision = decideBotReview({
+    identity: resolveIdentity(config),
+    verdict,
+    headSha: view.headRefOid,
+    prAuthor: pr.user?.login ?? null,
+    actingLogin,
+  });
+  if (reviewDecision.review) {
+    try {
+      sh(["pr", "review", String(number), "--repo", repo, "--approve", "--body", renderReview({ verdict, headSha: view.headRefOid })]);
+      console.log(`auto-merge: #${number} approved by review — ${reviewDecision.reason}`);
+    } catch {
+      // Never fatal. The merge's authority is the verdict, not the review.
+      console.log(`auto-merge: #${number} could not be approved by review — the comment record stands as the artifact`);
+    }
+  } else {
+    console.log(`auto-merge: #${number} left unreviewed — ${reviewDecision.reason}`);
+  }
 
   try {
     sh(["pr", "merge", String(number), "--repo", repo, "--merge", "--delete-branch"]);

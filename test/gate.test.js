@@ -100,3 +100,111 @@ test("the label can lag reality but never lead it", () => {
   const releasing = ["G1", "G2", "G3", "G4"].map((gate) => approvalTransitions({ gate, releaseKind: "tag" }));
   assert.deepEqual(releasing, [true, true, true, false]);
 });
+
+// --- bot authors -------------------------------------------------------------
+//
+// "Agents never mint gate approvals" was a rule enforced by prompt text: an
+// agent-minted `/approve` was byte-identical to a human one. These are the cases
+// that make it mechanical — and the one narrow case where a bot approval stands
+// because the *engine*, not the bot, is what authorised it.
+
+const bot = { author: "agentflow-bot[bot]", authorType: "Bot", authorized: ["yuchida-tamu"] };
+const authorisingVerdict = { level: "low", require: [], block: [], run: [], matched: [], sha: "abc1234" };
+const prHead = "abc1234def5678";
+
+test("a bot may not approve a document gate, whatever the gate", () => {
+  for (const gate of ["G1", "G2", "G4"]) {
+    const v = validateApproval({ ...bot, body: "/approve", expectedGate: gate, releaseKind: "tag" });
+    assert.equal(v.ok, false, gate);
+    assert.match(v.reason, /bot/i);
+  }
+});
+
+test("a bot is refused even where it has somehow reached the approvers list", () => {
+  // Config validation already rejects this, so it is defence in depth: the bot
+  // check runs before the approver check, so a config that slipped through does
+  // not become an approval.
+  const v = validateApproval({
+    ...bot,
+    authorized: ["yuchida-tamu", "agentflow-bot[bot]"],
+    body: "/approve",
+    expectedGate: "G1",
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /bot/i);
+});
+
+test("a bot is recognised from its login when the payload carries no type", () => {
+  const v = validateApproval({ ...bot, authorType: null, body: "/approve", expectedGate: "G1" });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /bot/i);
+});
+
+test("a bot may not approve G3 on an issue, even with an authorising verdict", () => {
+  // The gate workflow only ever sees issue comments, so this is what keeps the
+  // carve-out unreachable there by construction rather than by configuration.
+  const v = validateApproval({
+    ...bot,
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "issue",
+    verdict: authorisingVerdict,
+    headSha: prHead,
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /bot/i);
+});
+
+test("a bot MAY approve G3 on a PR the engine already authorised", () => {
+  // The positive case matters as much as the refusals: a suite that only proved
+  // refusal would pass just as happily if the carve-out were dead code.
+  const v = validateApproval({
+    ...bot,
+    body: "/approve G3",
+    expectedGate: "G3",
+    surface: "pr",
+    verdict: authorisingVerdict,
+    headSha: prHead,
+  });
+  assert.equal(v.ok, true);
+  assert.equal(v.gate, "G3");
+  assert.equal(v.approver, "agentflow-bot[bot]");
+  // The outcome has to name what authorised it, or the audit trail records a bot
+  // approving a merge with no visible reason it was allowed to.
+  assert.equal(v.authorisedBy.verdict, "low");
+  assert.equal(v.authorisedBy.sha, "abc1234");
+});
+
+test("the bot's G3 carve-out refuses every verdict that does not authorise", () => {
+  const cases = [
+    [null, /verdict/i],
+    [{ ...authorisingVerdict, sha: null }, /verdict/i],
+    [{ ...authorisingVerdict, sha: "9999999" }, /verdict/i],
+    [{ ...authorisingVerdict, require: ["human-merge"] }, /verdict/i],
+    [{ ...authorisingVerdict, block: ["auto-merge"] }, /verdict/i],
+  ];
+  for (const [verdict, pattern] of cases) {
+    const v = validateApproval({
+      ...bot,
+      body: "/approve G3",
+      expectedGate: "G3",
+      surface: "pr",
+      verdict,
+      headSha: prHead,
+    });
+    assert.equal(v.ok, false, JSON.stringify(verdict));
+    assert.match(v.reason, pattern);
+  }
+});
+
+test("a bot rejection still stands — refusing to advance grants nothing", () => {
+  const v = validateApproval({ ...bot, body: "/reject the plan misses auth", expectedGate: "G1" });
+  assert.equal(v.rejected, true);
+  assert.equal(v.ok, false);
+});
+
+test("humans are entirely unaffected", () => {
+  const human = { author: "yuchida-tamu", authorType: "User", authorized: ["yuchida-tamu"] };
+  assert.ok(validateApproval({ ...human, body: "/approve", expectedGate: "G1" }).ok);
+  assert.ok(validateApproval({ ...human, body: "/approve G3", expectedGate: "G3", surface: "pr" }).ok);
+});

@@ -56,9 +56,15 @@ export function parseVerdict(body) {
     if (m) matched.push({ pack: m[1], rule: m[2] });
   }
 
-  // Optional: the SHA the verdict was computed over. pr-verdict.js does not
-  // record it yet, and `authorises` treats its absence as refusal for G3 rather
-  // than assuming the verdict still describes the current head.
+  // The SHA the verdict was computed over. `pr-verdict.js` records it (see the
+  // `verdict-sha:` line it renders), but the field stays optional and
+  // `authorises` treats its absence as refusal for G3 rather than assuming the
+  // verdict still describes the current head — a verdict written by anything
+  // that forgets the SHA must not authorise a merge.
+  //
+  // This comment previously said the SHA was not recorded yet. It was stale, and
+  // it cost something: the plan for #82 asserted a safety property the code did
+  // not have, on the strength of these three lines.
   const sha = text.match(/verdict-sha:\s*([0-9a-f]{7,40})/i)?.[1] ?? null;
 
   return {
