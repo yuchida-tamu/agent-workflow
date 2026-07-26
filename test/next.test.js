@@ -85,3 +85,31 @@ test("the dispatch table no longer promises a path that does not exist", () => {
   // It claimed "or auto-pass per risk verdict" while nothing implemented it.
   assert.doesNotMatch(DISPATCH.planned.action, /auto-pass/);
 });
+
+test("a parent with open children is never dispatched to an implementer", () => {
+  // The visible face of the bug: the dispatcher told an implementer to build
+  // #18, #45 and #50 — items whose work had already shipped.
+  const d = dispatchFor("ready", { parent: { hasChildren: true, allChildrenDone: false, openChildren: [66, 67] } });
+  assert.notEqual(d.who, "implementer");
+  assert.match(d.action, /waiting on 2 child/);
+  assert.match(d.action, /#66, #67/);
+});
+
+test("a parent whose children are done is dispatched to the script, not a human", () => {
+  const d = dispatchFor("ready", { parent: { hasChildren: true, allChildrenDone: true } });
+  assert.equal(d.actor, "script");
+  assert.match(d.action, /verified/);
+});
+
+test("a childless ready item still goes to the implementer", () => {
+  for (const parent of [{ hasChildren: false }, null, undefined]) {
+    assert.equal(dispatchFor("ready", { parent }).who, "implementer", JSON.stringify(parent));
+  }
+});
+
+test("parent facts do not leak into other states", () => {
+  const parent = { hasChildren: true, allChildrenDone: false, openChildren: [1] };
+  for (const state of STATES.filter((s) => s !== "ready" && s !== "verified")) {
+    assert.deepEqual(dispatchFor(state, { parent }), DISPATCH[state], state);
+  }
+});

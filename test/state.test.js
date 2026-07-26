@@ -6,6 +6,7 @@ import {
   gateFor,
   pendingGateFor,
   transitionsFrom,
+  parentMayComplete,
   planTransition,
   stateFromLabels,
 } from "../scripts/state/machine.js";
@@ -94,4 +95,56 @@ test("omitting options preserves the pre-release_kind behaviour exactly", () => 
   assert.deepEqual(transitionsFrom("verified"), ["released"]);
   assert.deepEqual(pendingGateFor("verified"), { gate: "G4", to: "released" });
   assert.equal(planTransition(["state:verified"], "released").gate, "G4");
+});
+
+// --- parents complete when their children do ---------------------------------
+
+test("a parent with all children done may go ready → verified", () => {
+  const parent = { hasChildren: true, allChildrenDone: true };
+  assert.ok(transitionsFrom("ready", { parent }).includes("verified"));
+  const plan = planTransition(["state:ready"], "verified", { parent });
+  assert.equal(plan.from, "ready");
+  assert.equal(plan.to, "verified");
+});
+
+test("the parent edge is ungated — every child already cost a human a G3", () => {
+  const plan = planTransition(["state:ready"], "verified", {
+    parent: { hasChildren: true, allChildrenDone: true },
+  });
+  assert.equal(plan.gate, null);
+});
+
+test("a parent with any child still open cannot complete", () => {
+  const parent = { hasChildren: true, allChildrenDone: false };
+  assert.ok(!transitionsFrom("ready", { parent }).includes("verified"));
+  assert.throws(() => planTransition(["state:ready"], "verified", { parent }), /illegal transition/);
+});
+
+test("a childless item cannot use the parent edge", () => {
+  // The guard that keeps an ordinary work item's path untouched: without it,
+  // anything at `ready` could skip implementation entirely.
+  for (const parent of [{ hasChildren: false, allChildrenDone: true }, {}, null, undefined]) {
+    assert.throws(
+      () => planTransition(["state:ready"], "verified", { parent }),
+      /illegal transition/,
+      JSON.stringify(parent)
+    );
+  }
+});
+
+test("omitting the parent option preserves the ordinary path exactly", () => {
+  assert.deepEqual(transitionsFrom("ready"), ["in-progress"]);
+  assert.equal(planTransition(["state:ready"], "in-progress").to, "in-progress");
+});
+
+test("a parent keeps the ordinary edge too, in case it ever does open a PR", () => {
+  const targets = transitionsFrom("ready", { parent: { hasChildren: true, allChildrenDone: true } });
+  assert.deepEqual(targets.sort(), ["in-progress", "verified"]);
+});
+
+test("the parent edge applies only from ready", () => {
+  const parent = { hasChildren: true, allChildrenDone: true };
+  for (const state of ["idea", "spec", "planned", "in-progress", "in-review", "merged"]) {
+    assert.ok(!transitionsFrom(state, { parent }).includes("verified") || state === "merged", state);
+  }
 });

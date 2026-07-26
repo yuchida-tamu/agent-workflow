@@ -36,7 +36,24 @@ const PLANNED_AUTOPASS = {
   action: "verdict requires no gate — apply `--to ready` to auto-pass; → ready",
 };
 
-export function dispatchFor(state, { releaseKind = "store", g2Authorised = null } = {}) {
+// A parent has no PR of its own, so nominating an implementer for it means
+// asking someone to rebuild work that already shipped — which is exactly what
+// the dispatcher did for #18, #45 and #50 before this existed.
+const PARENT_WAITING = (open) => ({
+  actor: "none",
+  who: "-",
+  action: `waiting on ${open.length} child(ren): ${open.map((n) => `#${n}`).join(", ")}`,
+});
+const PARENT_COMPLETE = {
+  actor: "script",
+  who: "agentflow-state",
+  action: "all children done — apply `--to verified`; → verified",
+};
+
+export function dispatchFor(state, { releaseKind = "store", g2Authorised = null, parent = null } = {}) {
+  if (state === "ready" && parent?.hasChildren) {
+    return parent.allChildrenDone ? PARENT_COMPLETE : PARENT_WAITING(parent.openChildren ?? []);
+  }
   if (state === "verified") return VERIFIED_BY_RELEASE_KIND[releaseKind] ?? DISPATCH.verified;
   if (state === "planned" && g2Authorised === true) return PLANNED_AUTOPASS;
   return DISPATCH[state];
