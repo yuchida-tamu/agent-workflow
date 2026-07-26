@@ -6,6 +6,7 @@
 //   agentflow-init adopt   --target <dir> --repo owner/name [--dry-run]
 //                          [--default-branch main] [--required-check <ctx>]…
 //                          [--environment release] [--toolkit owner/name]
+//   agentflow-init adopt --verify --target <dir> --repo owner/name
 //
 // `labels` creates/updates the label set idempotently via `gh label create
 // --force`. `project` scaffolds a consuming app: config, domains map, business
@@ -18,7 +19,10 @@
 // three read-only GETs and PRINTS the `gh api` command for whatever is missing.
 // It never applies them, under any flag: repo settings are a policy change on
 // someone's repo, and that stays a deliberate human keystroke.
-// Exit codes: 0 ok · 20 usage/error.
+//
+// `adopt --verify` re-reads an already-adopted repo and reports, per check,
+// whether the step actually landed. It reports; it never repairs.
+// Exit codes: 0 ok · 1 a --verify check failed · 20 usage/error.
 
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -36,15 +40,20 @@ import {
   scaffoldSummary,
   settingsReport,
 } from "./adopt.js";
+import { exitCode, renderChecks, verifyChecks } from "./verify.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+// Flags that take no value. Everything else consumes the next argv entry, so a
+// boolean left out of here would silently swallow the flag that follows it.
+const BOOLEAN_FLAGS = { "--dry-run": "dryRun", "--verify": "verify" };
 
 // A repeated flag accumulates (`--required-check a --required-check b`); a flag
 // given once stays a scalar, so existing callers see no change.
 function parseArgs(argv) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--dry-run") flags.dryRun = true;
+    if (argv[i] in BOOLEAN_FLAGS) flags[BOOLEAN_FLAGS[argv[i]]] = true;
     else if (argv[i].startsWith("--")) {
       const key = argv[i].slice(2);
       const value = argv[++i];
@@ -124,6 +133,54 @@ function readIfPresent(path, parse) {
   }
 }
 
+// Same read, but `--verify` has to tell "absent" from "unparseable" apart: they
+// are different missed steps and they get different advice.
+function readParsed(path, parse) {
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    return { value: null, error: err.code === "ENOENT" ? `not found at ${path}` : err.message };
+  }
+  try {
+    return { value: parse(text), error: null };
+  } catch (err) {
+    return { value: null, error: `does not parse — ${err.message}` };
+  }
+}
+
+// The stubs actually on disk. An absent one is not an error here — the check
+// reports it, alongside the ones that are installed but wrong.
+function readWorkflows(dir, expected) {
+  const files = [];
+  for (const name of expected) {
+    try {
+      files.push({ name, content: readFileSync(join(dir, name), "utf8") });
+    } catch {
+      /* absent — workflowsCheck says so */
+    }
+  }
+  return files;
+}
+
+// Run the dispatcher against the target repo the way the installed workflow
+// does. `--json` is what makes "unparseable output" a decidable outcome rather
+// than a judgement about prose. A non-zero exit is data, not a throw: 1 is the
+// documented idle code and has to reach verifyChecks() intact.
+function runNext(repo) {
+  try {
+    const stdout = execFileSync(
+      process.execPath,
+      [join(HERE, "../scripts/next/cli.js"), "--repo", repo, "--json"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    return { code: 0, stdout, error: null };
+  } catch (err) {
+    if (typeof err.status === "number") return { code: err.status, stdout: err.stdout ?? "", error: null };
+    return { code: null, stdout: "", error: err.message }; // never started
+  }
+}
+
 // A read-only GET, translated into the sentinel settingsReport() expects.
 // `gh api` writes the error body to stdout and its own one-liner to stderr, so
 // the HTTP status is recoverable from a failed call without parsing prose.
@@ -194,10 +251,50 @@ switch (command) {
     if (!flags.target || !flags.repo) {
       console.error(
         "usage: agentflow-init adopt --target <dir> --repo <owner/name> [--dry-run]\n" +
-          "       [--default-branch main] [--required-check <ctx>]… [--environment release]",
+          "       [--default-branch main] [--required-check <ctx>]… [--environment release]\n" +
+          "       agentflow-init adopt --verify --target <dir> --repo <owner/name>",
       );
       process.exit(20);
     }
+
+    if (flags.verify) {
+      let expectedLabels;
+      let expectedWorkflows;
+      try {
+        expectedLabels = parseYaml(readFileSync(join(HERE, "labels.yml"), "utf8")).labels.map((l) => l.name);
+        expectedWorkflows = readdirSync(join(HERE, "templates/workflows"));
+      } catch (err) {
+        console.error(`agentflow-init: cannot read its own templates — ${err.message}`);
+        process.exit(20);
+      }
+
+      let labels = { names: null, error: null };
+      try {
+        const listed = execFileSync(
+          "gh",
+          ["label", "list", "--repo", flags.repo, "--json", "name", "--limit", "200"],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+        );
+        labels = { names: JSON.parse(listed).map((l) => l.name), error: null };
+      } catch {
+        labels = { names: null, error: `\`gh label list --repo ${flags.repo}\` failed — cannot tell` };
+      }
+
+      const checks = verifyChecks({
+        config: readParsed(join(flags.target, "agentflow.config.json"), JSON.parse),
+        labels,
+        domains: readParsed(join(flags.target, "domains.yml"), parseYaml),
+        workflows: readWorkflows(join(flags.target, ".github/workflows"), expectedWorkflows),
+        next: runNext(flags.repo),
+        expectedLabels,
+        expectedWorkflows,
+      });
+
+      console.log(`verify ${flags.target} → ${flags.repo}\n`);
+      console.log(renderChecks(checks));
+      process.exit(exitCode(checks));
+    }
+
     const steps = projectPlan(flags.target, flags.toolkit);
     const onDisk = steps.map((s) => s.dir ?? s.to).filter((p) => existsSync(p));
     const scaffold = scaffoldSummary(steps, onDisk);
