@@ -1,0 +1,16 @@
+name: agentflow · post-merge
+on:
+  pull_request:
+    types: [closed]
+permissions:
+  issues: write
+  contents: read
+jobs:
+  post-merge:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: __TOOLKIT_REPO__/actions/post-merge@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
