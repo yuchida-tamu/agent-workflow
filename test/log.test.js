@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { MARKER, COLUMNS, render, parse, upsert, audit } from "../scripts/log/ledger.js";
-import { loadTiers } from "../scripts/log/cli.js";
+import { loadTiers, parentsWithDeclaredChildren } from "../scripts/log/cli.js";
 
 const row = (over = {}) => ({
   run: "a1b2c3",
@@ -103,10 +103,35 @@ test("an end for an unknown run throws", () => {
   );
 });
 
-test("an end for an already-closed run throws", () => {
+test("an end for an already-closed run throws — no open row remains to match", () => {
   let rows = upsert([], { kind: "start", run: "n1", phase: "spec", agent: "architect", model: "opus", started: "T0" });
   rows = upsert(rows, { kind: "end", run: "n1", ended: "T1", outcome: "ok" });
-  assert.throws(() => upsert(rows, { kind: "end", run: "n1", ended: "T2", outcome: "ok" }), /already closed/);
+  assert.throws(() => upsert(rows, { kind: "end", run: "n1", ended: "T2", outcome: "ok" }), /no open ledger row for run "n1"/);
+});
+
+// --- #105: a repeated run id must not strand a row --------------------------
+
+test("a start→end→start→end sequence leaves zero open rows", () => {
+  let rows = upsert([], { kind: "start", run: "n1", phase: "spec", agent: "architect", model: "opus", started: "T0" });
+  rows = upsert(rows, { kind: "end", run: "n1", ended: "T1", outcome: "ok" });
+  rows = upsert(rows, { kind: "start", run: "n1", phase: "ready", agent: "implementer", model: "sonnet", started: "T2" });
+  rows = upsert(rows, { kind: "end", run: "n1", ended: "T3", outcome: "ok" });
+  assert.equal(rows.length, 2, "the id was reused, so two rows exist");
+  assert.ok(rows.every((r) => r.ended !== null), "every row must be closed");
+});
+
+test("end after a start-after-close closes the second row, not the first (pins #105)", () => {
+  // The exact sequence that stranded rows on #90 and #91: start, end, start
+  // again with the same id (a correction, not a bug), then end. Before the
+  // fix, `end` matched the first row by id — the already-closed one — and
+  // threw "already closed" while an open row for the same id sat right there.
+  let rows = upsert([], { kind: "start", run: "n1", phase: "in-review", agent: "code-reviewer", model: "sonnet", started: "T0" });
+  rows = upsert(rows, { kind: "end", run: "n1", ended: "T1", outcome: "ok" });
+  rows = upsert(rows, { kind: "start", run: "n1", phase: "in-review", agent: "code-reviewer", model: "opus", started: "T2" });
+  rows = upsert(rows, { kind: "end", run: "n1", ended: "T3", outcome: "ok" });
+  assert.equal(rows[0].ended, "T1", "the first row is untouched");
+  assert.equal(rows[1].model, "opus", "the second row is the reopened one");
+  assert.equal(rows[1].ended, "T3", "the second row is the one that got closed");
 });
 
 test("a start reusing an open run id throws", () => {
@@ -230,4 +255,72 @@ test("a child is still charged for the phases it does perform itself", () => {
 test("a parent item is still charged for shaping and planning", () => {
   const findings = audit({ rows: [], tiers, state: "planned", hasParent: false });
   assert.equal(findings.length, 2);
+});
+
+// --- #101: a parent must not be charged phases it can never occupy ----------
+
+test("a parent reaching verified is not charged a gap for the implementer phase (pins #101)", () => {
+  // A parent delegates ready→merged to its children and jumps straight to
+  // `verified` (PARENT_COMPLETION in machine.js); it never opens a PR of its
+  // own, so the audit must not ask it for the implementer row that phase would
+  // normally require. Before the fix this was a permanent, unclearable gap.
+  const rows = [
+    row({ phase: "idea", agent: "product-shaper", model: "opus" }),
+    row({ phase: "spec", agent: "architect", model: "opus" }),
+  ];
+  assert.deepEqual(audit({ rows, tiers, state: "verified", hasChildren: true }), []);
+});
+
+test("a childless item reaching verified is still charged the implementer gap", () => {
+  const rows = [
+    row({ phase: "idea", agent: "product-shaper", model: "opus" }),
+    row({ phase: "spec", agent: "architect", model: "opus" }),
+  ];
+  const findings = audit({ rows, tiers, state: "verified", hasChildren: false });
+  assert.deepEqual(findings, [{ kind: "gap", phase: "ready", agent: "implementer", state: "verified" }]);
+});
+
+test("a parent is still charged for shaping and planning even though it has children", () => {
+  const findings = audit({ rows: [], tiers, state: "planned", hasChildren: true });
+  assert.equal(findings.length, 2, "hasChildren only excuses the ready phase, not idea/spec");
+});
+
+// --- parentsWithDeclaredChildren: local hasChildren for the whole-repo walk -
+//
+// A whole-repo audit used to call `childrenOf` per issue, which falls back to
+// a Search-API query for every childless issue and trips the 30 req/min
+// search cap partway through a ~65-issue repo (found in review of the
+// #101/#105 PR). `parentsWithDeclaredChildren` answers the same question from
+// the issue bodies the audit already fetched, at zero extra network cost.
+
+test("parentsWithDeclaredChildren finds a parent from a child's declaration", () => {
+  const issues = [
+    { number: 1, body: "## Idea\n\nparent stuff" },
+    { number: 2, body: "Child of #1\n\nchild stuff" },
+  ];
+  assert.deepEqual(parentsWithDeclaredChildren(issues), new Set([1]));
+});
+
+test("parentsWithDeclaredChildren is empty when no issue declares a parent", () => {
+  const issues = [{ number: 1, body: "no parent here" }, { number: 2, body: null }];
+  assert.deepEqual(parentsWithDeclaredChildren(issues), new Set());
+});
+
+test("parentsWithDeclaredChildren collects one parent from multiple children", () => {
+  const issues = [
+    { number: 5, body: "Child of #1" },
+    { number: 6, body: "Child of #1" },
+    { number: 7, body: "Child of #2" },
+  ];
+  assert.deepEqual(parentsWithDeclaredChildren(issues), new Set([1, 2]));
+});
+
+test("parentsWithDeclaredChildren ignores a mid-body mention, matching parentFromText", () => {
+  const issues = [{ number: 9, body: "See #1 for background, unrelated to parentage" }];
+  assert.deepEqual(parentsWithDeclaredChildren(issues), new Set());
+});
+
+test("parentsWithDeclaredChildren tolerates an empty or missing list", () => {
+  assert.deepEqual(parentsWithDeclaredChildren([]), new Set());
+  assert.deepEqual(parentsWithDeclaredChildren(undefined), new Set());
 });

@@ -6,7 +6,7 @@
 // never disagree with the audit. No clock, no id generation, no GitHub: the CLI
 // supplies `run` ids and timestamps, this module only does label math on rows.
 
-import { STATES } from "../state/machine.js";
+import { STATES, PARENT_COMPLETION } from "../state/machine.js";
 
 export const MARKER = "<!-- agentflow-ledger -->";
 export const HEADING = "### agentflow run ledger";
@@ -93,8 +93,10 @@ export function parse(body) {
 }
 
 // Apply one entry to a row list, returning a new list. `start` appends an open
-// row; `end` completes the matching open row in place. A close with no matching
-// open row is a bug in the caller, not something to paper over — so it throws.
+// row and refuses only when this id already has one open; a closed id is
+// reusable. `end` completes the matching open row in place. A close with no
+// matching open row is a bug in the caller, not something to paper over — so
+// it throws.
 export function upsert(rows, entry) {
   const current = [...(rows ?? [])];
   if (entry?.kind === "start") {
@@ -109,9 +111,14 @@ export function upsert(rows, entry) {
     return current;
   }
   if (entry?.kind === "end") {
-    const index = current.findIndex((r) => r.run === entry.run);
+    // Match the OPEN row for this id, not the first row that ever used it. A
+    // closed id is reusable (see `start` above), so after a start→end→start
+    // there are two rows sharing an id — matching by id alone finds the
+    // earlier, already-closed one and reports it as closed while an open row
+    // for the same id sits right there. `start` guarantees at most one open
+    // row per id at a time, so this match is never ambiguous.
+    const index = current.findIndex((r) => r.run === entry.run && r.ended === null);
     if (index === -1) throw new Error(`no open ledger row for run "${entry.run}"`);
-    if (current[index].ended !== null) throw new Error(`run "${entry.run}" is already closed`);
     current[index] = { ...current[index], ended: entry.ended ?? null, outcome: entry.outcome ?? null };
     return current;
   }
@@ -132,7 +139,26 @@ export function upsert(rows, entry) {
 // reads.
 const PARENT_ONLY_PHASES = new Set(["idea", "spec"]);
 
-export function audit({ rows, tiers, state = null, hasParent = false }) {
+// Phases a parent issue never performs itself, the mirror image of
+// `PARENT_ONLY_PHASES` above. `machine.js`'s `PARENT_COMPLETION` is the one
+// source of truth for where a parent's own life ends: it delegates
+// `ready → in-progress → in-review → merged` to children and jumps straight
+// from `ready` to `verified`, so the phase that would normally produce
+// `PARENT_COMPLETION.from` is one it can never log for itself. Deriving from
+// that constant rather than a fresh literal keeps the two from drifting apart.
+// Charging a parent that gap would be a finding no parent could ever clear.
+//
+// Fragile by construction, not just by accident: deriving only `.from` is
+// sufficient *because* `PRODUCERS` today charges nothing for the states in
+// between (`in-progress`, `in-review`, `merged`) — there is no producer for
+// them to skip. If a future `PRODUCERS` entry ever charges one of those
+// states, this `.from`-only set would under-cover it and re-strand parents
+// with the exact permanent gap this set exists to prevent. Widen it to every
+// state between `PARENT_COMPLETION.from` and `PARENT_COMPLETION.to` if that
+// happens, rather than adding a second one-off phase literal.
+const CHILD_ONLY_PHASES = new Set([PARENT_COMPLETION.from]);
+
+export function audit({ rows, tiers, state = null, hasParent = false, hasChildren = false }) {
   const findings = [];
   for (const row of rows ?? []) {
     const expected = tiers?.[row.agent];
@@ -149,6 +175,7 @@ export function audit({ rows, tiers, state = null, hasParent = false }) {
     for (const producer of PRODUCERS) {
       if (reached < STATES.indexOf(producer.after)) continue;
       if (hasParent && PARENT_ONLY_PHASES.has(producer.phase)) continue;
+      if (hasChildren && CHILD_ONLY_PHASES.has(producer.phase)) continue;
       const ran = (rows ?? []).some((r) => r.phase === producer.phase && r.agent === producer.agent);
       if (!ran) findings.push({ kind: "gap", phase: producer.phase, agent: producer.agent, state });
     }
