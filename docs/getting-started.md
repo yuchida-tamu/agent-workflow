@@ -112,11 +112,20 @@ told you which one your repo is in:
 - **`solo-comment`** — no `agent_identity` configured, so agent PRs are
   authored by you, and GitHub forbids approving your own PR. The approval
   act is a `/approve` **comment on the PR, naming the head SHA**, then you
-  merge it yourself, then transition the issue label by hand:
-  `node scripts/state/cli.js apply --issue N --to merged --approved-gate G3`.
+  merge it yourself. Merging is what moves the issue forward — post-merge
+  automation transitions it `in-review → merged → verified` on its own; the
+  manual fallback (`node scripts/state/cli.js apply --issue N --to <state>
+  --approved-gate G3`) is only for the rare case that automation didn't run.
 
 A repo with no App configured is in `solo-comment` mode by default — that's
 a legitimate steady state, not an unfinished setup.
+
+**G3 lives on the PR, never the issue.** Posting `/approve G3` as an
+*issue* comment always refuses, by design: the review guard that backs G3
+needs the PR's review artifact and head SHA, neither of which an issue
+comment carries, so it fails closed every time. Approve on the PR itself,
+then merge — the issue advances through the merge automation above, not
+through an issue-side approval.
 
 ## 7. Merged → verified
 

@@ -40,13 +40,17 @@ Full walkthrough for the "existing repo" path: **[docs/getting-started.md](docs/
 
 ## Adopt quickstart
 
+Pin a released version, not `@main`: the workflow stubs `adopt` installs in
+your repo reference this same tag, so your loop's behavior changes only
+when you choose to upgrade.
+
 ```sh
-git clone https://github.com/yuchida-tamu/agent-workflow
+git clone --branch v0.1.0 https://github.com/yuchida-tamu/agent-workflow
 cd agent-workflow && npm install
 node init/cli.js adopt --target /path/to/your-repo --repo <owner>/<name>
 # creates the 18-label set (states, priorities, risk, drift), scaffolds
 # config + domains.yml + business policy pack, and prints the repo settings
-# it can't apply for you
+# it can't apply for you — installed workflow stubs pin @v0.1.0
 node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name>
 # re-reads what actually landed, including your G3 mode (native-review | solo-comment)
 ```
@@ -54,6 +58,10 @@ node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name
 Then paste the printed `gh api` settings commands (Actions access, branch
 protection, the G4 release Environment) — those are yours to run, on
 purpose. Full detail: [docs/getting-started.md](docs/getting-started.md).
+
+**Upgrading:** bump the `@vX.Y.Z` ref in your installed
+`.github/workflows/agentflow-*.yml` stubs to the new tag and read
+[CHANGELOG.md](CHANGELOG.md) for what changed.
 
 ## Command reference
 

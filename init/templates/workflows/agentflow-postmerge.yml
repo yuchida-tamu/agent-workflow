@@ -20,7 +20,7 @@ jobs:
           # branch. A shallow clone has no history to compare, which would
           # produce false "did not deliver" findings and block real merges.
           fetch-depth: 0
-      - uses: __TOOLKIT_REPO__/actions/post-merge@main
+      - uses: __TOOLKIT_REPO__/actions/post-merge@v0.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           app-id: ${{ secrets.AGENTFLOW_APP_ID }}
