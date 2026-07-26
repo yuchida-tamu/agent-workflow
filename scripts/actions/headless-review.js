@@ -27,6 +27,7 @@ import { runProcess } from "../headless/run.js";
 import { METERED_VAR, TOKEN_VAR, classify, launchPlan, summaryLine } from "../headless/core.js";
 import { reviewEnabled } from "../headless/config.js";
 import { loadTiers } from "../log/cli.js";
+import { runId } from "./dispatch-comment.js";
 
 const TOOLKIT = process.env.AGENTFLOW_TOOLKIT ?? join(dirname(fileURLToPath(import.meta.url)), "../..");
 const MARKER = "<!-- agentflow-headless-review -->";
@@ -141,7 +142,7 @@ async function main() {
     return 0;
   }
 
-  const run = `review-${prNumber}-headless`;
+  const run = runId(`review-${prNumber}-headless`);
   const log = (args) => {
     try {
       execFileSync("node", [join(TOOLKIT, "scripts/log/cli.js"), ...args], { encoding: "utf8" });
