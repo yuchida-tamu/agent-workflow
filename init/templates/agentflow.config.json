@@ -8,6 +8,14 @@
     "Is the behavior change irreversible for the user?"
   ],
   "agent_identity": null,
+  "headless": {
+    "review": false,
+    "dispatch": {
+      "idea": false,
+      "spec": false,
+      "ready": false
+    }
+  },
   "unmapped_criticality": "medium",
   "unmapped_warn_fraction": 0.2,
   "model_overrides": {}

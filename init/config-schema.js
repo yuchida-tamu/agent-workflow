@@ -11,6 +11,7 @@
 // rejects them would make the config un-extensible.
 
 import { isBotLogin, normaliseSlug, resolveIdentity } from "../scripts/identity/identity.js";
+import { HEADLESS_KEY, headlessIssues } from "../scripts/headless/config.js";
 
 // The template ships `approvers: ["CHANGE_ME"]`. That is not a login, and until
 // a human replaces it nobody can pass G3 or G4 — so it fails validation rather
@@ -60,6 +61,7 @@ const KNOWN_KEYS = [
   "model_overrides",
   "release_kind",
   "agent_identity",
+  HEADLESS_KEY,
 ];
 
 const typeName = (v) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
@@ -171,6 +173,12 @@ export function validateConfig(config) {
       error("agent_identity", `${shape} (got ${typeName(raw)})`);
     }
   }
+
+  // Optional like the two above, and for the same reason. Delegated rather than
+  // inlined: the resolver that decides whether a stage runs unattended and the
+  // validator that reports a typo in that decision must not be able to drift
+  // apart, so both live in `scripts/headless/config.js`.
+  issues.push(...headlessIssues(config));
 
   for (const key of Object.keys(config)) {
     if (!KNOWN_KEYS.includes(key)) warn(key, "is not a key the loop reads — ignored");
