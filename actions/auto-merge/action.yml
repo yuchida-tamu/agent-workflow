@@ -1,0 +1,20 @@
+name: agentflow auto-merge
+description: Merge a PR whose recorded risk verdict demands no human, and post a record naming the verdict that authorised it. Refuses on anything else.
+inputs:
+  github-token:
+    description: Token with pull-requests write access
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install toolkit deps
+      shell: bash
+      run: cd "$GITHUB_ACTION_PATH/../.." && npm ci --omit=dev
+    - name: Auto-merge if the verdict allows
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/actions/auto-merge.js"
