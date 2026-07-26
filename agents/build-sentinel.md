@@ -31,3 +31,19 @@ exhausted bounded retry, or a genuine scope change beyond the approved brief.
 Uncertainty that does not block you is not a reason to ask — proceed under an
 explicitly stated assumption and record it in your artifact. Asking permission
 mid-stage is a defect, not politeness.
+
+## Run ledger
+
+Open a ledger row before you start the phase's work and close it when you
+finish — including when you fail, so an abandoned run is recorded rather than
+left open:
+
+```sh
+agentflow-log start --issue <N> --run <id> --phase <state> --agent <your name> --model <your tier>
+agentflow-log end   --issue <N> --run <id> --outcome <ok|failed|abandoned>
+```
+
+The ledger is what makes model routing auditable rather than merely stated:
+`agentflow-log audit` compares each row against the tier your definition
+declares, and treats a missing row as a finding. A phase with no row looks
+exactly like a phase that never ran.
