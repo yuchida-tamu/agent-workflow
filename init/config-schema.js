@@ -1,14 +1,14 @@
 // The shape of `agentflow.config.json`, written down as code for the first time.
 // Pure: no fs, no network, no `gh`.
 //
-// It describes *today's* config exactly — every key the loop reads, seven of
-// them required and `release_kind` and `agent_identity` optional because both
-// postdate the template — with only the value constraints the loop actually
-// depends on. It deliberately
-// does not tighten: `platform` is any string (the pack it names need not exist
-// yet), and an unrecognised key is a warning, never a failure, because a
-// consuming repo may carry its own and a validator that rejects them would make
-// the config un-extensible.
+// It describes *today's* config exactly: every key the loop reads, with only the
+// value constraints the loop actually depends on. Seven keys are required;
+// `release_kind` and `agent_identity` are optional, because both postdate the
+// template and a config written before them is complete rather than
+// half-finished. It deliberately does not tighten: `platform` is any string (the
+// pack it names need not exist yet), and an unrecognised key is a warning, never
+// a failure, because a consuming repo may carry its own and a validator that
+// rejects them would make the config un-extensible.
 
 import { isBotLogin, normaliseSlug, resolveIdentity } from "../scripts/identity/identity.js";
 
