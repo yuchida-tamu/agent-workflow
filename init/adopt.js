@@ -10,6 +10,7 @@
 // different glob implementation would let `--coverage` disagree with the
 // verdicts the engine later hands down about the same paths.
 import { globToRegExp } from "../scripts/policy/engine.js";
+import { g3Mode } from "../scripts/identity/identity.js";
 
 // The config template ships these; until a human changes them the loop can't
 // route approvals, so they belong in `remaining` rather than looking configured.
@@ -574,6 +575,35 @@ function environmentEntry({ repo, environment, approvers, current }) {
 }
 
 // ---------------------------------------------------------------------------
+// 4. G3 mode — reported, never changed
+//
+// The only entry with no command attached, because there is nothing to run: the
+// step it would name is creating a GitHub App, which is a browser action only a
+// human account can perform.
+//
+// It is always `satisfied`, and that is a deliberate choice rather than a
+// flattering one. `remainingItems` treats every non-satisfied entry as a step
+// the adoption still owes — but `solo-comment` is a legitimate *final* state,
+// not a half-finished one. Most repos will never create an App, and a report
+// that listed "give agentflow an identity" under `remaining` forever would be
+// nagging, which is how a report stops being read. The mode still prints: the
+// settings block renders every entry regardless of status.
+
+function g3ModeEntry({ config, protection }) {
+  const { mode, enforced, why } = g3Mode({ config: config ?? {}, protection });
+  return {
+    id: "g3-mode",
+    status: "satisfied",
+    why: `${mode}${mode === "native-review" && enforced ? ", enforced" : ""} — ${why}`,
+    command: null,
+    notes:
+      mode === "solo-comment"
+        ? ["creating the App is a browser action only a human can take — see docs/github-app-runbook.md"]
+        : [],
+  };
+}
+
+// ---------------------------------------------------------------------------
 
 // The whole report. Pure: `current` is what the CLI's three read-only GETs found.
 //   current.access      — GET /repos/{toolkit}/actions/permissions/access
@@ -592,12 +622,14 @@ export function settingsReport({
   environment = "release",
   approvers = [],
   requiredChecks = [],
+  config = {},
   current = {},
 }) {
   return [
     accessEntry({ repo, toolkitRepo, current: current.access }),
     protectionEntry({ repo, defaultBranch, requiredChecks, current: current.protection }),
     environmentEntry({ repo, environment, approvers, current: current.environment }),
+    g3ModeEntry({ config, protection: current.protection }),
   ];
 }
 

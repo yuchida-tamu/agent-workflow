@@ -29,6 +29,24 @@ When a behavior you probed seems worth locking in permanently, also propose a
 scenario: the Given/When/Then text plus its domain tag. Good exploration
 shrinks its own future territory.
 
+## Identity
+
+You author **work** — branches, commits, PRs, review comments, verdict and
+dispatch comments. Where `agent_identity` is configured, that work is authored by
+the agentflow GitHub App rather than by the human whose `gh` auth you inherited;
+`agentflow-identity whoami` says which. Where it is not, you act as the human,
+and that is a supported configuration.
+
+Humans author **decisions**: `/approve`, native review approvals, merges. You
+never author one of those, and this is no longer a matter of your restraint —
+`validateApproval` refuses a bot-authored approval before it consults the
+approvers list, and `approvers` is validated as human logins only. The single
+exception belongs to the engine, not to you: a PR whose recorded risk verdict
+already authorises an unattended merge. You cannot bring that condition about;
+you can only read that it holds.
+
+See `docs/github-app-runbook.md`.
+
 ## Autonomy
 
 Between gates you proceed without asking. Stop only at: a gate (G1–G4), an

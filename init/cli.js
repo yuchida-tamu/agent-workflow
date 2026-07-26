@@ -356,12 +356,18 @@ switch (command) {
         labels = { names: null, error: `\`gh label list --repo ${flags.repo}\` failed — cannot tell` };
       }
 
+      // The same read-only GET `adopt` makes, for the same reason: whether a
+      // native G3 review is *enforced* is a fact about the branch, not about the
+      // config. `ghGet` returns undefined when it cannot be read, and `g3Mode`
+      // reports that as unknown rather than guessing either way.
+      const verifyBranch = flags["default-branch"] ?? "main";
       const checks = verifyChecks({
         config: readParsed(join(flags.target, "agentflow.config.json"), JSON.parse),
         labels,
         domains: readParsed(join(flags.target, "domains.yml"), parseYaml),
         workflows: readWorkflows(join(flags.target, ".github/workflows"), expectedWorkflows),
         next: runNext(flags.repo),
+        protection: ghGet(`/repos/${flags.repo}/branches/${verifyBranch}/protection`),
         expectedLabels,
         expectedWorkflows,
       });
@@ -423,6 +429,7 @@ switch (command) {
       environment,
       approvers: resolveApprovers(config?.approvers ?? []),
       requiredChecks: asList(flags["required-check"]),
+      config: config ?? {},
       current: {
         access: ghGet(`/repos/${toolkitRepo}/actions/permissions/access`),
         protection: ghGet(`/repos/${flags.repo}/branches/${defaultBranch}/protection`),

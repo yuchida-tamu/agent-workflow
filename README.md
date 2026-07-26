@@ -16,6 +16,7 @@ live there; this README tracks what's built.
 | `scripts/policy/` | core | Risk policy engine (pure) + `agentflow-policy` CLI |
 | `scripts/state/` | core | Work-item state machine (pure) + `agentflow-state` CLI |
 | `scripts/gate/` | core | `/approve` comment validation + `agentflow-gate` CLI |
+| `scripts/identity/` | core | Who is acting: the agent's GitHub App identity, what a bot may approve, and `agentflow-identity` (`token` · `exec` · `whoami` · `doctor`) |
 | `scripts/facts/` | core | Diff/domain/drift fact extraction + `agentflow-facts` CLI |
 | `scripts/e2e/` | core | Gherkin parser, trace replay runner + `agentflow-e2e` CLI |
 | `scripts/next/` | core | Crawl-phase dispatcher + `agentflow-next` CLI |
@@ -69,8 +70,14 @@ live there; this README tracks what's built.
       synthetic event payloads; `risk-verdict` awaits the first consuming-app
       PR.
 - [ ] First real loop run on a consuming app (also first live `risk-verdict`)
-- [ ] Brief sweep in practice + headless agent execution (Phase 3, with
-      GitHub App identity)
+- [ ] Brief sweep in practice + headless agent execution (Phase 3)
+- [x] **agentflow has its own identity.** Agents author *work* as a GitHub App;
+      humans keep their own identity for *decisions*. `agent_identity` in config,
+      installation tokens minted with zero dependencies (`node:crypto` + `fetch`),
+      App credentials plumbed through every composite action with a **loud**
+      `GITHUB_TOKEN` fallback. `approvers` is now validated as human logins only.
+      Optional everywhere: a repo that never creates an App is unaffected.
+      Setup: [`docs/github-app-runbook.md`](docs/github-app-runbook.md).
 - [x] Automated brownfield adoption — `agentflow-init adopt` scaffolds an
       existing repo (never overwriting), creates only the missing labels, and
       prints one ordered created/present/remaining summary; `--verify` re-reads
@@ -84,6 +91,28 @@ live there; this README tracks what's built.
       against the repo's current state so a paste can never weaken it. It
       never runs them, under any flag, and neither does `project-genesis`:
       a policy change on someone's repo is a human keystroke.
+
+## G3 has two modes
+
+Which one a repo is in is a fact about *who authors its agent PRs*, and
+`agentflow-init adopt --verify` reports it with the reason:
+
+| mode | when | what G3 is |
+|---|---|---|
+| `native-review` | `agent_identity` is set — agent PRs are authored by the App | a real GitHub approving review; `enforced` when branch protection requires it |
+| `solo-comment` | no `agent_identity` — agent PRs are authored by you | a `/approve` comment naming the head SHA, then a merge |
+
+`solo-comment` is a legitimate final state, not a half-finished adoption: GitHub
+forbids approving your own PR, so a solo maintainer without an App has no other
+option. This repo is in `solo-comment` mode today.
+
+**Bot-authored approvals are refused in code, not by convention.** The one
+exception is G3 on a pull request whose recorded risk verdict carries no
+`human-merge`, no `auto-merge` block, and demonstrably describes the head being
+merged — precisely the condition under which `auto-merge` already merges the PR
+unattended. There the App transcribes an engine decision into a reviewable
+artifact rather than minting authority of its own. Every other gate, and every
+issue comment, refuses a bot outright.
 
 > Consuming private repos must be allowed to use this repo's actions:
 > Settings → Actions → General → Access → "Accessible from repositories

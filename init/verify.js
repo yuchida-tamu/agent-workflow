@@ -9,6 +9,7 @@
 // roll-up counts notes separately instead of hiding them behind a ✓.
 
 import { CRITICALITIES, validateConfig } from "./config-schema.js";
+import { g3Mode } from "../scripts/identity/identity.js";
 
 // What `projectPlan()` substitutes into every workflow stub it installs. A stub
 // that still carries it was copied by hand, not scaffolded.
@@ -173,6 +174,22 @@ function nextCheck({ code, stdout, error }) {
 }
 
 // ---------------------------------------------------------------------------
+// 6. G3 mode
+//
+// "Which G3 does this repo have, and why?" used to be answerable only by reading
+// source. Never a failure: `solo-comment` is a legitimate configuration — most
+// repos will never create an App — so it reports as a **note**, which the roll-up
+// already counts separately from defects for exactly this kind of remark.
+
+function g3ModeCheck({ value }, protection) {
+  const { mode, enforced, why } = g3Mode({ config: value ?? {}, protection });
+  const detail = `${mode}${mode === "native-review" && enforced ? ", enforced by branch protection" : ""}`;
+  // A fully enforced native review owes nothing, so it says nothing beyond the
+  // mode. Every other combination has something a human might want to change.
+  return pass("G3 mode", detail, mode === "native-review" && enforced ? null : why);
+}
+
+// ---------------------------------------------------------------------------
 
 // The whole report, in a fixed order. Inputs are what the CLI gathered:
 //   config     { value, error } — parsed agentflow.config.json
@@ -180,6 +197,8 @@ function nextCheck({ code, stdout, error }) {
 //   domains    { value, error } — parsed domains.yml
 //   workflows  [{ name, content }] — the stubs found under .github/workflows
 //   next       { code, stdout, error } — `agentflow-next --repo <r> --json`
+//   protection — GET /repos/{repo}/branches/{branch}/protection: the body, null
+//                when absent (404), undefined when unreadable (403) or not read
 // `expectedLabels` comes from init/labels.yml and `expectedWorkflows` from the
 // templates directory, so neither list can drift from what adopt installs.
 export function verifyChecks({
@@ -188,6 +207,7 @@ export function verifyChecks({
   domains = {},
   workflows = [],
   next = {},
+  protection,
   expectedLabels = [],
   expectedWorkflows = [],
 }) {
@@ -197,6 +217,7 @@ export function verifyChecks({
     domainsCheck(domains),
     workflowsCheck(workflows, expectedWorkflows),
     nextCheck(next),
+    g3ModeCheck(config, protection),
   ];
 }
 
