@@ -83,3 +83,41 @@ export function planRelease({
 
   return { ok: true, tag, approver: approval.approver };
 }
+
+// --- the invariant ----------------------------------------------------------
+//
+// `state:released` should never be true of an item with no release behind it.
+// That was not merely theoretical: #3 carried the label with no tag, because a
+// G4 approval used to move the label directly (#45).
+//
+// Same family as #44's ancestry check — confirm the artifact, don't trust the
+// transition. Pure: the caller supplies the labelled items and the tags that
+// exist, so this is testable without git or `gh`.
+
+export const VERIFY_NOT_APPLICABLE = "not-applicable";
+
+// items: [{ number, version }] — those carrying `state:released`.
+// tags:  the tag names that exist in the repo.
+// → { applicable, findings: [{ number, expectedTag }] }
+export function verifyReleased({ items = [], tags = [], releaseKind = "tag" } = {}) {
+  if (releaseKind !== "tag") {
+    return { applicable: false, reason: VERIFY_NOT_APPLICABLE, releaseKind, findings: [] };
+  }
+  const present = new Set(tags);
+  const findings = [];
+  for (const item of items) {
+    let expectedTag;
+    try {
+      expectedTag = tagFor(item.version);
+    } catch {
+      // An item labelled released whose version cannot be resolved is itself a
+      // finding — we cannot show a release exists for it.
+      findings.push({ number: item.number, expectedTag: null, reason: "no resolvable version" });
+      continue;
+    }
+    if (!present.has(expectedTag)) {
+      findings.push({ number: item.number, expectedTag, reason: "no such tag" });
+    }
+  }
+  return { applicable: true, releaseKind, findings };
+}
