@@ -64,3 +64,24 @@ test("pickNext carries the repo's release kind into its dispatch line", () => {
   assert.equal(next.state, "merged");
   assert.deepEqual(next.dispatch, DISPATCH.merged);
 });
+
+test("a planned item whose verdict requires no gate dispatches to the script, not a human", () => {
+  const waiting = dispatchFor("planned");
+  const autopass = dispatchFor("planned", { g2Authorised: true });
+  assert.equal(waiting.actor, "human");
+  assert.equal(autopass.actor, "script");
+  assert.match(autopass.action, /auto-pass/);
+});
+
+test("planned dispatch only auto-passes on an explicit true", () => {
+  // null means "not yet determined" — a dispatcher that has not read the
+  // verdict must report the human gate, never assume it can be skipped.
+  for (const g2Authorised of [null, undefined, false]) {
+    assert.equal(dispatchFor("planned", { g2Authorised }).actor, "human", String(g2Authorised));
+  }
+});
+
+test("the dispatch table no longer promises a path that does not exist", () => {
+  // It claimed "or auto-pass per risk verdict" while nothing implemented it.
+  assert.doesNotMatch(DISPATCH.planned.action, /auto-pass/);
+});
