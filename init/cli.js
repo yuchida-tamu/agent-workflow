@@ -3,17 +3,21 @@
 //
 //   agentflow-init labels  [--repo owner/name] [--dry-run]
 //   agentflow-init project --target <dir> [--dry-run]
+//   agentflow-init adopt   --target <dir> --repo owner/name [--dry-run]
 //
 // `labels` creates/updates the label set idempotently via `gh label create
 // --force`. `project` scaffolds a consuming app: config, domains map, business
 // policy pack, and the e2e directories. Existing files are never overwritten.
+// `adopt` composes both for a repo that already exists — additively, never
+// forcing a label — and prints one ordered created/present/remaining summary.
 // Exit codes: 0 ok · 20 usage/error.
 
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { labelCreateCommands, labelPlan, remainingItems, renderSummary, scaffoldSummary } from "./adopt.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +60,44 @@ export function projectPlan(targetDir, toolkitRepo = "yuchida-tamu/agent-workflo
   ];
 }
 
+// One projectPlan() step → disk. `verbose` is what separates `project` (narrates
+// every step) from `adopt` (the ordered summary does the narrating instead).
+function applyStep(step, { dryRun = false, verbose = true } = {}) {
+  const log = (line) => { if (verbose) console.log(line); };
+  if (step.dir) {
+    if (dryRun) log(`mkdir -p ${step.dir}`);
+    else mkdirSync(step.dir, { recursive: true });
+    return;
+  }
+  if (existsSync(step.to)) {
+    log(`skip ${step.to} (exists)`);
+    return;
+  }
+  if (dryRun) {
+    log(`copy ${step.from} → ${step.to}`);
+    return;
+  }
+  mkdirSync(dirname(step.to), { recursive: true });
+  if (step.subst) {
+    let content = readFileSync(step.from, "utf8");
+    for (const [key, value] of Object.entries(step.subst)) {
+      content = content.replaceAll(key, value);
+    }
+    writeFileSync(step.to, content);
+  } else {
+    copyFileSync(step.from, step.to);
+  }
+  log(`wrote ${step.to}`);
+}
+
+function readIfPresent(path, parse) {
+  try {
+    return parse(readFileSync(path, "utf8")) ?? null;
+  } catch {
+    return null; // absent or unparseable — `remaining` says what that costs
+  }
+}
+
 const [command, ...rest] = process.argv.slice(2);
 const flags = parseArgs(rest);
 
@@ -80,34 +122,67 @@ switch (command) {
       process.exit(20);
     }
     for (const step of projectPlan(flags.target, flags.toolkit)) {
-      if (step.dir) {
-        if (flags.dryRun) console.log(`mkdir -p ${step.dir}`);
-        else mkdirSync(step.dir, { recursive: true });
-        continue;
-      }
-      if (existsSync(step.to)) {
-        console.log(`skip ${step.to} (exists)`);
-        continue;
-      }
-      if (flags.dryRun) {
-        console.log(`copy ${step.from} → ${step.to}`);
-      } else {
-        mkdirSync(dirname(step.to), { recursive: true });
-        if (step.subst) {
-          let content = readFileSync(step.from, "utf8");
-          for (const [key, value] of Object.entries(step.subst)) {
-            content = content.replaceAll(key, value);
-          }
-          writeFileSync(step.to, content);
-        } else {
-          copyFileSync(step.from, step.to);
-        }
-        console.log(`wrote ${step.to}`);
-      }
+      applyStep(step, { dryRun: flags.dryRun });
     }
     break;
   }
+  case "adopt": {
+    if (!flags.target || !flags.repo) {
+      console.error("usage: agentflow-init adopt --target <dir> --repo <owner/name> [--dry-run]");
+      process.exit(20);
+    }
+    const steps = projectPlan(flags.target, flags.toolkit);
+    const onDisk = steps.map((s) => s.dir ?? s.to).filter((p) => existsSync(p));
+    const scaffold = scaffoldSummary(steps, onDisk);
+    for (const step of steps) {
+      applyStep(step, { dryRun: flags.dryRun, verbose: Boolean(flags.dryRun) });
+    }
+
+    // Labels are additive here: only the missing ones, never --force.
+    const doc = parseYaml(readFileSync(join(HERE, "labels.yml"), "utf8"));
+    const extra = [];
+    let labels = { create: [], present: [] };
+    const createdLabels = [];
+    try {
+      const listed = execFileSync(
+        "gh",
+        ["label", "list", "--repo", flags.repo, "--json", "name", "--limit", "200"],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+      );
+      labels = labelPlan(doc, JSON.parse(listed).map((l) => l.name));
+      for (const args of labelCreateCommands(doc, labels.create, flags.repo)) {
+        if (flags.dryRun) {
+          console.log(`gh ${args.join(" ")}`);
+          createdLabels.push(args[2]);
+          continue;
+        }
+        try {
+          execFileSync("gh", args, { stdio: ["ignore", "ignore", "inherit"] });
+          createdLabels.push(args[2]);
+        } catch {
+          process.exitCode = 20;
+          extra.push(`label ${args[2]} could not be created — create it by hand, then re-run adopt`);
+        }
+      }
+    } catch {
+      process.exitCode = 20;
+      extra.push(`labels unknown — \`gh label list --repo ${flags.repo}\` failed; re-run adopt once gh can reach the repo`);
+    }
+
+    const rel = (p) => relative(flags.target, p) || p;
+    console.log(renderSummary({
+      dryRun: Boolean(flags.dryRun),
+      created: [...scaffold.created.map(rel), ...createdLabels.map((n) => `label ${n}`)],
+      present: [...scaffold.present.map(rel), ...labels.present.map((n) => `label ${n}`)],
+      remaining: remainingItems({
+        config: readIfPresent(join(flags.target, "agentflow.config.json"), JSON.parse),
+        domains: readIfPresent(join(flags.target, "domains.yml"), parseYaml),
+        extra,
+      }),
+    }));
+    break;
+  }
   default:
-    console.error("usage: agentflow-init <labels|project> …");
+    console.error("usage: agentflow-init <labels|project|adopt> …");
     process.exit(20);
 }
