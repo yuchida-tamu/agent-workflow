@@ -2,11 +2,47 @@ name: agentflow risk verdict
 description: Extract facts from the PR diff, evaluate policy packs (baseline + platform + repo business pack), apply risk labels, post the verdict comment.
 inputs:
   github-token:
-    description: Token with pull-requests write access
+    description: Fallback token, used when no App credentials are supplied. Token with pull-requests write access
     required: true
+  app-id:
+    description: >-
+      agentflow GitHub App id. Set it together with app-private-key and this
+      action acts as the App instead of as the workflow. Optional everywhere:
+      leave both unset and behaviour is exactly what it was.
+    required: false
+    default: ""
+  app-private-key:
+    description: >-
+      The App's private key (PEM). Pass it from a secret — never commit it.
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
+    - name: Mint an agentflow App token
+      id: app-token
+      if: ${{ inputs.app-id != '' && inputs.app-private-key != '' }}
+      uses: actions/create-github-app-token@v1
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+    - name: Name the acting identity
+      # A fallback that silently impersonates the human is the failure #82 exists
+      # to remove, so the run log always says who is acting. The condition is
+      # computed from the *inputs*, never from the token, so nothing secret
+      # reaches the script.
+      shell: bash
+      env:
+        ACTING_AS_APP: ${{ inputs.app-id != '' && inputs.app-private-key != '' }}
+        APP_ID: ${{ inputs.app-id }}
+      run: |
+        if [ "$ACTING_AS_APP" = "true" ]; then
+          echo "identity: acting as the agentflow App (app-id $APP_ID)"
+        else
+          echo "identity: acting as GITHUB_TOKEN — no App credentials supplied."
+          echo "          Work will be attributed to the workflow, not to agentflow."
+          echo "          See docs/github-app-runbook.md to give agentflow its own identity."
+        fi
     - uses: actions/setup-node@v4
       with:
         node-version: 20
@@ -16,5 +52,5 @@ runs:
     - name: Evaluate
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.app-token.outputs.token || inputs.github-token }}
       run: node "$GITHUB_ACTION_PATH/../../scripts/actions/pr-verdict.js"
