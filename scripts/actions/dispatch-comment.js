@@ -79,6 +79,21 @@ export function launchPrompt({ repo, issue, state, who }) {
   ].join("\n");
 }
 
+// A ledger run id, unique per *attempt*.
+//
+// `agentflow-log start` appends a row and `end` closes the first row matching
+// the id, so a repeated id leaves a row that can never be closed. That is not
+// theoretical: it happened on #91 during this issue's own build, and the review
+// entry point would have repeated its id on every `synchronize` event.
+//
+// `GITHUB_RUN_ID` + `GITHUB_RUN_ATTEMPT` are unique per attempt and make the row
+// traceable back to the run that wrote it. Outside Actions they are absent, and
+// the bare prefix is the honest fallback.
+export function runId(prefix, env = process.env) {
+  const parts = [prefix, env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT].filter(Boolean);
+  return parts.join("-");
+}
+
 const sh = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
 
 function upsertComment(repo, issue, body) {
@@ -129,7 +144,7 @@ async function main() {
   const agent = dispatch.who;
   const tiers = loadTiers(join(TOOLKIT, "agents"));
   const tier = tiers[agent] ?? null;
-  const run = `dispatch-${issue}-${state}`;
+  const run = runId(`dispatch-${issue}-${state}`);
 
   const log = (args) => {
     try {

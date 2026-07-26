@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { commentBody, dispatchAction, launchPrompt } from "../scripts/actions/dispatch-comment.js";
+import { commentBody, dispatchAction, launchPrompt, runId } from "../scripts/actions/dispatch-comment.js";
 import { DISPATCH } from "../scripts/next/core.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
 import { TOKEN_VAR } from "../scripts/headless/core.js";
@@ -141,5 +141,42 @@ test("no metered API key is wired anywhere in the dispatch path", () => {
     "scripts/actions/dispatch-comment.js",
   ]) {
     assert.equal(binding.test(read(p)), false, p);
+  }
+});
+
+// --- regression from review of PR #104 ---------------------------------------
+
+test("run ids are unique per attempt, not per work item", () => {
+  // `agentflow-log start` appends and `end` closes the FIRST row matching the
+  // id, so a repeated id leaves a row that can never be closed. Reproduced on
+  // #91 during this issue's own build:
+  //
+  //   | review-91-a | … | ok |
+  //   | review-91-a | … | —  |   ← permanently open
+  //
+  // The review entry point would have repeated its id on every `synchronize`
+  // event, so any PR pushed to twice corrupted its own ledger.
+  const first = runId("dispatch-5-spec", { GITHUB_RUN_ID: "111", GITHUB_RUN_ATTEMPT: "1" });
+  const retry = runId("dispatch-5-spec", { GITHUB_RUN_ID: "111", GITHUB_RUN_ATTEMPT: "2" });
+  const later = runId("dispatch-5-spec", { GITHUB_RUN_ID: "222", GITHUB_RUN_ATTEMPT: "1" });
+
+  assert.notEqual(first, retry, "a re-run must not reuse the id");
+  assert.notEqual(first, later, "a later run must not reuse the id");
+  assert.match(first, /^dispatch-5-spec-111-1$/);
+});
+
+test("outside Actions the run id degrades to the bare prefix", () => {
+  // Honest rather than inventing entropy: locally there is no attempt to be
+  // unique across.
+  assert.equal(runId("dispatch-5-spec", {}), "dispatch-5-spec");
+});
+
+test("both headless entry points derive their run id the same way", () => {
+  // Fixing only the dispatch half would leave the bug in the stage that is
+  // actually enabled.
+  for (const p of ["scripts/actions/dispatch-comment.js", "scripts/actions/headless-review.js"]) {
+    const source = read(p);
+    assert.match(source, /const run = runId\(/, p);
+    assert.equal(/const run = `[^`]*`;/.test(source), false, `${p} still builds a raw run id`);
   }
 });
