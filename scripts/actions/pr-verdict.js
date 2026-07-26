@@ -94,8 +94,15 @@ sh("gh", editArgs);
 const rows = verdict.matched
   .map((m) => `| \`${m.pack}\` | \`${m.rule}\` | ${Object.keys(m.then).join(", ")} |`)
   .join("\n");
+// The SHA is what makes the verdict checkable later. A verdict describes the
+// code it was computed over; without recording which code that was, nothing
+// downstream can tell a current verdict from one that predates three pushes.
+// `authorises("G3", …)` refuses when it is absent, so this line is the whole
+// difference between auto-merge being possible and being permanently closed.
 const body = `${MARKER}
 ### agentflow risk verdict: \`${verdict.level}\` (score ${verdict.obligations.score})
+
+verdict-sha: ${headSha}
 
 | requires | blocks | runs |
 |---|---|---|
