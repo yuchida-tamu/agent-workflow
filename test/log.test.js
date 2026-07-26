@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { MARKER, COLUMNS, render, parse, upsert, audit } from "../scripts/log/ledger.js";
-import { loadTiers, parentsWithDeclaredChildren } from "../scripts/log/cli.js";
+import { loadTiers, parentsWithDeclaredChildren, parseSince, filterSince } from "../scripts/log/cli.js";
 
 const row = (over = {}) => ({
   run: "a1b2c3",
@@ -323,4 +323,54 @@ test("parentsWithDeclaredChildren ignores a mid-body mention, matching parentFro
 test("parentsWithDeclaredChildren tolerates an empty or missing list", () => {
   assert.deepEqual(parentsWithDeclaredChildren([]), new Set());
   assert.deepEqual(parentsWithDeclaredChildren(undefined), new Set());
+});
+
+// --- audit --since ------------------------------------------------------
+
+test("parseSince returns null when --since is absent, so filterSince is a no-op", () => {
+  assert.equal(parseSince(undefined), null);
+  assert.equal(parseSince(null), null);
+});
+
+test("parseSince parses any string Date accepts into a Date", () => {
+  const cutoff = parseSince("2026-07-01");
+  assert.ok(cutoff instanceof Date);
+  assert.equal(cutoff.toISOString(), "2026-07-01T00:00:00.000Z");
+});
+
+test("parseSince rejects a value Date cannot parse", () => {
+  assert.throws(() => parseSince("not-a-date"), /--since must be a parseable date/);
+});
+
+test("filterSince keeps every issue when the flag was absent (unchanged behaviour)", () => {
+  const issues = [
+    { number: 30, createdAt: "2025-01-01T00:00:00Z" },
+    { number: 114, createdAt: "2026-07-26T00:00:00Z" },
+  ];
+  assert.deepEqual(filterSince(issues, null), issues);
+});
+
+test("filterSince excludes an item created before the cutoff", () => {
+  const cutoff = parseSince("2026-01-01");
+  const issues = [{ number: 30, createdAt: "2025-01-01T00:00:00Z" }];
+  assert.deepEqual(filterSince(issues, cutoff), []);
+});
+
+test("filterSince includes an item created after the cutoff", () => {
+  const cutoff = parseSince("2026-01-01");
+  const issues = [{ number: 114, createdAt: "2026-07-26T00:00:00Z" }];
+  assert.deepEqual(filterSince(issues, cutoff), issues);
+});
+
+test("filterSince includes an item created exactly at the cutoff", () => {
+  const cutoff = parseSince("2026-07-26T07:00:00Z");
+  const issues = [{ number: 114, createdAt: "2026-07-26T07:00:00Z" }];
+  assert.deepEqual(filterSince(issues, cutoff), issues);
+});
+
+test("filterSince separates a pre-ledger issue from a post-ledger one in the same batch", () => {
+  const cutoff = parseSince("2026-07-01T00:00:00Z");
+  const preLedger = { number: 30, createdAt: "2025-11-01T00:00:00Z" };
+  const postLedger = { number: 114, createdAt: "2026-07-26T00:00:00Z" };
+  assert.deepEqual(filterSince([preLedger, postLedger], cutoff), [postLedger]);
 });

@@ -166,6 +166,44 @@ every issue comment, refuses a bot outright.
 
 ---
 
+## The G3 review-artifact guard
+
+**Planned:** identity and headless review (above, and `docs/headless-runbook.md`) exist so that
+every PR gets reviewed automatically. The guard is what makes that fact
+*mechanically checked* rather than a habit: G3 refuses to authorise a merge —
+whether by `/approve G3`, or by `auto-merge` acting unattended — unless a fresh
+`mergeable` review of the exact head commit exists. No review, a stale review
+(a new commit landed after the one reviewed), or a `not-mergeable` verdict all
+refuse the same way a missing risk verdict refuses G2 today: absence is
+refusal, not silent pass. (Tracked as #111–#113 off the #81 plan; this section
+describes the contract those issues implement.)
+
+The guard reads review state one of two ways, matching whichever G3 mode
+`g3Mode()` (`scripts/identity/identity.js`) reports for the repo:
+
+- **`native-review`** (an `agent_identity` is configured, as set up above): the
+  guard reads the **native, bot-authored GitHub review object** directly —
+  `APPROVED` means `mergeable`, `CHANGES_REQUESTED` means `not-mergeable`, and
+  the reviewed SHA is the review's own `commit_id`. This is authoritative
+  wherever it exists, because it is the review GitHub itself recorded.
+- **`solo-comment`** (no App configured): GitHub forbids a native bot review on
+  a PR authored by your own account, so the guard falls back to the
+  `<!-- agentflow-review -->` marker comment described in
+  `docs/headless-runbook.md` — the same comment a headless or in-session
+  reviewer already posts.
+
+Every pass or refusal names which of the two sources answered, so "why did G3
+refuse" never requires guessing which mode the repo is in.
+
+This is a **presence** check, not a quality bar: the guard confirms a fresh
+verdict exists, not that the review was good. It also does not touch the
+approval inbox — G3 is deliberately excluded from that path — so the two
+enforcement points are `auto-merge.js` and the G3 branch of
+`scripts/gate/validator.js`, the same two places that already read the risk
+verdict.
+
+---
+
 ## Rotating or revoking the key
 
 Generate a new private key on the App's settings page, update the keychain entry
