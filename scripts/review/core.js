@@ -15,27 +15,76 @@
 // This module answers "does a recorded artifact say mergeable at head?", not
 // "was it recorded by someone entitled to say so." It has no opinion on who
 // posted a marker comment or submitted a native review — it parses whatever
-// it is handed. **The composing caller (#113) MUST restrict the artifacts it
-// feeds in to the trusted reviewer identity** before calling
-// `reviewAuthorises`, the same way `scripts/gate/validator.js` restricts
-// `/approve` to human logins via `isBotAuthor` + `approvers` before it will
-// mint a gate approval. Skipping that check means a `<!-- agentflow-review
-// -->` marker comment authored by *anyone who can comment on the PR —
-// including the implementer* — authorises the merge. Native-review mode gets
-// partial cover for free (GitHub blocks approving your own PR), but
-// solo-comment mode has **no GitHub-side protection at all**: nothing stops
-// the PR's own author from posting the marker themselves. To make that check
-// possible, every parsed result below carries `author` (`{ login,
-// association } | null`) straight through from the source object —
-// unexamined, unvalidated, exactly as given.
+// it is handed. **The composing caller (#113) MUST restrict artifacts to the
+// trusted reviewer identity**, the same way `scripts/gate/validator.js`
+// restricts `/approve` to human logins via `isBotAuthor` + `approvers`
+// before it will mint a gate approval. Skipping that check means a
+// `<!-- agentflow-review -->` marker comment authored by *anyone who can
+// comment on the PR — including the implementer* — authorises the merge.
+// Native-review mode gets partial cover for free (GitHub blocks approving
+// your own PR), but solo-comment mode has **no GitHub-side protection at
+// all**: nothing stops the PR's own author from posting the marker
+// themselves.
 //
-// (Found in PR #123's cold review of this module, finding 1 — high.)
+// **Where the filter runs matters, and it is easy to get wrong in the unsafe
+// direction.** `latestReviewComment`/`latestNativeReview` are a latest-wins
+// collapse. If a caller collapses first and only then checks the single
+// winner's author, a newer *untrusted* artifact shadows an older *trusted*
+// one before authorship is ever considered — including a genuine veto:
+// a trusted reviewer's `not-mergeable` posted first, followed by the PR's
+// own untrusted author posting a newer fake `mergeable`, collapses to the
+// fake; checking *that* result's author and finding it untrusted does not
+// recover the trusted veto, it just turns "authored by nobody trusted" into
+// "no comment at all" — `reviewAuthorises` then sees `{comment: null}` and
+// the veto is gone, not preserved. This is not hypothetical: it is a proven
+// attack against this exact reader (PR #123's second cold review, finding
+// 3), including a native-mode variant where a bot's native APPROVE survives
+// unchallenged because the human reviewer's vetoing comment is the one that
+// gets laundered away.
+//
+// The safe order is: **filter the RAW `comments`/`nativeReviews` lists to
+// trusted logins with `filterByAuthor` BEFORE calling
+// `latestReviewComment`/`latestNativeReview`.** Filtered-then-collapsed
+// means an untrusted artifact — however new — was never a candidate to begin
+// with, so it cannot shadow a trusted one at any age. `login` is the
+// discriminator; `association` (e.g. `OWNER`, `COLLABORATOR`) is a useful
+// secondary signal but must never be the primary check — a human `OWNER` and
+// a configured bot are both "not the implementer" by association alone, and
+// association says nothing about *which* trusted identity posted.
+//
+// (Found in PR #123's cold review of this module: finding 1 — high, the
+// missing filter; finding 3 — high, this filter ordering, found by an
+// executed attack against the fix for finding 1.)
 
 import { globToRegExp } from "../policy/engine.js";
 
 export const MARKER = "<!-- agentflow-review -->";
 export const VERDICTS = ["mergeable", "not-mergeable"];
 export const UX_VALUES = ["mergeable", "not-mergeable", "n/a"];
+
+// Filters a RAW source list (`comments` or `nativeReviews`, whatever shape
+// `scripts/review/cli.js` fetched — anything with `.author.login`) down to
+// entries authored by one of `trustedLogins`. This is the pre-collapse half
+// of the authorship contract described above: call this BEFORE
+// `latestReviewComment`/`latestNativeReview`, never after.
+//
+// Login match is case-insensitive (GitHub logins are) and exact otherwise —
+// no substring or prefix matching, which would just move the laundering
+// attack from "post a newer comment" to "register a similar-looking login".
+//
+// No trusted logins given → filters out everything. Absence of a trust list
+// is not "trust nobody's individual posts" (which would still let an
+// unfiltered `undefined` slip through some other way) — it fails exactly the
+// way `filterByAuthor(items, [])` reads: fully closed, same posture as every
+// other ambiguity in this module.
+export function filterByAuthor(items, trustedLogins) {
+  const trusted = new Set((trustedLogins ?? []).map((l) => String(l ?? "").trim().toLowerCase()).filter(Boolean));
+  if (!trusted.size) return [];
+  return (items ?? []).filter((item) => {
+    const login = item?.author?.login;
+    return typeof login === "string" && trusted.has(login.trim().toLowerCase());
+  });
+}
 
 // --- parsing the marker-managed artifact -------------------------------------
 //
@@ -146,21 +195,6 @@ export function parseNativeReview(review) {
 export function latestNativeReview(reviews) {
   const parsed = (reviews ?? []).map(parseNativeReview).filter(Boolean);
   return parsed.length ? parsed[parsed.length - 1] : null;
-}
-
-// --- a convenience single-source view -----------------------------------------
-//
-// "Which one source would answer, if forced to pick just one?" — native
-// wherever a verdict-bearing native review exists (it remains authoritative
-// for *extraction*: it is the structural, tamper-resistant source), else the
-// marker comment. This is what `agentflow-review read` prints for a human
-// skimming the state, and is NOT what `reviewAuthorises` uses to decide the
-// gate — see the precedence note on `reviewAuthorises` for why a single
-// collapsed winner is the wrong shape for that decision.
-export function readReviewState({ nativeReviews, comments } = {}) {
-  const native = latestNativeReview(nativeReviews);
-  if (native) return native;
-  return latestReviewComment(comments);
 }
 
 // --- the UI-surface predicate -------------------------------------------------

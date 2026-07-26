@@ -2,11 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   MARKER,
+  filterByAuthor,
   parseReviewComment,
   latestReviewComment,
   parseNativeReview,
   latestNativeReview,
-  readReviewState,
   uiSurfaceTouched,
   reviewAuthorises,
 } from "../scripts/review/core.js";
@@ -28,6 +28,11 @@ const nativeReview = ({ state = "APPROVED", sha = "abc1234def5678", body = null,
   body,
   author,
 });
+
+const HEAD = "abc1234def5678";
+const OLD = "0000000000000";
+const mergeableAt = (sha, source, ux = "n/a") => ({ verdict: "mergeable", sha, ux, source, author: null });
+const notMergeableAt = (sha, source, ux = "n/a") => ({ verdict: "not-mergeable", sha, ux, source, author: null });
 
 // --- parsing the marker comment -----------------------------------------------
 
@@ -240,39 +245,109 @@ test("a native review with no author info reports author: null", () => {
   assert.equal(v.author, null);
 });
 
-// --- readReviewState: the single-source convenience view -----------------------
+// --- filterByAuthor: the pre-collapse half of the authorship contract ----------
 //
-// Used by `agentflow-review read` for a human-readable summary. NOT used by
-// reviewAuthorises (see its own doc comment for why a collapsed single winner
-// is the wrong shape for the veto-semantics gate decision).
+// Must run on the RAW list, before latestReviewComment/latestNativeReview
+// collapse it — see core.js's module doc comment and the dedicated attack
+// test further down for why the ordering (not just the presence) of this
+// filter is load-bearing.
 
-test("readReviewState prefers a verdict-bearing native review over the marker comment", () => {
-  const state = readReviewState({
-    nativeReviews: [nativeReview({ state: "APPROVED", sha: "native-sha" })],
-    comments: [{ body: comment({ verdict: "not-mergeable", sha: "comment-sha" }) }],
-  });
-  assert.equal(state.source, "native");
-  assert.equal(state.sha, "native-sha");
+const authored = (login, association = "COLLABORATOR") => ({ login, association });
+
+test("filterByAuthor keeps only items authored by a trusted login", () => {
+  const items = [
+    { body: "a", author: authored("trusted-reviewer") },
+    { body: "b", author: authored("someone-else") },
+  ];
+  const kept = filterByAuthor(items, ["trusted-reviewer"]);
+  assert.deepEqual(kept, [items[0]]);
 });
 
-test("readReviewState falls back to the marker comment when no native review parses", () => {
-  const state = readReviewState({
-    nativeReviews: [{ state: "COMMENTED", commit_id: "x", body: null }],
-    comments: [{ body: comment({ sha: "c0ffee1" }) }],
-  });
-  assert.equal(state.source, "comment");
-  assert.equal(state.sha, "c0ffee1");
+test("filterByAuthor login match is case-insensitive", () => {
+  const items = [{ body: "a", author: authored("Trusted-Reviewer") }];
+  assert.deepEqual(filterByAuthor(items, ["trusted-reviewer"]), items);
+  assert.deepEqual(filterByAuthor(items, ["TRUSTED-REVIEWER"]), items);
 });
 
-test("readReviewState falls back when no native reviews were passed at all (solo-comment mode)", () => {
-  const state = readReviewState({ comments: [{ body: comment({ sha: "c0ffee1" }) }] });
-  assert.equal(state.source, "comment");
+test("filterByAuthor does not do substring/prefix matching — exact login only", () => {
+  const items = [{ body: "a", author: authored("trusted-reviewer-imposter") }];
+  assert.deepEqual(filterByAuthor(items, ["trusted-reviewer"]), []);
 });
 
-test("readReviewState is null when neither source has anything", () => {
-  assert.equal(readReviewState({ nativeReviews: [], comments: [] }), null);
-  assert.equal(readReviewState({}), null);
-  assert.equal(readReviewState(), null);
+test("filterByAuthor: association alone never substitutes for login", () => {
+  // Same association as a trusted account, different login — must not pass.
+  const items = [{ body: "a", author: authored("impostor", "OWNER") }];
+  assert.deepEqual(filterByAuthor(items, ["real-owner"]), []);
+});
+
+test("filterByAuthor with no trusted logins filters out everything — fails closed", () => {
+  const items = [{ body: "a", author: authored("anyone") }];
+  assert.deepEqual(filterByAuthor(items, []), []);
+  assert.deepEqual(filterByAuthor(items, undefined), []);
+  assert.deepEqual(filterByAuthor(items, null), []);
+});
+
+test("filterByAuthor drops items with no author info at all", () => {
+  const items = [{ body: "a", author: null }, { body: "b" }];
+  assert.deepEqual(filterByAuthor(items, ["trusted-reviewer"]), []);
+});
+
+test("filterByAuthor on an empty or missing list yields an empty list", () => {
+  assert.deepEqual(filterByAuthor([], ["trusted-reviewer"]), []);
+  assert.deepEqual(filterByAuthor(undefined, ["trusted-reviewer"]), []);
+});
+
+// --- the veto-laundering attack (PR #123's second cold review, finding 3) ------
+//
+// Proven attack: a trusted reviewer posts `not-mergeable` at head. The PR's
+// own (untrusted) author then posts a NEWER fake `mergeable` marker, also at
+// head. `latestReviewComment` is latest-wins, so collapsing the unfiltered
+// list picks the fake. The only safe fix is filtering the RAW list to
+// trusted logins BEFORE that collapse — filtering the already-collapsed
+// single winner's author does not recover the earlier trusted veto.
+
+test("ATTACK: an untrusted newer marker cannot launder away a trusted reviewer's veto when filtered pre-collapse", () => {
+  const rawComments = [
+    { body: comment({ verdict: "not-mergeable", sha: HEAD }), author: authored("trusted-reviewer") },
+    { body: comment({ verdict: "mergeable", sha: HEAD }), author: authored("pr-author") }, // posted after, untrusted
+  ];
+  const native = parseNativeReview(nativeReview({ state: "APPROVED", sha: HEAD, author: authored("agentflow-bot") }));
+  const trustedLogins = ["trusted-reviewer", "agentflow-bot"];
+
+  // SAFE order: filter the raw list first, THEN collapse.
+  const safeComment = latestReviewComment(filterByAuthor(rawComments, trustedLogins));
+  assert.equal(safeComment.verdict, "not-mergeable", "the untrusted fake was never a candidate, so it can't shadow the veto");
+
+  const safeResult = reviewAuthorises({ native, comment: safeComment }, { headSha: HEAD });
+  assert.equal(safeResult.authorised, false, "the trusted veto survives pre-collapse filtering");
+  assert.equal(safeResult.code, "not-mergeable");
+  assert.equal(safeResult.source, "comment");
+});
+
+test("ANTI-PATTERN, pinned so it is never re-derived as acceptable: filtering AFTER collapse loses the veto", () => {
+  // This is the exact vulnerability the safe pattern above closes. Do not
+  // copy this ordering into any composing caller.
+  const rawComments = [
+    { body: comment({ verdict: "not-mergeable", sha: HEAD }), author: authored("trusted-reviewer") },
+    { body: comment({ verdict: "mergeable", sha: HEAD }), author: authored("pr-author") },
+  ];
+  const native = parseNativeReview(nativeReview({ state: "APPROVED", sha: HEAD, author: authored("agentflow-bot") }));
+  const trustedLogins = ["trusted-reviewer", "agentflow-bot"];
+
+  // UNSAFE order: collapse first (latest-wins picks the untrusted fake),
+  // THEN check the single winner's author.
+  const collapsedFirst = latestReviewComment(rawComments);
+  assert.equal(collapsedFirst.verdict, "mergeable", "latest-wins picks the newer, untrusted, fake");
+  const postFilterComment = trustedLogins.includes(collapsedFirst.author?.login) ? collapsedFirst : null;
+  assert.equal(postFilterComment, null, "the fake is untrusted, so it's discarded — but discarding it does not bring the veto back");
+
+  const brokenResult = reviewAuthorises({ native, comment: postFilterComment }, { headSha: HEAD });
+  assert.equal(
+    brokenResult.authorised,
+    true,
+    "BROKEN: the trusted reviewer's veto is gone, not recovered — native mergeable authorises unchallenged. " +
+      "This is why filtering must happen before collapse, not after (see the ATTACK test above for the fix)."
+  );
 });
 
 // --- the UI-surface glob predicate ---------------------------------------------
@@ -308,11 +383,6 @@ test("uiSurfaceTouched is false with no files touched", () => {
 //
 // Both "not-mergeable" rows require the vetoing artifact to be head-fresh — a
 // stale artifact never vetoes.
-
-const HEAD = "abc1234def5678";
-const OLD = "0000000000000";
-const mergeableAt = (sha, source, ux = "n/a") => ({ verdict: "mergeable", sha, ux, source, author: null });
-const notMergeableAt = (sha, source, ux = "n/a") => ({ verdict: "not-mergeable", sha, ux, source, author: null });
 
 test("no artifact at all refuses, named no-artifact, no source", () => {
   const r = reviewAuthorises({}, { headSha: HEAD });
