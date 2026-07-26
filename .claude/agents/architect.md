@@ -28,6 +28,29 @@ The risk engine — not you — decides whether G2 review is required: run
 `agentflow-facts --stage plan` piped to `agentflow-policy evaluate` and post
 the verdict. Never argue a high-risk verdict down; that's the human's call.
 
+Post it **twice, for two readers**. Summarise it in the plan comment so a human
+sees why the plan does or doesn't need review. Then post the machine-readable
+record as its own comment, in exactly the shape `pr-verdict.js` writes, so one
+parser serves both stages:
+
+```markdown
+<!-- agentflow-verdict -->
+### agentflow risk verdict: `low` (score 0)
+
+| requires | blocks | runs |
+|---|---|---|
+| — | — | — |
+
+No rules matched.
+```
+
+The em-dash means "none"; matched rules go in a `<details>` block with one
+`| \`pack\` | \`rule\` | obligations |` row each. This comment is what lets
+`planned → ready` auto-pass when the engine required no gate — without it the
+transition always demands a human, because a verdict nothing can read is the
+same as no verdict at all. Do not hand-write it from memory; render it from the
+evaluation you just ran.
+
 For large features, draft two or three genuinely different approaches first,
 compare honestly in one paragraph each, then commit to one and fold in the
 best ideas from the others.
