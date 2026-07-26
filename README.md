@@ -23,8 +23,8 @@ live there; this README tracks what's built.
 | `interfaces/` | core | The four core↔pack contracts: `run` · `verify` · `execute-step` · `ship` |
 | `scenarios/SPEC.md` | core | Gherkin grammar, compiled-trace format, runner semantics |
 | `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, adapters/skills (Phase 2) |
-| `agents/` | core | The nine agent definitions with model tiers (installed into consuming repos' `.claude/agents/`) |
-| `init/` | core | `agentflow-init labels` (18-label set) · `agentflow-init project` (config, domains, business pack, agents, e2e dirs) |
+| `agents/` | core | The eleven agent definitions with model tiers (installed into consuming repos' `.claude/agents/`) |
+| `init/` | core | `agentflow-init labels` (18-label set) · `agentflow-init project` (config, domains, business pack, agents, e2e dirs) · `agentflow-init adopt` (scaffold + labels + printed settings commands · `--verify` · `--coverage`) |
 | `actions/` | core | Composite Actions: `gate-check` · `risk-verdict` · `dispatch` (thin YAML over `scripts/actions/*.js`) |
 
 ## Phase 1 status (crawl)
@@ -47,9 +47,9 @@ live there; this README tracks what's built.
 
 ## Phase 2 status (walk)
 
-- [x] Agent definitions: product-shaper · architect · project-genesis (opus) ·
-      implementer · code-reviewer · ux-reviewer · build-sentinel ·
-      qa-explorer · trace-deriver (sonnet) · triage (haiku)
+- [x] Agent definitions: product-shaper · architect · project-genesis ·
+      adoption-auditor (opus) · implementer · code-reviewer · ux-reviewer ·
+      build-sentinel · qa-explorer · trace-deriver (sonnet) · triage (haiku)
 - [x] Entry paths: genesis (one-shot bootstrap → seeded backlog handoff),
       adoption (init + audit), steady state; `maturity: genesis|steady` in
       config surfaces as `meta.maturity` for policy softening
@@ -69,10 +69,19 @@ live there; this README tracks what's built.
 - [ ] First real loop run on a consuming app (also first live `risk-verdict`)
 - [ ] Brief sweep in practice + headless agent execution (Phase 3, with
       GitHub App identity)
-- [ ] Automated brownfield adoption — `agentflow adopt`: adoption-audit agent
-      drafts `domains.yml` + conventions from the codebase, config interview,
-      and scripted repo settings (Actions access, branch protection, G4
-      environment). Tracked as a backlog issue on this repo.
+- [x] Automated brownfield adoption — `agentflow-init adopt` scaffolds an
+      existing repo (never overwriting), creates only the missing labels, and
+      prints one ordered created/present/remaining summary; `--verify` re-reads
+      an adopted repo check by check and `--coverage` reports how much of it
+      `domains.yml` classifies. The `adoption-auditor` agent supplies the
+      judgment half: it drafts the domain map, has a human confirm every
+      criticality, and extends the repo's own conventions doc.
+      **Repo settings are printed, not applied** — adopt detects which of
+      toolkit Actions access, branch protection and the G4 release Environment
+      are missing and prints the exact `gh api` command for each, merged
+      against the repo's current state so a paste can never weaken it. It
+      never runs them, under any flag, and neither does `project-genesis`:
+      a policy change on someone's repo is a human keystroke.
 
 > Consuming private repos must be allowed to use this repo's actions:
 > Settings → Actions → General → Access → "Accessible from repositories
