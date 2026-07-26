@@ -14,6 +14,7 @@
     "agentflow-policy": "scripts/policy/cli.js",
     "agentflow-state": "scripts/state/cli.js",
     "agentflow-gate": "scripts/gate/cli.js",
+    "agentflow-identity": "scripts/identity/cli.js",
     "agentflow-facts": "scripts/facts/cli.js",
     "agentflow-e2e": "scripts/e2e/cli.js",
     "agentflow-next": "scripts/next/cli.js",
