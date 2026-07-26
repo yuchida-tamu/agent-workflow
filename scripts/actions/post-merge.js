@@ -16,6 +16,7 @@ import { classifySuite, smokeOutcome, renderSmokeNote } from "../e2e/smoke.js";
 import { planTransition } from "../state/machine.js";
 import { releaseKindOf } from "../config/load.js";
 import { classifyDelivery, renderFinding } from "./ancestry.js";
+import { planMergeClose, renderMergeRecord, MARKER as MERGE_RECORD_MARKER } from "./merge-record.js";
 
 const MARKER = "<!-- agentflow-postmerge -->";
 const SCENARIOS_DIR = "e2e/scenarios";
@@ -114,13 +115,62 @@ for (const issue of linked) {
     }
   }
   const body = `${MARKER}\n${note}`;
-  const existing = JSON.parse(
-    sh(["api", `repos/${repo}/issues/${issue}/comments`, "--jq", "[.[] | {id, body}]"])
-  ).find((c) => c.body.startsWith(MARKER));
+  const comments = JSON.parse(sh(["api", `repos/${repo}/issues/${issue}/comments`, "--jq", "[.[] | {id, body}]"]));
+  const existing = comments.find((c) => c.body.startsWith(MARKER));
   if (existing) {
     sh(["api", "--method", "PATCH", `repos/${repo}/issues/comments/${existing.id}`, "-f", `body=${body}`]);
   } else {
     sh(["issue", "comment", String(issue), "--repo", repo, "--body", body]);
+  }
+
+  // GitHub's `Closes #N` closes the issue directly, so nothing in the loop
+  // observes it: the state label survives and no record of the merge is written.
+  // Both belong here — same event, same issue, same moment (#70).
+  const fresh = JSON.parse(sh(["issue", "view", String(issue), "--repo", repo, "--json", "labels,state"]));
+  const closePlan = planMergeClose({
+    labels: fresh.labels.map((l) => l.name),
+    closedByMerge: fresh.state === "CLOSED",
+  });
+
+  for (const target of closePlan.transitions) {
+    try {
+      const labels = JSON.parse(sh(["issue", "view", String(issue), "--repo", repo, "--json", "labels"])).labels.map(
+        (l) => l.name
+      );
+      const step = planTransition(labels, target, { releaseKind });
+      const args = ["issue", "edit", String(issue), "--repo", repo];
+      for (const label of step.add) args.push("--add-label", label);
+      for (const label of step.remove) args.push("--remove-label", label);
+      sh(args);
+    } catch {
+      break; // the passage is as complete as it can honestly be made
+    }
+  }
+
+  if (closePlan.clearLabel) {
+    const labels = JSON.parse(sh(["issue", "view", String(issue), "--repo", repo, "--json", "labels"])).labels
+      .map((l) => l.name)
+      .filter((l) => l.startsWith("state:"));
+    if (labels.length) {
+      const args = ["issue", "edit", String(issue), "--repo", repo];
+      for (const label of labels) args.push("--remove-label", label);
+      sh(args);
+    }
+  }
+
+  if (fresh.state === "CLOSED") {
+    const record = renderMergeRecord({
+      prNumber: pr.number,
+      mergedBy: pr.merged_by?.login ?? pr.user?.login ?? "unknown",
+      headSha: pr.head.sha,
+      plan: closePlan,
+    });
+    const prior = comments.find((c) => c.body.startsWith(MERGE_RECORD_MARKER));
+    if (prior) {
+      sh(["api", "--method", "PATCH", `repos/${repo}/issues/comments/${prior.id}`, "-f", `body=${record}`]);
+    } else {
+      sh(["issue", "comment", String(issue), "--repo", repo, "--body", record]);
+    }
   }
 }
 
