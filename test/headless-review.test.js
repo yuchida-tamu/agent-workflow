@@ -165,3 +165,36 @@ test("the action names both credentials in the log, and neither is secret", () =
   assert.match(action, /HAS_SUBSCRIPTION_TOKEN: \$\{\{ inputs\.claude-oauth-token != '' \}\}/);
   assert.equal(/\$\{\{ *secrets\./.test(action), false, "an action reads inputs, not secrets");
 });
+
+// --- regressions from review of PR #102 --------------------------------------
+
+test("the ledger tier is read from the roster, never written as a literal", () => {
+  // The row and the invocation must name the same model. A literal would let
+  // them disagree the moment the roster changes tier — which is not
+  // hypothetical: that exact drift produced two `agentflow-log audit`
+  // violations while this issue was being built.
+  const source = read("scripts/actions/headless-review.js");
+  assert.equal(/"--model",\s*"(opus|sonnet|haiku)"/.test(source), false, "no hardcoded tier");
+  assert.match(source, /"--model", tier/);
+  assert.match(source, /loadTiers\(/);
+});
+
+test("an enabled repo with no token still gets a comment", () => {
+  // Line-level check of the flow, not just of reviewBody: the early return for
+  // a missing token used to skip posting entirely, so a repo that had asked for
+  // review by enabling the flag got silence — the exact failure mode this
+  // stage exists to remove.
+  const source = read("scripts/actions/headless-review.js");
+  const tokenGuard = source.slice(source.indexOf("if (!process.env[TOKEN_VAR])"));
+  const untilReturn = tokenGuard.slice(0, tokenGuard.indexOf("return 0;"));
+  assert.match(untilReturn, /upsertComment\(/, "the missing-token path must post");
+});
+
+test("an opted-out repo stays silent", () => {
+  // The other half of the same decision, and deliberately different: a repo that
+  // never asked for headless review should not get a comment on every PR.
+  const source = read("scripts/actions/headless-review.js");
+  const offGuard = source.slice(source.indexOf("if (!reviewEnabled(config))"));
+  const untilReturn = offGuard.slice(0, offGuard.indexOf("return 0;"));
+  assert.equal(untilReturn.includes("upsertComment("), false, "no comment when never asked for");
+});

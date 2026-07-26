@@ -116,11 +116,28 @@ async function main() {
     return 0;
   }
 
+  // The declared tier, read once and used for both the invocation and the ledger
+  // row. A literal here would let the row disagree with what actually ran the
+  // moment the roster changes tier — which is not hypothetical: that exact drift
+  // produced two `agentflow-log audit` violations while this issue was being
+  // built.
+  const tiers = loadTiers(join(TOOLKIT, "agents"));
+  const tier = tiers[AGENT] ?? null;
+
   if (!process.env[TOKEN_VAR]) {
-    // Named loudly and early, before anything else is attempted.
+    // Named loudly and early, before anything else is attempted — and posted,
+    // not just logged. This repo asked for review by enabling the flag; not
+    // getting one has to be as visible on the PR as a finding would be. (The
+    // opted-out path above stays silent on purpose: a repo that never asked for
+    // headless review should not get a comment on every pull request.)
     const message = `headless disabled: no subscription token (${TOKEN_VAR}). See docs/headless-runbook.md.`;
     console.error(message);
     summarise(`headless review: **disabled** — ${message}`);
+    upsertComment(
+      repo,
+      prNumber,
+      reviewBody({ outcome: "unauthenticated", reason: message, text: "", model: tier, usage: null }),
+    );
     return 0;
   }
 
@@ -137,7 +154,7 @@ async function main() {
   // Opened before the work, closed after — including on failure, so an
   // abandoned run is recorded rather than left open.
   log(["start", "--issue", String(prNumber), "--run", run, "--phase", "in-review",
-       "--agent", AGENT, "--model", "opus", "--repo", repo]);
+       "--agent", AGENT, "--model", tier ?? "unknown", "--repo", repo]);
 
   let result;
   try {
@@ -146,7 +163,7 @@ async function main() {
       stage: "review",
       config,
       env: process.env,
-      tiers: loadTiers(join(TOOLKIT, "agents")),
+      tiers,
       prompt: reviewPrompt({ repo, prNumber, baseSha: pr.base.sha, headSha: pr.head.sha }),
     });
     if (plan.launch) {
