@@ -9,6 +9,7 @@
 // `agentflow-state apply --approved-gate <gate>`.
 
 import { validateApproval } from "./validator.js";
+import { releaseKindOf } from "../config/load.js";
 
 function parseArgs(argv) {
   const flags = {};
@@ -31,6 +32,7 @@ const verdict = validateApproval({
   body: flags.body,
   expectedGate: flags.gate,
   authorized: (flags.authorized ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+  releaseKind: releaseKindOf(),
 });
 
 console.log(JSON.stringify(verdict, null, 2));

@@ -47,3 +47,23 @@ test("rejection is not ok but is flagged", () => {
 test("plain comment is not an approval", () => {
   assert.equal(validateApproval({ ...base, body: "ship it!" }).ok, false);
 });
+
+test("G4 is refused on a repo that never releases", () => {
+  const v = validateApproval({ ...base, expectedGate: "G4", body: "/approve G4", releaseKind: "none" });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /G4 does not apply.*release_kind is "none"/);
+});
+
+test("G4 is accepted on repos that do release", () => {
+  for (const releaseKind of ["store", "tag", null]) {
+    const v = validateApproval({ ...base, expectedGate: "G4", body: "/approve G4", releaseKind });
+    assert.equal(v.ok, true, String(releaseKind));
+  }
+});
+
+test("release_kind none does not touch the other gates", () => {
+  for (const gate of ["G1", "G2", "G3"]) {
+    const v = validateApproval({ ...base, expectedGate: gate, body: `/approve ${gate}`, releaseKind: "none" });
+    assert.equal(v.ok, true, gate);
+  }
+});

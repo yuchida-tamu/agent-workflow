@@ -27,9 +27,14 @@ export function parseCommand(body) {
   return null;
 }
 
-export function validateApproval({ author, body, authorized, expectedGate }) {
+export function validateApproval({ author, body, authorized, expectedGate, releaseKind = null }) {
   if (!GATES.includes(expectedGate)) {
     return { ok: false, reason: `unknown expected gate "${expectedGate}"` };
+  }
+  // Accepting a G4 on a repo that never releases would mint an approval nothing
+  // can consume — an audit artifact implying a release that cannot happen.
+  if (expectedGate === "G4" && releaseKind === "none") {
+    return { ok: false, reason: `G4 does not apply: this repo's release_kind is "none", so "verified" is terminal` };
   }
   const parsed = parseCommand(body);
   if (!parsed) return { ok: false, reason: "no /approve or /reject command found" };

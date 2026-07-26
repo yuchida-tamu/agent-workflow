@@ -15,6 +15,33 @@ const PLACEHOLDER_APPROVER = "CHANGE_ME";
 
 const MATURITIES = ["genesis", "steady"];
 
+// What `released` means for this repo. Optional: a config written before this
+// key existed is still valid, and infers its kind rather than breaking.
+export const RELEASE_KINDS = ["store", "tag", "none"];
+
+// Platforms that ship through a store. Everything else — a toolkit, a library,
+// a service, `platform: null` — releases by tag.
+const STORE_PLATFORMS = ["rn-expo", "expo", "react-native", "ios", "android"];
+
+// Explicit config always wins; inference only fills a gap. Returning the reason
+// as well as the kind keeps the choice legible in `--verify` output and in the
+// dispatch comment, so nobody has to guess why their repo tags instead of ships.
+export function resolveReleaseKind(config) {
+  const explicit = config?.release_kind;
+  if (explicit !== undefined && explicit !== null) {
+    return { kind: explicit, source: "config" };
+  }
+  const platform = config?.platform ?? null;
+  if (platform !== null && STORE_PLATFORMS.includes(platform)) {
+    return { kind: "store", source: "inferred", from: `platform "${platform}"` };
+  }
+  return {
+    kind: "tag",
+    source: "inferred",
+    from: platform === null ? "no platform" : `platform "${platform}"`,
+  };
+}
+
 // Shared with `--verify`'s domains.yml check: one enum, one definition.
 export const CRITICALITIES = ["low", "medium", "high", "critical"];
 
@@ -27,6 +54,7 @@ const KNOWN_KEYS = [
   "unmapped_criticality",
   "unmapped_warn_fraction",
   "model_overrides",
+  "release_kind",
 ];
 
 const typeName = (v) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
@@ -101,6 +129,13 @@ export function validateConfig(config) {
 
   if (present("model_overrides") && !isPlainObject(config.model_overrides)) {
     error("model_overrides", `must be an object (got ${typeName(config.model_overrides)})`);
+  }
+
+  // Optional, unlike the keys above: it postdates the template, so a config
+  // that predates it is complete, not half-finished. Present-but-wrong is still
+  // an error — a typo must not silently infer something else.
+  if (Object.hasOwn(config, "release_kind") && !RELEASE_KINDS.includes(config.release_kind)) {
+    error("release_kind", oneOf(RELEASE_KINDS));
   }
 
   for (const key of Object.keys(config)) {

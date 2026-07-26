@@ -13,7 +13,8 @@
 // Exit codes: 0 ok · 10 refused (illegal transition / missing gate) · 20 usage.
 
 import { execFileSync } from "node:child_process";
-import { planTransition, stateFromLabels, TRANSITIONS } from "./machine.js";
+import { planTransition, stateFromLabels, transitionsFrom } from "./machine.js";
+import { releaseKindOf } from "../config/load.js";
 
 function parseArgs(argv) {
   const flags = {};
@@ -38,12 +39,13 @@ try {
   switch (command) {
     case "status": {
       const state = stateFromLabels(splitLabels(flags.labels));
-      console.log(JSON.stringify({ state, next: state ? TRANSITIONS[state] : ["idea"] }, null, 2));
+      const next = state ? transitionsFrom(state, { releaseKind: releaseKindOf() }) : ["idea"];
+      console.log(JSON.stringify({ state, next }, null, 2));
       break;
     }
     case "plan": {
       if (!flags.to) throw usage("plan needs --to <state>");
-      const plan = planTransition(splitLabels(flags.labels), flags.to);
+      const plan = planTransition(splitLabels(flags.labels), flags.to, { releaseKind: releaseKindOf() });
       console.log(JSON.stringify(plan, null, 2));
       break;
     }
@@ -54,7 +56,7 @@ try {
         gh(["issue", "view", flags.issue, ...repoArgs, "--json", "labels"])
       );
       const labels = issue.labels.map((l) => l.name);
-      const plan = planTransition(labels, flags.to);
+      const plan = planTransition(labels, flags.to, { releaseKind: releaseKindOf() });
       if (plan.gate && flags["approved-gate"] !== plan.gate) {
         console.error(`refused: ${plan.from} → ${plan.to} requires gate ${plan.gate} approval`);
         process.exit(10);

@@ -9,6 +9,7 @@
 
 import { execFileSync } from "node:child_process";
 import { pickNext } from "./core.js";
+import { releaseKindOf } from "../config/load.js";
 
 function parseArgs(argv) {
   const flags = {};
@@ -32,7 +33,7 @@ try {
     )
   ).map((i) => ({ ...i, labels: i.labels.map((l) => l.name) }));
 
-  const next = pickNext(issues);
+  const next = pickNext(issues, { releaseKind: releaseKindOf() });
   if (!next) {
     console.log(flags.json ? JSON.stringify({ idle: true }) : "backlog idle — nothing actionable");
     process.exit(1);
