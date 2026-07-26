@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { validateConfig } from "../init/config-schema.js";
+import { validateConfig, resolveReleaseKind } from "../init/config-schema.js";
 import { IDLE_NOTE, exitCode, renderChecks, rollup, verifyChecks } from "../init/verify.js";
 
 // ---------------------------------------------------------------------------
@@ -431,4 +431,49 @@ test("renderChecks: a failed row is marked ✗ and keeps its detail", () => {
     "✗ agentflow-next — exited 20 (usage/IO error) — check `gh auth status` and that the repo is reachable",
   );
   assert.equal(lines.at(-1), "4 passed, 1 failed");
+});
+
+// --- release_kind ------------------------------------------------------------
+
+test("resolveReleaseKind: explicit config always wins over the platform", () => {
+  assert.equal(resolveReleaseKind({ release_kind: "tag", platform: "rn-expo" }).kind, "tag");
+  assert.equal(resolveReleaseKind({ release_kind: "none", platform: "rn-expo" }).kind, "none");
+  assert.equal(resolveReleaseKind({ release_kind: "tag" }).source, "config");
+});
+
+test("resolveReleaseKind: a store platform infers store", () => {
+  for (const platform of ["rn-expo", "expo", "react-native", "ios", "android"]) {
+    const resolved = resolveReleaseKind({ platform });
+    assert.equal(resolved.kind, "store", platform);
+    assert.equal(resolved.source, "inferred");
+  }
+});
+
+test("resolveReleaseKind: anything else, including no platform, infers tag", () => {
+  assert.equal(resolveReleaseKind({ platform: null }).kind, "tag");
+  assert.equal(resolveReleaseKind({ platform: "node-lib" }).kind, "tag");
+  assert.equal(resolveReleaseKind({}).kind, "tag");
+  assert.equal(resolveReleaseKind(undefined).kind, "tag");
+});
+
+test("resolveReleaseKind explains itself", () => {
+  assert.match(resolveReleaseKind({ platform: null }).from, /no platform/);
+  assert.match(resolveReleaseKind({ platform: "rn-expo" }).from, /rn-expo/);
+});
+
+test("a config with no release_kind is still valid — the key postdates the template", () => {
+  assert.ok(!Object.hasOwn(validConfig, "release_kind"), "fixture predates the key");
+  assert.deepEqual(validateConfig(validConfig).filter((i) => i.level === "error"), []);
+});
+
+test("a release_kind typo is an error, never a silent inference", () => {
+  const issues = validateConfig({ ...validConfig, release_kind: "tags" });
+  const found = issues.find((i) => i.path === "release_kind");
+  assert.equal(found.level, "error");
+  assert.match(found.message, /must be one of "store", "tag", "none"/);
+});
+
+test("release_kind is a known key, so it draws no unknown-key warning", () => {
+  const issues = validateConfig({ ...validConfig, release_kind: "tag" });
+  assert.equal(issues.find((i) => i.path === "release_kind"), undefined);
 });

@@ -20,13 +20,14 @@ live there; this README tracks what's built.
 | `scripts/e2e/` | core | Gherkin parser, trace replay runner + `agentflow-e2e` CLI |
 | `scripts/next/` | core | Crawl-phase dispatcher + `agentflow-next` CLI |
 | `scripts/log/` | core | Run ledger (pure) + `agentflow-log` CLI: `start` · `end` · `audit` |
+| `scripts/release/` | core | G4 release: tag + GitHub release + `agentflow-release` CLI |
 | `policies/baseline.yaml` | core | Platform-neutral baseline pack (locked guards + scoring) |
 | `interfaces/` | core | The four core↔pack contracts: `run` · `verify` · `execute-step` · `ship` |
 | `scenarios/SPEC.md` | core | Gherkin grammar, compiled-trace format, runner semantics |
 | `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, adapters/skills (Phase 2) |
 | `agents/` | core | The eleven agent definitions with model tiers (installed into consuming repos' `.claude/agents/`) |
 | `init/` | core | `agentflow-init labels` (18-label set) · `agentflow-init project` (config, domains, business pack, agents, e2e dirs) · `agentflow-init adopt` (scaffold + labels + printed settings commands · `--verify` · `--coverage`) |
-| `actions/` | core | Composite Actions: `gate-check` · `risk-verdict` · `dispatch` (thin YAML over `scripts/actions/*.js`) |
+| `actions/` | core | Composite Actions: `gate-check` · `risk-verdict` · `dispatch` · `post-merge` (thin YAML over `scripts/actions/*.js`) |
 
 ## Phase 1 status (crawl)
 

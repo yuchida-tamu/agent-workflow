@@ -16,6 +16,20 @@ export const DISPATCH = {
   released: { actor: "none", who: "-", action: "done" },
 };
 
+// `verified` means something different per repo, so the dispatch line has to say
+// what will actually happen — otherwise `agentflow-next` tells a toolkit to wait
+// for a store submission that is never coming.
+const VERIFIED_BY_RELEASE_KIND = {
+  store: DISPATCH.verified,
+  tag: { actor: "human", who: "G4", action: "approve the release; agentflow-release tags and publishes a GitHub release; → released" },
+  none: { actor: "none", who: "-", action: "done — this repo has no release step (release_kind: none)" },
+};
+
+export function dispatchFor(state, { releaseKind = "store" } = {}) {
+  if (state === "verified") return VERIFIED_BY_RELEASE_KIND[releaseKind] ?? DISPATCH.verified;
+  return DISPATCH[state];
+}
+
 const ACTIONABLE = new Set(["idea", "spec", "planned", "ready", "in-review", "merged"]);
 
 function priorityOf(labels) {
@@ -24,7 +38,7 @@ function priorityOf(labels) {
 }
 
 // issues: [{ number, title, labels: [names], createdAt }]
-export function pickNext(issues) {
+export function pickNext(issues, options = {}) {
   const candidates = [];
   for (const issue of issues) {
     if (issue.labels.includes("blocked")) continue;
@@ -47,7 +61,7 @@ export function pickNext(issues) {
     title: top.issue.title,
     state: top.state,
     priority: top.priority,
-    dispatch: DISPATCH[top.state],
+    dispatch: dispatchFor(top.state, options),
     queue: candidates.length,
   };
 }
