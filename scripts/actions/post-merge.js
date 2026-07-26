@@ -51,6 +51,35 @@ function readFeatureFiles(dir) {
   }
 }
 
+// `sha` is null (unmerged, absent) or a commit — resolved to true / false /
+// null, where null means the question could not be answered (a shallow
+// clone, a missing ref) and must not be read as a failure. Mirrors the
+// tri-state `classifyDelivery` (ancestry.js) already expects.
+function checkAncestor(sha, defaultBranch) {
+  if (!sha) return null;
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", sha, `origin/${defaultBranch}`], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch (err) {
+    return err.status === 1 ? false : null;
+  }
+}
+
+// Primary (merge-commit) and secondary (head-sha) ancestry evidence, combined
+// into the single tri-state `classifyDelivery` expects. Either check landing
+// on the default branch is sufficient proof of delivery — a squash merge only
+// satisfies the primary, a true merge satisfies both. Only both checks
+// explicitly saying "no" reads as genuinely undelivered; one indeterminate
+// result must not manufacture a false alarm (ancestry.js's proceed-on-doubt
+// asymmetry applies here too).
+export function combineAncestry(mergeAncestor, headAncestor) {
+  if (mergeAncestor === true || headAncestor === true) return true;
+  if (mergeAncestor === false && headAncestor === false) return false;
+  return null;
+}
+
 function main() {
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
   const pr = event.pull_request;
@@ -69,18 +98,18 @@ function main() {
   // nothing (#44) — #38, #39 and #40 all showed MERGED with none of their code on
   // main. Answer before touching any issue: a merge that delivered nothing must
   // not advance the record.
+  //
+  // Head-sha ancestry alone is squash-blind: a squash merge lands a synthetic
+  // commit on main and the PR's own head sha never appears there at all (#125,
+  // observed live on #124 — `0ef9099a` was read as "did not deliver" while
+  // `87a4d6a`, the squash commit, was sitting on main the whole time). GitHub
+  // sets `merge_commit_sha` correctly for every strategy (merge, squash,
+  // rebase), so it is the primary evidence; head-sha ancestry stays as a
+  // secondary "or" — a true merge commit satisfies both.
   const defaultBranch = event.repository?.default_branch ?? "main";
-  let isAncestor = null;
-  try {
-    execFileSync("git", ["merge-base", "--is-ancestor", pr.head.sha, `origin/${defaultBranch}`], {
-      stdio: "ignore",
-    });
-    isAncestor = true;
-  } catch (err) {
-    // Exit 1 is a clean "not an ancestor". Anything else — a shallow clone, a
-    // missing ref — means we could not tell, and must not be read as a failure.
-    isAncestor = err.status === 1 ? false : null;
-  }
+  const mergeAncestor = checkAncestor(pr.merge_commit_sha, defaultBranch);
+  const headAncestor = checkAncestor(pr.head.sha, defaultBranch);
+  const isAncestor = combineAncestry(mergeAncestor, headAncestor);
 
   const delivery = classifyDelivery({ isAncestor, headSha: pr.head.sha, defaultBranch });
   if (!delivery.proceed) {
