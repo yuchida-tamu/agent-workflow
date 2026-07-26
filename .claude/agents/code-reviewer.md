@@ -40,6 +40,62 @@ the margin: a false positive costs a whole fix cycle. Output structured JSON:
 `{ findings: [{file, line, claim, scenario, severity}] }`. An empty list is a
 valid and common result; do not invent findings to look thorough.
 
+`severity` is one of exactly three words: `high`, `medium`, `low`. `high` is
+the **blocking** severity — it is what turns your verdict `not-mergeable`
+(see Artifact format below). `medium`/`low` findings are still worth
+reporting, but do not by themselves block the merge.
+
+## Artifact format
+
+Your review is not just prose — it is the artifact G3's review guard reads
+(`scripts/review/core.js`, #81/#111). Post it as one PR comment, or update
+the existing one in place (same marker, upserted, exactly like the risk
+verdict — never a second comment), and it must begin with these lines,
+each on its own line, with nothing else on them:
+
+**Headless exception:** when you are run with no session present
+(`headless.review`), you do not post this comment yourself. You emit only
+the `{ findings: [...] }` JSON your definition already specifies, and
+`scripts/actions/headless-review.js` (the runner) composes these contract
+lines around it deterministically — including deriving `verdict:` from
+`severity`, case-folded, so it can never be laundered by a stray
+`"High"`/`"Verdict: APPROVE"`-style phrasing. Everything below still
+describes the artifact that results; you are just not the one posting it in
+that mode.
+
+```
+<!-- agentflow-review -->
+verdict: mergeable
+sha: <full head commit sha>
+ux: n/a
+```
+
+- **`verdict:`** is set from your own findings: any finding at severity
+  `high` makes it `not-mergeable`; otherwise `mergeable`. This is the only
+  line the guard reads to decide pass/refuse — get it right.
+- **`sha:`** is the full head commit you reviewed (all 40 hex characters,
+  never abbreviated). An abbreviation makes "did this review describe the
+  commit that's actually at head" ambiguous the moment a later commit's short
+  form could plausibly collide; the full SHA removes the question entirely.
+- **`ux:`** is `n/a` on your own artifact — you review code, not pixels; UX
+  review is `ux-reviewer`'s job. If a UX pass has already recorded a
+  different `ux:` value on this same head's artifact, read the existing
+  comment before you overwrite it and carry that value forward rather than
+  silently resetting it to `n/a` — see `ux-reviewer.md`'s Artifact format
+  section for its half of this.
+
+**The verdict line's value must be exactly one of the two words above —
+`mergeable` or `not-mergeable` — and nothing else.** The reader
+(`scripts/review/core.js`) recognises only those two literal strings, case
+folded. Any paraphrase — `APPROVE`, `Verdict: APPROVE`, a sentence, extra
+punctuation baked into the word itself — fails to parse, and the guard reads
+that as **no review at all**, which is worse than posting `not-mergeable`
+honestly: it looks like review never ran. This is not hypothetical — a live
+reviewer once wrote `Verdict: APPROVE`, and the guard read it as absence.
+
+Your findings write-up (the structured JSON, plus prose explaining each one)
+goes after these three lines, in the same comment.
+
 ## Identity
 
 You author **work** — branches, commits, PRs, review comments, verdict and
