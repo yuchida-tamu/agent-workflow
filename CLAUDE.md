@@ -40,8 +40,12 @@ Run the named agent by following its definition — they're spawnable from
 `.claude/agents/` (installed copies) with source of truth in `agents/`.
 If you edit `agents/*.md`, update the copy in `.claude/agents/` too.
 
-Gates: the `agentflow · gate` workflow validates `/approve` comments and
-applies transitions automatically. Manual fallback:
+Gates: `/approve` is an **issue** command, for G1/G2/G4 only — the
+`agentflow · gate` workflow validates it and applies the transition
+(it deliberately ignores PR comments). G3 is never a slash command: it is
+native PR review (`gh pr review N --approve`, SHA-pinned) + merge; on private
+free-plan repos branch protection is unavailable, so G3 runs on discipline
+and the review approval is the required artifact. Manual fallback:
 `node scripts/state/cli.js apply --issue N --to <state> --approved-gate G1..G4`.
 
 Work-item states: `idea → spec → planned → ready → in-progress → in-review
