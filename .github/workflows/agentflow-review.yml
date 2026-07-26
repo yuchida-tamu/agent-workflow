@@ -21,6 +21,12 @@ concurrency:
   cancel-in-progress: true
 jobs:
   review:
+    # No token, no job. The secret is checked here rather than inside the action
+    # so an opted-out repo never spins up a runner at all — the additive promise
+    # extends to Actions minutes, not just to behaviour. It also means a repo
+    # that has not adopted headless review sees no red X for a capability it
+    # never asked for.
+    if: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
