@@ -9,6 +9,15 @@ state-and-gates:
   criticality: critical
   paths: ["scripts/state/**", "scripts/gate/**"]
 
+# `critical` for the pair of reasons that earn it: this code decides whether a
+# gate approval stands, and it mints the credentials agents act with. Left
+# unmapped it would fall to `unmapped_criticality: medium` — credential handling
+# behind a default is exactly the gap that hid scripts/release/**.
+identity:
+  description: "Who is acting: the agent's GitHub App identity, its tokens, and what a bot may approve"
+  criticality: critical
+  paths: ["scripts/identity/**"]
+
 actions-wiring:
   description: "Event handlers and composite actions consuming apps depend on"
   criticality: high
