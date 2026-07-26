@@ -64,13 +64,41 @@ const PLATFORM = "ios";
 // help text (daemon idle-reap, stale runner lease, simulator boot/connect
 // failures) rather than the ordinary "selector did not resolve"/"assertion
 // failed" wording `is`/`press`/`fill`/`wait` use for a genuine step failure.
+// "daemon" alone is deliberately NOT an alternative here (only paired with a
+// failure verb, or the one literal agent-device phrase below) — a bare
+// substring match on "daemon" would trip on agent-device's own
+// `Selector did not resolve uniquely (text="Restart daemon")` diagnostic,
+// which legitimately echoes a UI element's own accessible text.
 const INFRA_ERROR_PATTERN =
-  /ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|daemon|not booted|simulator.*(?:not (?:running|found|available)|died|crashed)|device not found|no such session|session not found|is already owned by another agent-device daemon|command not found/i;
+  /ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|daemon\s*(?:is\s*)?(?:not\s*running|unreachable|not\s*responding|died|crashed|gone|down|stale)|is already owned by another agent-device daemon|not booted|simulator.*(?:not (?:running|found|available)|died|crashed)|device not found|no such session|session not found|command not found/i;
+
+// Strips any echoed selector expression (id="…"/label="…"/text="…") out of a
+// diagnostic before classification. agent-device's own error text for a
+// failed resolution legitimately echoes the selector's value back (e.g.
+// `Selector did not resolve uniquely (text="Restart daemon")`) — the
+// classifier must never let a UI element's own accessible text/label steer
+// its own verdict, so that content is removed before the pattern runs.
+function stripEchoedSelectors(text) {
+  return text.replace(/(?:id|label|text)="(?:[^"\\]|\\.)*"/g, "");
+}
 
 export function isInfrastructureError(err) {
   if (!(err instanceof AgentDeviceError)) return false;
-  const text = `${err.message} ${err.stderr ?? ""}`;
-  return INFRA_ERROR_PATTERN.test(text);
+  // Spawn-level failure (lib/agent-device.js's `invoke` hits its `result.error`
+  // branch: ENOENT/EACCES/ETIMEDOUT etc — the child process never produced a
+  // real exit, so neither `stderr` nor `stdout` was ever set on the error).
+  // agent-device wasn't even reachable, so this is infrastructure
+  // unconditionally — never dependent on message content.
+  if (err.stderr === undefined && err.stdout === undefined) return true;
+  // Otherwise classify on the driver's own diagnostic only (stderr, falling
+  // back to stdout when the driver wrote nothing to stderr) — NEVER on
+  // `.message`, which echoes the full invoked command line (bin, subcommand,
+  // every flag, and the selector) verbatim. A button whose accessible label
+  // happens to be "Restart daemon" must still resolve as an ordinary step
+  // failure, not get reclassified as infrastructure because its own selector
+  // text contains an infra-sounding word.
+  const diagnostic = stripEchoedSelectors(`${err.stderr ?? ""} ${err.stdout ?? ""}`).trim();
+  return INFRA_ERROR_PATTERN.test(diagnostic);
 }
 
 // ---- selector / argv helpers -------------------------------------------
@@ -89,6 +117,20 @@ function withSessionFlags(args, ctx) {
   return out;
 }
 
+// `translateSelector` (lib/agent-device.js) throws a bare TypeError for a
+// selector with none of test_id/label/text set. That's a malformed trace,
+// exactly like an unsupported action/assertion kind — not a live-UI verdict —
+// so it must escalate fatal(20) the same way, not fall through to an ordinary
+// step failure. Every selector translation in this file goes through this
+// wrapper rather than calling `translateSelector` directly.
+function selectorArg(selector) {
+  try {
+    return translateSelector(selector);
+  } catch (err) {
+    throw fatal(`malformed selector: ${err.message}`);
+  }
+}
+
 // tap -> press, type -> fill (replaces, matching verify.md's `type` action),
 // scroll -> scroll [--scope <selector>], press (key) -> keyboard/back. `wait`
 // and `navigate` have their own dedicated runners below since they don't
@@ -97,13 +139,13 @@ function withSessionFlags(args, ctx) {
 export function actionArgv(action) {
   switch (action.kind) {
     case "tap":
-      return ["press", translateSelector(action.selector)];
+      return ["press", selectorArg(action.selector)];
     case "type":
-      return ["fill", translateSelector(action.selector), String(action.text ?? "")];
+      return ["fill", selectorArg(action.selector), String(action.text ?? "")];
     case "scroll": {
       const args = ["scroll", action.direction ?? "down"];
       if (action.amount !== undefined) args.push(String(action.amount));
-      if (action.selector) args.push("--scope", translateSelector(action.selector));
+      if (action.selector) args.push("--scope", selectorArg(action.selector));
       return args;
     }
     case "press":
@@ -139,7 +181,7 @@ async function runAction(action, ctx) {
     // `agent-device wait <selector> <timeoutMs>` polls internally (fixed
     // 300ms interval) and raises a command failure on timeout — exactly the
     // action-phase failure shape we want, no app-level poll loop needed.
-    return invoke(withSessionFlags(["wait", translateSelector(selector), String(timeoutMs)], ctx), {
+    return invoke(withSessionFlags(["wait", selectorArg(selector), String(timeoutMs)], ctx), {
       runner: ctx.runner,
     });
   }
@@ -196,7 +238,7 @@ async function assertVisible(assertion, ctx, { hidden }) {
   const predicate = hidden ? "hidden" : "visible";
   const timeoutMs = assertion.timeout_ms ?? DEFAULT_ASSERT_TIMEOUT_MS;
   const check = guard(async () => {
-    await invoke(withSessionFlags(["is", predicate, translateSelector(assertion.selector)], ctx), { runner: ctx.runner });
+    await invoke(withSessionFlags(["is", predicate, selectorArg(assertion.selector)], ctx), { runner: ctx.runner });
     return { ok: true };
   });
   const result = await pollUntil(check, { timeoutMs, sleep: ctx.sleep, clock: ctx.clock });
@@ -222,7 +264,7 @@ async function assertText(assertion, ctx) {
   const timeoutMs = assertion.timeout_ms ?? DEFAULT_ASSERT_TIMEOUT_MS;
   let lastText = "";
   const check = guard(async () => {
-    const res = await invoke(withSessionFlags(["get", "text", translateSelector(assertion.selector)], ctx), {
+    const res = await invoke(withSessionFlags(["get", "text", selectorArg(assertion.selector)], ctx), {
       runner: ctx.runner,
     });
     lastText = extractText(res);
@@ -280,8 +322,11 @@ async function runAssertion(assertion, ctx) {
 // One screenshot per execute-step call — captured at the end of replay
 // (either the final UI state on a pass, or the failure moment on a fail),
 // matching both illustrative examples in interfaces/execute-step.md (each
-// shows exactly one evidence entry). Best-effort: a capture failure never
-// masks the actual pass/fail verdict, it just leaves evidence empty.
+// shows exactly one evidence entry). Best-effort end to end: the screenshot
+// invoke AND the manifest write share one try/catch, so a manifest-write
+// failure (a read-only/unwritable evidence_dir, for instance) can never
+// throw out of here and mask the step's actual pass/fail verdict — it just
+// leaves evidence empty, same as a screenshot capture failure.
 async function captureScreenshot(ctx, deps, evidenceDir) {
   if (!evidenceDir) return null;
   const manifest = await deps.readManifest(evidenceDir).catch(() => []);
@@ -289,11 +334,11 @@ async function captureScreenshot(ctx, deps, evidenceDir) {
   const outPath = join(evidenceDir, fileName);
   try {
     await invoke(withSessionFlags(["screenshot", "--out", outPath], ctx), { runner: ctx.runner, json: false });
+    await deps.appendManifest(evidenceDir, { type: "screenshot", path: outPath, label: "execute-step" });
   } catch (err) {
     diagnostic(`[execute-step] screenshot capture failed: ${err.message}`, deps.stderr);
     return null;
   }
-  await deps.appendManifest(evidenceDir, { type: "screenshot", path: outPath, label: "execute-step" });
   return outPath;
 }
 

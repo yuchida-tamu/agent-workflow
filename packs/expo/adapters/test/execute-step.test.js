@@ -68,14 +68,70 @@ test("describeSelector: renders the fixed test_id/label/text order", () => {
   assert.equal(describeSelector({ text: "x" }), "text=x");
 });
 
-test("isInfrastructureError: only AgentDeviceError with a driver/daemon signature counts", () => {
+test("actionArgv: a malformed selector (none of test_id/label/text) is fatal (20), like an unsupported kind", () => {
+  assert.throws(() => actionArgv({ kind: "tap", selector: { role: "button" } }), (err) => {
+    assert.equal(err.code, EXIT_FATAL);
+    assert.match(err.message, /malformed selector/);
+    return true;
+  });
+});
+
+test("isInfrastructureError: a normal command failure (stderr/stdout set) classifies on the driver's own diagnostic", () => {
   assert.equal(isInfrastructureError(new Error("plain error")), false);
-  assert.equal(isInfrastructureError(new AgentDeviceError("Selector did not resolve uniquely")), false);
-  assert.equal(isInfrastructureError(new AgentDeviceError("agent-device daemon not running")), true);
+  // A realistic non-zero-exit AgentDeviceError always carries stderr/stdout
+  // (see lib/agent-device.js's `invoke`, the `result.code !== 0` branch) —
+  // an ordinary "selector didn't resolve" failure is not infrastructure.
   assert.equal(
-    isInfrastructureError(new AgentDeviceError("boom", { stderr: "Simulator device is not booted" })),
+    isInfrastructureError(
+      new AgentDeviceError('agent-device press id="checkout-cta" exited 1: Selector did not resolve uniquely', {
+        stderr: "Selector did not resolve uniquely",
+        stdout: "",
+      })
+    ),
+    false
+  );
+  assert.equal(
+    isInfrastructureError(
+      new AgentDeviceError("agent-device press ... exited 1: agent-device daemon not running", {
+        stderr: "agent-device daemon not running",
+        stdout: "",
+      })
+    ),
     true
   );
+  assert.equal(
+    isInfrastructureError(
+      new AgentDeviceError("boom", { stderr: "Simulator device is not booted", stdout: "" })
+    ),
+    true
+  );
+});
+
+// Finding #1 (MED, false-positive direction): the echoed command line in
+// `.message` must never be consulted — only the driver's own stderr/stdout.
+// A UI element whose own label/text happens to contain an infra-sounding
+// word ("Restart daemon") must still resolve as an ordinary step failure.
+test("isInfrastructureError: a selector whose own text/label contains an infra-sounding word is NOT infrastructure — only .message is polluted, stderr is the real (unrelated) failure", () => {
+  const err = new AgentDeviceError(
+    'agent-device press text="Restart daemon" --platform ios --device "iPhone 15" --session s exited 1: Selector did not resolve uniquely (text="Restart daemon")',
+    { stderr: 'Selector did not resolve uniquely (text="Restart daemon")', stdout: "" }
+  );
+  assert.match(err.message, /daemon/, "sanity: the echoed command line does carry the trigger word");
+  assert.equal(isInfrastructureError(err), false);
+});
+
+// Finding #2 (MED, false-negative direction): a spawn-level failure never
+// reached a real process exit, so `invoke`'s `result.error` branch sets only
+// {command, code} on the AgentDeviceError — no stderr/stdout keys at all.
+// That must be infrastructure unconditionally, regardless of message text.
+test("isInfrastructureError: a spawn-level failure (ENOENT/EACCES/ETIMEDOUT — no stderr/stdout captured) is infra unconditionally", () => {
+  const spawnEnoent = new AgentDeviceError("agent-device press id=\"x\": spawn agent-device ENOENT", {
+    command: "agent-device press id=\"x\"",
+    code: 1,
+  });
+  assert.equal(spawnEnoent.stderr, undefined);
+  assert.equal(spawnEnoent.stdout, undefined);
+  assert.equal(isInfrastructureError(spawnEnoent), true);
 });
 
 test("pollUntil: returns as soon as check reports ok, without waiting out the full timeout", async () => {
@@ -141,9 +197,9 @@ function makeRunner(dispatch) {
   const calls = [];
   return {
     calls,
-    exec: async (cmd, args) => {
-      const result = await dispatch(cmd, args, calls.length);
-      calls.push({ cmd, args });
+    exec: async (_cmd, args) => {
+      const result = await dispatch(_cmd, args, calls.length);
+      calls.push({ cmd: _cmd, args });
       return result;
     },
   };
@@ -205,7 +261,7 @@ async function saveFixture(stateDir, overrides) {
 
 test("execute: unknown session_id -> exit 20 (fatal)", async () => {
   await withDirs(async ({ stateDir }) => {
-    const deps = await baseDeps({ stateDir });
+    const deps = baseDeps({ stateDir });
     const handlers = createHandlers(deps);
     await assert.rejects(
       () => handlers.execute({ op: "execute", session_id: "sess-nope", step: {}, trace: {} }),
@@ -218,7 +274,7 @@ test("execute: a corrupt session state file is recoverable (10), not misreported
   await withDirs(async ({ stateDir }) => {
     const { writeFile } = await import("node:fs/promises");
     await writeFile(join(stateDir, "sess-broken.json"), "{not json");
-    const deps = await baseDeps({ stateDir });
+    const deps = baseDeps({ stateDir });
     const handlers = createHandlers(deps);
     await assert.rejects(
       () => handlers.execute({ op: "execute", session_id: "sess-broken", step: {}, trace: {} }),
@@ -231,7 +287,7 @@ test("execute: a dead session (Metro pid gone) is recoverable (10) before any ac
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async () => okResult());
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     deps.isAlive = async () => false;
     const handlers = createHandlers(deps);
     await assert.rejects(
@@ -251,7 +307,7 @@ test("execute: a dead session (Metro pid gone) is recoverable (10) before any ac
 test("execute: a stopped session is recoverable (10)", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir, { state: "stopped" });
-    const deps = await baseDeps({ stateDir });
+    const deps = baseDeps({ stateDir });
     const handlers = createHandlers(deps);
     await assert.rejects(
       () => handlers.execute({ op: "execute", session_id: "sess-fixed", step: {}, trace: {} }),
@@ -263,11 +319,11 @@ test("execute: a stopped session is recoverable (10)", async () => {
 test("execute: full passing trace -> status passed, duration_ms, one evidence screenshot", async () => {
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
-    const runner = makeRunner(async (cmd, args) => {
+    const runner = makeRunner(async (_cmd, args) => {
       if (args[1] === "text") return okResult(JSON.stringify({ text: "Order summary" }));
       return okResult();
     });
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -310,11 +366,11 @@ test("execute: full passing trace -> status passed, duration_ms, one evidence sc
 test("execute: action failure at index 1 -> status failed, phase action, correct index/reason/screenshot/log_tail", async () => {
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
-    const runner = makeRunner(async (cmd, args, n) => {
+    const runner = makeRunner(async (_cmd, args) => {
       if (args[0] === "press") return failResult("Selector did not resolve uniquely: id=\"checkout-cta\"");
       return okResult();
     });
-    const deps = await baseDeps({
+    const deps = baseDeps({
       stateDir,
       runner,
       readFile: async () => "line1\nline2\nERROR boom\n",
@@ -354,11 +410,11 @@ test("execute: action failure at index 1 -> status failed, phase action, correct
 test("execute: assertion failure -> status failed, phase assertion, correct index", async () => {
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
-    const runner = makeRunner(async (cmd, args) => {
+    const runner = makeRunner(async (_cmd, args) => {
       if (args[0] === "is") return failResult("selector not visible");
       return okResult();
     });
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -383,7 +439,7 @@ test("execute: not_visible assertion -> `is hidden <selector>`", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async () => okResult());
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -401,11 +457,11 @@ test("execute: not_visible assertion -> `is hidden <selector>`", async () => {
 test("execute: text assertion (equals) fails and reports the last-read text", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
-    const runner = makeRunner(async (cmd, args) => {
+    const runner = makeRunner(async (_cmd, args) => {
       if (args[0] === "get") return okResult(JSON.stringify({ text: "Pending" }));
       return okResult();
     });
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -430,7 +486,7 @@ test("execute: log_contains assertion reads the session's log via the injected r
     await saveFixture(stateDir, { log_stream: "/fake/app.log" });
     const runner = makeRunner(async () => okResult());
     let readPath = null;
-    const deps = await baseDeps({
+    const deps = baseDeps({
       stateDir,
       runner,
       readFile: async (p) => { readPath = p; return "boot ok\nBundle loaded successfully\n"; },
@@ -454,7 +510,7 @@ test("execute: log_contains assertion reads the session's log via the injected r
 test("execute: log_contains assertion failure names the log path and pattern", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir, { log_stream: "/fake/app.log" });
-    const deps = await baseDeps({ stateDir, readFile: async () => "nothing interesting\n" });
+    const deps = baseDeps({ stateDir, readFile: async () => "nothing interesting\n" });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -474,7 +530,7 @@ test("execute: navigate action reuses lib's openSession (open <url> with session
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async () => okResult());
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     await handlers.execute({
@@ -494,7 +550,7 @@ test("execute: navigate action reuses lib's openSession (open <url> with session
 test("execute: unsupported action kind escalates fatal (20), never a step failure", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
-    const deps = await baseDeps({ stateDir });
+    const deps = baseDeps({ stateDir });
     const handlers = createHandlers(deps);
     await assert.rejects(
       () =>
@@ -509,16 +565,109 @@ test("execute: unsupported action kind escalates fatal (20), never a step failur
   });
 });
 
+test("execute: a malformed selector (action) escalates fatal (20), like an unsupported kind — not a step failure", async () => {
+  await withDirs(async ({ stateDir }) => {
+    await saveFixture(stateDir);
+    const deps = baseDeps({ stateDir });
+    const handlers = createHandlers(deps);
+    await assert.rejects(
+      () =>
+        handlers.execute({
+          op: "execute",
+          session_id: "sess-fixed",
+          step: {},
+          trace: { actions: [{ kind: "tap", selector: { role: "button" } }], assertions: [] },
+        }),
+      (err) => { assert.equal(err.code, EXIT_FATAL); assert.match(err.message, /malformed selector/); return true; }
+    );
+  });
+});
+
+test("execute: a malformed selector (assertion) escalates fatal (20), like an unsupported kind — not a step failure", async () => {
+  await withDirs(async ({ stateDir }) => {
+    await saveFixture(stateDir);
+    const deps = baseDeps({ stateDir });
+    const handlers = createHandlers(deps);
+    await assert.rejects(
+      () =>
+        handlers.execute({
+          op: "execute",
+          session_id: "sess-fixed",
+          step: {},
+          trace: { actions: [], assertions: [{ kind: "visible", selector: {} }] },
+        }),
+      (err) => { assert.equal(err.code, EXIT_FATAL); assert.match(err.message, /malformed selector/); return true; }
+    );
+  });
+});
+
 // ---- infrastructure vs step failure --------------------------------------
+
+// Finding #1 integration case: a selector whose own accessible text/label
+// contains an infra-sounding word must NOT flip this to infrastructure — the
+// echoed command line (which lib/agent-device.js's `invoke` puts in
+// `.message`) is never consulted, only the driver's real stderr.
+test("execute: a selector's own text containing an infra-sounding word ('Restart daemon') still resolves as an ordinary step failure", async () => {
+  await withDirs(async ({ stateDir, evidenceDir }) => {
+    await saveFixture(stateDir);
+    const runner = makeRunner(async (_cmd, args) =>
+      args[0] === "press" ? failResult('Selector did not resolve uniquely (text="Restart daemon")') : okResult()
+    );
+    const deps = baseDeps({ stateDir, runner });
+    const handlers = createHandlers(deps);
+
+    const response = await handlers.execute({
+      op: "execute",
+      session_id: "sess-fixed",
+      step: {},
+      evidence_dir: evidenceDir,
+      trace: { actions: [{ kind: "tap", selector: { text: "Restart daemon" } }], assertions: [] },
+    });
+
+    assert.equal(response.status, "failed");
+    assert.equal(response.failure.phase, "action");
+    assert.match(response.failure.reason, /Selector did not resolve/);
+  });
+});
+
+// Finding #2 integration case: a spawn-level failure (agent-device binary
+// itself unreachable — ENOENT) never reached a real process exit, so it must
+// escalate as infrastructure unconditionally, not fall through to a step
+// failure just because its message happens to carry no recognised keyword.
+test("execute: a spawn-level failure (ENOENT — agent-device itself unreachable) escalates AdapterError(10) unconditionally", async () => {
+  await withDirs(async ({ stateDir }) => {
+    await saveFixture(stateDir);
+    const runner = {
+      calls: [],
+      exec: async (_cmd, args) => {
+        runner.calls.push({ cmd: _cmd, args });
+        return { code: 1, stdout: "", stderr: "", error: new Error("spawn agent-device ENOENT") };
+      },
+    };
+    const deps = baseDeps({ stateDir, runner });
+    const handlers = createHandlers(deps);
+
+    await assert.rejects(
+      () =>
+        handlers.execute({
+          op: "execute",
+          session_id: "sess-fixed",
+          step: {},
+          trace: { actions: [{ kind: "tap", selector: { test_id: "x" } }], assertions: [] },
+        }),
+      (err) => { assert.equal(err.code, EXIT_RECOVERABLE); return true; }
+    );
+  });
+});
 
 test("execute: an infrastructure signature mid-replay escalates AdapterError(10), NOT status:failed", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
-    const runner = makeRunner(async (cmd, args) => {
+    const runner = makeRunner(async (_cmd, args) => {
       if (args[0] === "press") return failResult("agent-device: daemon not running (state dir stale)");
       return okResult();
     });
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     await assert.rejects(
@@ -547,10 +696,10 @@ test("execute: an infrastructure signature mid-replay escalates AdapterError(10)
 test("execute: an infrastructure signature during an assertion also escalates instead of polling to a false verdict", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
-    const runner = makeRunner(async (cmd, args) =>
+    const runner = makeRunner(async (_cmd, args) =>
       args[0] === "is" ? failResult("simulator is not booted") : okResult()
     );
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     await assert.rejects(
@@ -572,10 +721,10 @@ test("execute: an infrastructure signature during an assertion also escalates in
 test("execute: wait action timeout is a single agent-device call, reported as an action failure (not polled by us)", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
-    const runner = makeRunner(async (cmd, args) =>
+    const runner = makeRunner(async (_cmd, args) =>
       args[0] === "wait" ? failResult("timed out after 250ms waiting for id=\"x\"") : okResult()
     );
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -595,7 +744,7 @@ test("execute: assertion polling retries until timeout_ms elapses, using the inj
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async () => failResult("not visible yet"));
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -615,7 +764,7 @@ test("execute: assertion default timeout is used when timeout_ms is omitted", as
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async () => okResult());
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -634,10 +783,10 @@ test("execute: assertion default timeout is used when timeout_ms is omitted", as
 test("execute: a screenshot capture failure does not mask a passing verdict, just leaves evidence empty", async () => {
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
-    const runner = makeRunner(async (cmd, args) =>
+    const runner = makeRunner(async (_cmd, args) =>
       args[0] === "screenshot" ? failResult("agent-device: no such command") : okResult()
     );
-    const deps = await baseDeps({ stateDir, runner });
+    const deps = baseDeps({ stateDir, runner });
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -649,6 +798,55 @@ test("execute: a screenshot capture failure does not mask a passing verdict, jus
     });
 
     assert.equal(response.status, "passed");
+    assert.deepEqual(response.evidence, []);
+  });
+});
+
+// Finding #3: appendManifest shares the same try/catch as the screenshot
+// invoke — a manifest-write failure (read-only evidence_dir, disk full, ...)
+// must never throw out of captureScreenshot and mask the step's actual
+// verdict. Exercised for both a passing and a failing step so the fix isn't
+// accidentally scoped to only one code path.
+test("execute: a manifest-write failure (e.g. read-only evidence_dir) does not mask a passing verdict", async () => {
+  await withDirs(async ({ stateDir, evidenceDir }) => {
+    await saveFixture(stateDir);
+    const runner = makeRunner(async () => okResult());
+    const deps = baseDeps({ stateDir, runner });
+    deps.appendManifest = async () => { throw new Error("EACCES: permission denied, open 'manifest.json'"); };
+    const handlers = createHandlers(deps);
+
+    const response = await handlers.execute({
+      op: "execute",
+      session_id: "sess-fixed",
+      step: {},
+      evidence_dir: evidenceDir,
+      trace: { actions: [], assertions: [] },
+    });
+
+    assert.equal(response.status, "passed");
+    assert.deepEqual(response.evidence, [], "screenshot is not reported as evidence if it was never durably recorded");
+  });
+});
+
+test("execute: a manifest-write failure does not mask a failing verdict either", async () => {
+  await withDirs(async ({ stateDir, evidenceDir }) => {
+    await saveFixture(stateDir);
+    const runner = makeRunner(async (_cmd, args) => (args[0] === "press" ? failResult("Selector did not resolve") : okResult()));
+    const deps = baseDeps({ stateDir, runner });
+    deps.appendManifest = async () => { throw new Error("EACCES: permission denied, open 'manifest.json'"); };
+    const handlers = createHandlers(deps);
+
+    const response = await handlers.execute({
+      op: "execute",
+      session_id: "sess-fixed",
+      step: {},
+      evidence_dir: evidenceDir,
+      trace: { actions: [{ kind: "tap", selector: { test_id: "x" } }], assertions: [] },
+    });
+
+    assert.equal(response.status, "failed");
+    assert.equal(response.failure.phase, "action");
+    assert.equal(response.failure.screenshot, null, "screenshot is null, not a path never recorded to the manifest");
     assert.deepEqual(response.evidence, []);
   });
 });
@@ -674,7 +872,7 @@ test("runMain + createHandlers: a fatal execute (unknown session) exits 20 with 
   await withDirs(async ({ stateDir }) => {
     const stdout = { chunks: [], write(s) { this.chunks.push(s); } };
     let exitCode;
-    const deps = await baseDeps({ stateDir });
+    const deps = baseDeps({ stateDir });
     await runMain({
       interfaceName: "execute-step",
       handlers: createHandlers(deps),
