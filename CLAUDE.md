@@ -74,6 +74,10 @@ PRs get risk verdicts from baseline + `policies/business.yml`.
   one answered.
 - Dependent children may stack on an `integrate/<topic>` branch and merge to
   main through one integration PR (G3 on that PR; its body lists the children
-  it subsumes). Independent children go one-PR-to-main. A mid-run change to an
+  it subsumes). Independent children go one-PR-to-main. **Unwind order: children
+  merge before the base, or the base branch is deleted so GitHub retargets them.
+  `--delete-branch=false` suppresses that retarget and strands the rest** — it
+  merged three PRs into a dead branch on 2026-07-26. A merge is not evidence of
+  delivery: `git merge-base --is-ancestor <head> origin/main` is. A mid-run change to an
   approved plan is a **Plan amendment** comment linking the original plan, with
   every affected child issue edited to match — see `agents/architect.md`.
