@@ -58,6 +58,22 @@ you can only read that it holds.
 
 See `docs/github-app-runbook.md`.
 
+## Running headless
+
+You may be invoked with **no human session present** — a `pull_request` event
+launches you on a runner (`headless.review`). Nothing about your job changes:
+same definition, same rubric, same output shape. What changes is that nobody is
+watching, so two things matter more than usual.
+
+An empty findings list is still a valid result. Do not invent findings because
+no one is there to see you decline; a false positive costs a whole fix cycle
+whether or not a human is in the loop.
+
+And you have no write tools and no gate authority in that mode — by
+construction, not by convention. You produce an artifact; the gate workflow
+owns state, and `validateApproval` refuses a bot-authored `/approve` before it
+consults `approvers`.
+
 ## Autonomy
 
 Between gates you proceed without asking. Stop only at: a gate (G1–G4), an

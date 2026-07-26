@@ -92,6 +92,30 @@ live there; this README tracks what's built.
       never runs them, under any flag, and neither does `project-genesis`:
       a policy change on someone's repo is a human keystroke.
 
+## Which stages run headless
+
+Phase 3 lets GitHub events launch agents on a runner, so the loop is not capped
+by the maintainer's attention. It arrives one stage at a time, and **every stage
+ships off**:
+
+| stage | trigger | flag | status |
+|---|---|---|---|
+| review | `pull_request` | `headless.review` | shipped |
+| dispatch (`idea`, `spec`, `ready`) | `state:*` label | `headless.dispatch.<state>` | not yet |
+| nightly QA | schedule | — | deferred (needs a self-hosted macOS runner) |
+
+A repo that sets nothing behaves exactly as it did before: the workflow runs,
+reports that headless review is off, and exits green.
+
+**Headless runs are billed to a Claude subscription, never to metered API
+credits.** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) is the only
+supported credential; `ANTHROPIC_API_KEY` is actively stripped from the child
+environment rather than merely unused. Setup, cost, and token rotation:
+[docs/headless-runbook.md](docs/headless-runbook.md).
+
+Gates never go headless. A headless run authenticates as the App identity, and
+bot-authored approvals are refused in code — see below.
+
 ## G3 has two modes
 
 Which one a repo is in is a fact about *who authors its agent PRs*, and
