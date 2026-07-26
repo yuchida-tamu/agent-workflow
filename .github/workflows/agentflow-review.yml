@@ -1,0 +1,34 @@
+# Headless code review on every pull request.
+#
+# Requires the CLAUDE_CODE_OAUTH_TOKEN secret (`claude setup-token`, a Claude
+# subscription) and `headless.review: true` in agentflow.config.json. Both are
+# off by default — with either missing this workflow runs, says so, and exits
+# green having done nothing. There is deliberately no ANTHROPIC_API_KEY
+# fallback: headless runs bill to the subscription or they do not run.
+#
+# See docs/headless-runbook.md, including token rotation.
+name: agentflow · headless review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  pull-requests: write
+  contents: read
+# One review in flight per PR. Without this, a push during a review starts a
+# second one that races the first for the same comment.
+concurrency:
+  group: agentflow-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: yuchida-tamu/agent-workflow/actions/headless-review@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          claude-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          app-id: ${{ secrets.AGENTFLOW_APP_ID }}
+          app-private-key: ${{ secrets.AGENTFLOW_APP_PRIVATE_KEY }}
