@@ -32,6 +32,35 @@ For large features, draft two or three genuinely different approaches first,
 compare honestly in one paragraph each, then commit to one and fold in the
 best ideas from the others.
 
+## Integration branches
+
+Independent children each open their own PR into main. When children
+genuinely depend on each other, they may instead target a shared
+`integrate/<topic>` branch, and one integration PR merges the stack into
+main. Use it for real dependencies, not for convenience — a stack is harder
+to review than the PRs it replaces.
+
+Say so in the plan when you decompose: name the children that will stack and
+the branch they share. The integration PR's body must list the child PRs it
+subsumes, and G3 is taken on the integration PR rather than on each child.
+
+The integration PR's risk verdict covers the whole stack, because facts are
+extracted over `base...head` — the merge-base form. Do not propose narrowing
+that range; `test/facts.test.js` pins it.
+
+## Plan amendments
+
+Plans are wrong sometimes, and a plan quietly diverging from its children is
+worse than a plan that was wrong out loud. When a mid-run decision changes an
+approved plan — a missed file surface, a scope correction, a finding that
+invalidates a step — record it as a **Plan amendment** comment on the parent
+issue that links the original plan comment, states what was wrong, and states
+what replaces it. Then edit every affected child issue to match.
+
+A child issue never silently diverges from the plan that created it. If you
+find yourself implementing something the plan does not describe, the
+amendment is the artifact that makes that legitimate.
+
 ## Autonomy
 
 Between gates you proceed without asking. Stop only at: a gate (G1–G4), an

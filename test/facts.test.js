@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   assembleFacts,
   classifyChange,
@@ -97,4 +102,71 @@ test("assembleFacts produces the full namespace layout", () => {
   assert.equal(facts.drift.scope, false);
   assert.equal(facts.drift.brief_domain, false);
   assert.deepEqual(facts.plan.files, ["src/features/checkout/**"]);
+});
+
+// --- the integration PR's diff range is load-bearing --------------------------
+//
+// `scripts/actions/pr-verdict.js` extracts facts over `base.sha...head.sha` —
+// three dots, i.e. `merge-base(base, head)..head`. On an integration branch
+// carrying a stack of child merges, that is what makes the verdict see the
+// whole stack rather than only the final merge commit. Nothing recorded that
+// the third dot mattered, so a plausible "simplification" to two dots would
+// quietly under-report risk at G3. This is the test that forbids it.
+
+function buildStackedRepo() {
+  const dir = mkdtempSync(join(tmpdir(), "agentflow-range-"));
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  const commit = (file, message) => {
+    writeFileSync(join(dir, file), `${file}\n`);
+    git("add", file);
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", message);
+  };
+
+  git("init", "-q", "-b", "main");
+  commit("base.txt", "base");
+
+  // Two dependent children, each merged into the integration branch.
+  git("checkout", "-q", "-b", "integrate/stack");
+  git("checkout", "-q", "-b", "child-one");
+  commit("one.txt", "child one");
+  git("checkout", "-q", "integrate/stack");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "merge", "--no-ff", "-q", "child-one", "-m", "merge child one");
+
+  git("checkout", "-q", "-b", "child-two");
+  commit("two.txt", "child two");
+  git("checkout", "-q", "integrate/stack");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "merge", "--no-ff", "-q", "child-two", "-m", "merge child two");
+
+  const filesIn = (...range) =>
+    git("diff", "--name-only", ...range).split("\n").filter(Boolean).sort();
+  return { dir, filesIn };
+}
+
+test("three-dot range sees the whole stack; the final merge commit alone does not", () => {
+  const { dir, filesIn } = buildStackedRepo();
+  try {
+    const threeDot = filesIn("main...integrate/stack");
+    const lastMergeOnly = filesIn("integrate/stack^1", "integrate/stack");
+
+    assert.deepEqual(threeDot, ["one.txt", "two.txt"], "three-dot must see every file in the stack");
+    assert.ok(
+      !lastMergeOnly.includes("one.txt"),
+      "the final merge commit alone misses the earlier child — which is the under-report this guards"
+    );
+    assert.ok(threeDot.length > lastMergeOnly.length, "the ranges must genuinely differ, or this test proves nothing");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("facts extracted over the three-dot range cover the whole stack", () => {
+  const { dir, filesIn } = buildStackedRepo();
+  try {
+    const numstat = filesIn("main...integrate/stack").map((file) => ({ file, adds: 1, dels: 0 }));
+    const facts = assembleFacts({ stage: "pr", numstat, domains: null });
+    assert.equal(facts.diff.files_count, 2, "a stacked integration PR must be scored on its full diff");
+    assert.deepEqual(facts.diff.files.sort(), ["one.txt", "two.txt"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

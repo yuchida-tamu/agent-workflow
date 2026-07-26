@@ -58,3 +58,8 @@ PRs get risk verdicts from baseline + `policies/business.yml`.
   `node scripts/policy/cli.js test policies/baseline.yaml packs/expo/policies/expo.yaml`.
 - Commit style: imperative subject, body explains why; every commit leaves
   `npm test` green.
+- Dependent children may stack on an `integrate/<topic>` branch and merge to
+  main through one integration PR (G3 on that PR; its body lists the children
+  it subsumes). Independent children go one-PR-to-main. A mid-run change to an
+  approved plan is a **Plan amendment** comment linking the original plan, with
+  every affected child issue edited to match — see `agents/architect.md`.
