@@ -20,8 +20,8 @@ node init/cli.js adopt --target /path/to/your-repo --repo <owner>/<name>
 `adopt` is additive and idempotent — it never overwrites a file you already
 have and never forces a label. In one pass it:
 
-- creates the 18 `state:*` / `priority:*` labels your repo is missing
-  (`agentflow-init labels` under the hood);
+- creates whichever of the 18-label set your repo is missing (states,
+  priorities, risk, drift — `agentflow-init labels` under the hood);
 - scaffolds `agentflow.config.json`, `domains.yml`, a starter business policy
   pack, and the `e2e/` directories, in your target repo — again, only what's
   missing;
@@ -57,15 +57,18 @@ turn a rough idea into a reviewable brief.
 
 ## 3. Shape → G1
 
-Run the `product-shaper` agent on the issue. It interviews you in-session
-(multi-choice, per the standing UX rule) and turns the idea into a brief:
-problem, user story, acceptance criteria, impact domains. It posts the brief
-as an issue comment and moves the issue to `state:spec`.
+Run the `product-shaper` agent on the issue, still in `state:idea`. It
+interviews you in-session (multi-choice, per the standing UX rule) and posts
+the brief as an issue comment — problem, user story, acceptance criteria,
+impact domains — then asks for G1. It never edits labels itself: state
+transitions are the gate workflow's job at every stage, not any agent's, so
+the issue sits at `state:idea` until the gate below fires.
 
 **Gate G1 — brief approval.** Read the brief, then post `/approve G1` as an
 issue comment, from your own GitHub account. The `agentflow · gate` workflow
 validates the comment (right gate, authorized approver, not bot-authored) and
-transitions the issue `spec → planned`.
+transitions the issue `idea → spec` — `state:spec` means "brief approved,
+awaiting plan".
 
 ```sh
 node scripts/next/cli.js --repo <owner>/<name>   # confirms who acts next
@@ -73,17 +76,19 @@ node scripts/next/cli.js --repo <owner>/<name>   # confirms who acts next
 
 ## 4. Plan → G2 (risk-based)
 
-Run the `architect` agent on the now-planned issue. It maps the terrain,
-writes a plan comment (approach, declared file surface, risks), decomposes
-the work into one-PR-sized child issues in `state:ready`, and runs the risk
-engine against the plan (`agentflow-facts --stage plan` → `agentflow-policy
-evaluate`).
+Run the `architect` agent on the issue, now in `state:spec`. It maps the
+terrain, writes a plan comment (approach, declared file surface, risks),
+decomposes the work into one-PR-sized child issues in `state:ready`, and
+runs the risk engine against the plan (`agentflow-facts --stage plan` →
+`agentflow-policy evaluate`). When the plan lands, the issue moves
+`spec → planned` — ungated, no approval needed.
 
-**Gate G2 — plan approval — is conditional.** If the risk verdict requires
-no human review, the transition `planned → ready` **auto-passes** — no
-comment needed, the gate workflow posts an auto-pass note and moves on. If
-the verdict requires review, post `/approve G2` as an issue comment, same as
-G1. Never argue a high-risk verdict down; escalating it is the point.
+**Gate G2 — plan approval — is conditional**, and it gates `planned →
+ready`. If the risk verdict requires no human review, the transition
+**auto-passes** — no comment needed, the gate workflow posts an auto-pass
+note and moves on. If the verdict requires review, post `/approve G2` as an
+issue comment, same as G1. Never argue a high-risk verdict down; escalating
+it is the point.
 
 ## 5. Implement
 

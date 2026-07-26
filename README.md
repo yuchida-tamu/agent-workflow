@@ -44,8 +44,9 @@ Full walkthrough for the "existing repo" path: **[docs/getting-started.md](docs/
 git clone https://github.com/yuchida-tamu/agent-workflow
 cd agent-workflow && npm install
 node init/cli.js adopt --target /path/to/your-repo --repo <owner>/<name>
-# creates the 18 state:*/priority:* labels, scaffolds config + domains.yml
-# + business policy pack, and prints the repo settings it can't apply for you
+# creates the 18-label set (states, priorities, risk, drift), scaffolds
+# config + domains.yml + business policy pack, and prints the repo settings
+# it can't apply for you
 node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name>
 # re-reads what actually landed, including your G3 mode (native-review | solo-comment)
 ```

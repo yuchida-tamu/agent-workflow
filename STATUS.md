@@ -48,7 +48,7 @@ start at [`README.md`](README.md); for the design, see
 ## Phase 2 status (walk)
 
 - [x] Agent definitions: product-shaper · architect · project-genesis ·
-      adoption-auditor (opus) · implementer · code-reviewer · ux-reviewer ·
+      adoption-auditor · code-reviewer · ux-reviewer (opus) · implementer ·
       build-sentinel · qa-explorer · trace-deriver (sonnet) · triage (haiku)
 - [x] Entry paths: genesis (one-shot bootstrap → seeded backlog handoff),
       adoption (init + audit), steady state; `maturity: genesis|steady` in
