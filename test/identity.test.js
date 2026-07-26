@@ -110,11 +110,11 @@ test("no verdict is refusal", () => {
   assert.equal(botApprovalAllowed({ gate: "G3", surface: "pr", verdict: null, headSha: head }), false);
 });
 
-test("a verdict with no recorded SHA is refusal — the carve-out ships inert", () => {
-  // pr-verdict.js does not stamp `verdict-sha:` yet (#18). Until it does, every
-  // bot approval is refused. That is the correct failure direction, and this
-  // test exists so a later reader does not mistake the silence for a bug and
-  // "fix" it by relaxing authorises().
+test("a verdict with no recorded SHA is refusal", () => {
+  // Absence is refusal: a verdict describes the code it was computed over, and
+  // without a SHA there is no way to know it still does. `pr-verdict.js` does
+  // stamp `verdict-sha:` today, so this is not a dormant path — it is what
+  // catches a verdict written by anything that forgets to.
   const unstamped = { ...authorising, sha: null };
   assert.equal(botApprovalAllowed({ gate: "G3", surface: "pr", verdict: unstamped, headSha: head }), false);
 });
