@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   translateSelector,
+  translateRef,
   invoke,
   openSession,
   closeSession,
@@ -95,6 +96,20 @@ test("closeSession: adds --shutdown only when requested", async () => {
   assert.ok(!runner.calls[0].args.includes("--shutdown"));
   await closeSession({ session: "s1", shutdown: true, runner });
   assert.ok(runner.calls[1].args.includes("--shutdown"));
+});
+
+test("translateRef: adds the CLI's required @ prefix to a bare snapshot ref", () => {
+  assert.equal(translateRef("e12"), "@e12");
+});
+
+test("translateRef: idempotent when the ref already carries @", () => {
+  assert.equal(translateRef("@e12"), "@e12");
+});
+
+test("translateRef: rejects a non-string / empty ref", () => {
+  assert.throws(() => translateRef(""), TypeError);
+  assert.throws(() => translateRef(null), TypeError);
+  assert.throws(() => translateRef(42), TypeError);
 });
 
 test("listApps: scopes to platform/device for the install-check", async () => {
