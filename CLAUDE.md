@@ -52,6 +52,13 @@ transition). Native-review G3 returns when agents get their own GitHub App
 identity (Phase 3). Manual fallback:
 `node scripts/state/cli.js apply --issue N --to <state> --approved-gate G1..G4`.
 
+Approving: `agentflow-gates` lists everything waiting at G1/G2/G4, renders the
+brief/plan/release summary inline, and takes one decision per item. Interactive
+only — it refuses a non-TTY stdin and has no bulk-approve flag, by design; it is
+a human instrument and agents are denied it. Zero-code mobile path: **replying to
+a GitHub notification email with `/approve` posts it as a comment**, which the
+gate workflow validates like any other.
+
 Work-item states: `idea → spec → planned → ready → in-progress → in-review
 → merged → verified → released`; gates G1 (brief) G2 (plan, risk-based)
 G3 (merge) G4 (release). `domains.yml` here maps the toolkit's own code;
