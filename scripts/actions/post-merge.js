@@ -15,6 +15,7 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { classifySuite, smokeOutcome, renderSmokeNote } from "../e2e/smoke.js";
 import { planTransition } from "../state/machine.js";
 import { releaseKindOf } from "../config/load.js";
+import { classifyDelivery, renderFinding } from "./ancestry.js";
 
 const MARKER = "<!-- agentflow-postmerge -->";
 const SCENARIOS_DIR = "e2e/scenarios";
@@ -41,6 +42,34 @@ function readFeatureFiles(dir) {
     throw err;
   }
 }
+
+// Did this merge actually deliver? A stacked merge can report success and land
+// nothing (#44) — #38, #39 and #40 all showed MERGED with none of their code on
+// main. Answer before touching any issue: a merge that delivered nothing must
+// not advance the record.
+const defaultBranch = event.repository?.default_branch ?? "main";
+let isAncestor = null;
+try {
+  execFileSync("git", ["merge-base", "--is-ancestor", pr.head.sha, `origin/${defaultBranch}`], {
+    stdio: "ignore",
+  });
+  isAncestor = true;
+} catch (err) {
+  // Exit 1 is a clean "not an ancestor". Anything else — a shallow clone, a
+  // missing ref — means we could not tell, and must not be read as a failure.
+  isAncestor = err.status === 1 ? false : null;
+}
+
+const delivery = classifyDelivery({ isAncestor, headSha: pr.head.sha, defaultBranch });
+if (!delivery.proceed) {
+  const finding = renderFinding({ prNumber: pr.number, classified: delivery, defaultBranch });
+  for (const issue of linked) {
+    sh(["issue", "comment", String(issue), "--repo", repo, "--body", finding]);
+  }
+  console.error(`post-merge: ${delivery.reason}`);
+  process.exit(10);
+}
+if (delivery.reason) console.log(`post-merge: ${delivery.reason}`);
 
 const listing = readFeatureFiles(SCENARIOS_DIR);
 const suite = classifySuite({ scenariosDirExists: listing.exists, featureFiles: listing.files });
