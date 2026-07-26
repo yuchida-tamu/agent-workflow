@@ -147,6 +147,15 @@ const PARENT_ONLY_PHASES = new Set(["idea", "spec"]);
 // `PARENT_COMPLETION.from` is one it can never log for itself. Deriving from
 // that constant rather than a fresh literal keeps the two from drifting apart.
 // Charging a parent that gap would be a finding no parent could ever clear.
+//
+// Fragile by construction, not just by accident: deriving only `.from` is
+// sufficient *because* `PRODUCERS` today charges nothing for the states in
+// between (`in-progress`, `in-review`, `merged`) — there is no producer for
+// them to skip. If a future `PRODUCERS` entry ever charges one of those
+// states, this `.from`-only set would under-cover it and re-strand parents
+// with the exact permanent gap this set exists to prevent. Widen it to every
+// state between `PARENT_COMPLETION.from` and `PARENT_COMPLETION.to` if that
+// happens, rather than adding a second one-off phase literal.
 const CHILD_ONLY_PHASES = new Set([PARENT_COMPLETION.from]);
 
 export function audit({ rows, tiers, state = null, hasParent = false, hasChildren = false }) {

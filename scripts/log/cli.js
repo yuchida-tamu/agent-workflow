@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { MARKER, render, parse, upsert, audit } from "./ledger.js";
 import { LABEL_PREFIX, STATES } from "../state/machine.js";
 import { parentOf, childrenOf } from "../hierarchy/gh.js";
+import { parentFromText } from "../hierarchy/core.js";
 
 const TOOLKIT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const OUTCOMES = ["ok", "failed", "abandoned"];
@@ -44,6 +45,28 @@ export function loadTiers(agentsDir = join(TOOLKIT, "agents")) {
     if (model) tiers[name] = model;
   }
   return tiers;
+}
+
+// Every issue number that at least one already-fetched issue declares itself
+// a child of, via `Child of #N` (scripts/hierarchy/core.js's `parentFromText`
+// — reused rather than a second regex, so this can never disagree with the
+// hierarchy reader's own text convention).
+//
+// This only sees the text convention: a parent whose children are linked
+// solely through the native sub-issues API, with no `Child of #N` fallback
+// line, will not appear here. That gap is accepted deliberately for the
+// whole-repo audit walk — `childrenOf` per issue would answer it fully, but
+// its fallback path hits the Search API (30 req/min) once per childless
+// issue, and a ~65-issue repo trips that limit and aborts the audit
+// partway through (see the #101/#105 PR review). The single-issue path
+// (`--issue`) only ever makes that one call, so it keeps asking `childrenOf`
+// directly for the complete answer.
+export function parentsWithDeclaredChildren(issues) {
+  return new Set(
+    (issues ?? [])
+      .map((issue) => parentFromText(issue.body))
+      .filter((number) => number !== null)
+  );
 }
 
 function findLedger(repo, issue) {
@@ -136,6 +159,8 @@ if (isMain) {
           : JSON.parse(
               sh(["issue", "list", "--repo", flags.repo, "--state", "all", "--limit", "200", "--json", "number,labels,body"])
             );
+        // Only meaningful for the whole-repo walk — see parentsWithDeclaredChildren.
+        const declaredParents = flags.issue ? null : parentsWithDeclaredChildren(issues);
 
         let findings = 0;
         for (const issue of issues) {
@@ -155,7 +180,12 @@ if (isMain) {
           // A parent delegates ready→merged to its children and lands on
           // `verified` directly (see `PARENT_COMPLETION` in machine.js), so it
           // never logs the implementer row that phase would normally require.
-          const hasChildren = childrenOf(flags.repo, issue.number).children.length > 0;
+          // Whole-repo walk: answered locally from bodies already in hand (see
+          // parentsWithDeclaredChildren). Single issue: no other bodies are in
+          // scope, so ask the hierarchy reader directly — one call either way.
+          const hasChildren = declaredParents
+            ? declaredParents.has(issue.number)
+            : childrenOf(flags.repo, issue.number).children.length > 0;
           for (const finding of audit({ rows, tiers, state, hasParent, hasChildren })) {
             findings++;
             const detail =

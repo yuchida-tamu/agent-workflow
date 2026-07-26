@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { MARKER, COLUMNS, render, parse, upsert, audit } from "../scripts/log/ledger.js";
-import { loadTiers } from "../scripts/log/cli.js";
+import { loadTiers, parentsWithDeclaredChildren } from "../scripts/log/cli.js";
 
 const row = (over = {}) => ({
   run: "a1b2c3",
@@ -283,4 +283,44 @@ test("a childless item reaching verified is still charged the implementer gap", 
 test("a parent is still charged for shaping and planning even though it has children", () => {
   const findings = audit({ rows: [], tiers, state: "planned", hasChildren: true });
   assert.equal(findings.length, 2, "hasChildren only excuses the ready phase, not idea/spec");
+});
+
+// --- parentsWithDeclaredChildren: local hasChildren for the whole-repo walk -
+//
+// A whole-repo audit used to call `childrenOf` per issue, which falls back to
+// a Search-API query for every childless issue and trips the 30 req/min
+// search cap partway through a ~65-issue repo (found in review of the
+// #101/#105 PR). `parentsWithDeclaredChildren` answers the same question from
+// the issue bodies the audit already fetched, at zero extra network cost.
+
+test("parentsWithDeclaredChildren finds a parent from a child's declaration", () => {
+  const issues = [
+    { number: 1, body: "## Idea\n\nparent stuff" },
+    { number: 2, body: "Child of #1\n\nchild stuff" },
+  ];
+  assert.deepEqual(parentsWithDeclaredChildren(issues), new Set([1]));
+});
+
+test("parentsWithDeclaredChildren is empty when no issue declares a parent", () => {
+  const issues = [{ number: 1, body: "no parent here" }, { number: 2, body: null }];
+  assert.deepEqual(parentsWithDeclaredChildren(issues), new Set());
+});
+
+test("parentsWithDeclaredChildren collects one parent from multiple children", () => {
+  const issues = [
+    { number: 5, body: "Child of #1" },
+    { number: 6, body: "Child of #1" },
+    { number: 7, body: "Child of #2" },
+  ];
+  assert.deepEqual(parentsWithDeclaredChildren(issues), new Set([1, 2]));
+});
+
+test("parentsWithDeclaredChildren ignores a mid-body mention, matching parentFromText", () => {
+  const issues = [{ number: 9, body: "See #1 for background, unrelated to parentage" }];
+  assert.deepEqual(parentsWithDeclaredChildren(issues), new Set());
+});
+
+test("parentsWithDeclaredChildren tolerates an empty or missing list", () => {
+  assert.deepEqual(parentsWithDeclaredChildren([]), new Set());
+  assert.deepEqual(parentsWithDeclaredChildren(undefined), new Set());
 });
