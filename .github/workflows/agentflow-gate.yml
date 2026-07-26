@@ -1,3 +1,7 @@
+# Optional: create the agentflow GitHub App and set AGENTFLOW_APP_ID and
+# AGENTFLOW_APP_PRIVATE_KEY as repo secrets, and every agentflow action below
+# acts as the App rather than as this workflow. Unset secrets evaluate to empty
+# strings, so leaving them unset changes nothing. See docs/github-app-runbook.md.
 name: agentflow · gate
 on:
   issue_comment:
@@ -15,3 +19,5 @@ jobs:
       - uses: yuchida-tamu/agent-workflow/actions/gate-check@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          app-id: ${{ secrets.AGENTFLOW_APP_ID }}
+          app-private-key: ${{ secrets.AGENTFLOW_APP_PRIVATE_KEY }}

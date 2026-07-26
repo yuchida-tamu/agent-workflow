@@ -1,3 +1,7 @@
+# Optional: create the agentflow GitHub App and set AGENTFLOW_APP_ID and
+# AGENTFLOW_APP_PRIVATE_KEY as repo secrets, and every agentflow action below
+# acts as the App rather than as this workflow. Unset secrets evaluate to empty
+# strings, so leaving them unset changes nothing. See docs/github-app-runbook.md.
 name: agentflow · risk verdict
 on:
   pull_request:
@@ -15,3 +19,5 @@ jobs:
       - uses: __TOOLKIT_REPO__/actions/risk-verdict@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          app-id: ${{ secrets.AGENTFLOW_APP_ID }}
+          app-private-key: ${{ secrets.AGENTFLOW_APP_PRIVATE_KEY }}
