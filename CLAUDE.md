@@ -66,6 +66,12 @@ PRs get risk verdicts from baseline + `policies/business.yml`.
   `node scripts/policy/cli.js test policies/baseline.yaml packs/expo/policies/expo.yaml`.
 - Commit style: imperative subject, body explains why; every commit leaves
   `npm test` green.
+- Parent↔child is structural: the architect attaches children as native GitHub
+  sub-issues (the endpoint takes the issue **id**, not its number). Where that
+  API is unavailable the fallback is a `Child of #N` line at the top of a child's
+  body — children are always derived from what *declares* the parent, never from
+  what a parent mentions. `scripts/hierarchy/` owns both paths and reports which
+  one answered.
 - Dependent children may stack on an `integrate/<topic>` branch and merge to
   main through one integration PR (G3 on that PR; its body lists the children
   it subsumes). Independent children go one-PR-to-main. A mid-run change to an
