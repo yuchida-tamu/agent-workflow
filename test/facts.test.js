@@ -170,3 +170,53 @@ test("facts extracted over the three-dot range cover the whole stack", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- unmapped code contributes the configured default -------------------------
+
+const MAP = {
+  core: { criticality: "high", paths: ["scripts/facts/**"] },
+  docs: { criticality: "low", paths: ["*.md"] },
+};
+
+test("unmapped files contribute unmapped_criticality", () => {
+  // The config key existed since the template shipped and nothing read it, so
+  // unmapped code scored as harmless. #34 added agentflow-release with 80% of
+  // its diff unmapped and scored as a docs change.
+  const f = domainFacts(MAP, ["scripts/release/cli.js", "README.md"], { unmappedCriticality: "medium" });
+  assert.equal(f.max_criticality, "medium");
+  assert.equal(f.unmapped_fraction, 0.5);
+});
+
+test("a mapped domain still wins when it is higher", () => {
+  const f = domainFacts(MAP, ["scripts/facts/core.js", "scripts/release/cli.js"], { unmappedCriticality: "medium" });
+  assert.equal(f.max_criticality, "high");
+});
+
+test("omitting the option preserves the previous behaviour exactly", () => {
+  const f = domainFacts(MAP, ["scripts/release/cli.js"]);
+  assert.equal(f.max_criticality, null, "no caller that skips config is affected");
+});
+
+test("a repo with no domain map is not given an invented criticality", () => {
+  // Otherwise every file in a repo that never opted in would score `medium`.
+  const f = domainFacts({}, ["anything.js"], { unmappedCriticality: "medium" });
+  assert.equal(f.max_criticality, null);
+  const g = domainFacts(null, ["anything.js"], { unmappedCriticality: "critical" });
+  assert.equal(g.max_criticality, null);
+});
+
+test("fully mapped diffs are unaffected", () => {
+  const f = domainFacts(MAP, ["scripts/facts/core.js"], { unmappedCriticality: "critical" });
+  assert.equal(f.max_criticality, "high", "nothing unmapped, so the default never applies");
+  assert.equal(f.unmapped_fraction, 0);
+});
+
+test("assembleFacts threads the configured value through", () => {
+  const facts = assembleFacts({
+    stage: "pr",
+    numstat: [{ file: "scripts/release/cli.js", adds: 10, dels: 0 }],
+    domains: MAP,
+    unmappedCriticality: "medium",
+  });
+  assert.equal(facts.domains.max_criticality, "medium");
+});

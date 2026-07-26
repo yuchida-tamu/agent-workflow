@@ -61,6 +61,9 @@ const facts = assembleFacts({
   basePkg: showJson(baseSha, "package.json"),
   headPkg: showJson(headSha, "package.json"),
   domains: existsSync("domains.yml") ? loadYaml("domains.yml") : null,
+  // The configured default for files no domain claims. Without this the map
+  // is inert for anything it does not classify — see #46.
+  unmappedCriticality: config.unmapped_criticality ?? null,
   planFiles: null, // plan linkage lands with the architect wiring
   brief: null,
 });

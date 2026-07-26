@@ -46,7 +46,20 @@ export function diffFacts({ numstat, basePkg = null, headPkg = null }) {
 }
 
 // domains: parsed domains.yml — { name: { criticality, paths: [glob…] } }.
-export function domainFacts(domains, files) {
+//
+// `unmappedCriticality` is what a file matching no domain contributes. The
+// config key has existed since the template shipped and nothing read it: this
+// function summed only *mapped* domains, so unmapped code contributed nothing
+// and scored as if it were harmless.
+//
+// That was free while criticality only mattered to a project's own `critical`
+// rule. #36 added a baseline rule keyed on `high`, which turned every gap in the
+// map into a gap in the guard — PR #34 added `agentflow-release`, the code that
+// cuts releases, with `unmapped_fraction: 0.8`, and scored as a docs change.
+//
+// Passing `null` preserves the old behaviour, so a caller that does not resolve
+// config is unaffected.
+export function domainFacts(domains, files, { unmappedCriticality = null } = {}) {
   const compiled = Object.entries(domains ?? {}).map(([name, d]) => ({
     name,
     criticality: d.criticality ?? "medium",
@@ -64,6 +77,15 @@ export function domainFacts(domains, files) {
     if (!touched.has(d.name)) continue;
     if (max === null || CRITICALITY.indexOf(d.criticality) > CRITICALITY.indexOf(max)) {
       max = d.criticality;
+    }
+  }
+  // Unmapped files contribute the configured default. Only when there is a map
+  // to be unmapped *from*: a repo with no domains.yml has no domain facts to
+  // speak of, and inventing a criticality for every file there would score
+  // everything `medium` on repos that never opted in.
+  if (unmapped > 0 && unmappedCriticality && compiled.length > 0) {
+    if (max === null || CRITICALITY.indexOf(unmappedCriticality) > CRITICALITY.indexOf(max)) {
+      max = unmappedCriticality;
     }
   }
   return {
@@ -90,13 +112,13 @@ export function driftFacts({ planFiles = null, diffFiles = [], brief = null, dom
   return facts;
 }
 
-export function assembleFacts({ stage, numstat, basePkg, headPkg, domains, planFiles, brief }) {
+export function assembleFacts({ stage, numstat, basePkg, headPkg, domains, planFiles, brief, unmappedCriticality = null }) {
   const diff = diffFacts({ numstat, basePkg, headPkg });
   const facts = {
     meta: { stage, change_class: classifyChange(diff.files) },
     diff,
   };
-  if (domains != null) facts.domains = domainFacts(domains, diff.files);
+  if (domains != null) facts.domains = domainFacts(domains, diff.files, { unmappedCriticality });
   const drift = driftFacts({
     planFiles,
     diffFiles: diff.files,

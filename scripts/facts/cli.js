@@ -61,6 +61,7 @@ const facts = assembleFacts({
   domains: flags.domains ? loadFile(flags.domains) : null,
   planFiles: flags.plan ? loadFile(flags.plan).files ?? null : null,
   brief: flags.brief ? loadFile(flags.brief) : null,
+  unmappedCriticality: flags.config ? loadFile(flags.config).unmapped_criticality ?? null : null,
 });
 
 console.log(JSON.stringify(facts, null, 2));
