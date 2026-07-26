@@ -380,22 +380,25 @@ test("check 5: unparseable output fails on either exit code", () => {
 // ---------------------------------------------------------------------------
 // roll-up, exit code, rendering
 
-test("verifyChecks: five checks, always in the same order", () => {
+test("verifyChecks: six checks, always in the same order", () => {
   assert.deepEqual(
     run().map((c) => c.name),
-    ["agentflow.config.json", "labels", "domains.yml", ".github/workflows", "agentflow-next"],
+    ["agentflow.config.json", "labels", "domains.yml", ".github/workflows", "agentflow-next", "G3 mode"],
   );
 });
 
 test("a fully adopted repo with a labelled backlog: every check passes, exit 0", () => {
+  // The fixture carries no `agent_identity`, which is the common case — so the
+  // clean report now carries one note saying the repo is in solo-comment G3.
+  // A note is not a defect: the exit code is still 0.
   const checks = run();
   assert.equal(checks.every((c) => c.ok), true);
-  assert.equal(rollup(checks), "5 passed");
+  assert.equal(rollup(checks), "6 passed (1 note)");
   assert.equal(exitCode(checks), 0);
 });
 
 test("rollup: a note is visible in the roll-up, and plural when there are two", () => {
-  assert.equal(rollup(run({ next: { code: 1, stdout: '{"idle":true}', error: null } })), "5 passed (1 note)");
+  assert.equal(rollup(run({ next: { code: 1, stdout: '{"idle":true}', error: null } })), "6 passed (2 notes)");
   assert.equal(
     rollup(
       run({
@@ -403,15 +406,15 @@ test("rollup: a note is visible in the roll-up, and plural when there are two", 
         config: { value: { ...validConfig, extra_key: 1 }, error: null },
       }),
     ),
-    "5 passed (2 notes)",
+    "6 passed (3 notes)",
   );
 });
 
 test("rollup: failures are counted, and every other row still reports", () => {
   const checks = run({ domains: { value: null, error: null } });
-  assert.equal(rollup(checks), "4 passed, 1 failed");
+  assert.equal(rollup(checks), "5 passed, 1 failed (1 note)");
   assert.equal(exitCode(checks), 1);
-  assert.equal(checks.length, 5, "one failing check never suppresses the others");
+  assert.equal(checks.length, 6, "one failing check never suppresses the others");
 });
 
 test("renderChecks: ✓/✗ per row, notes indented under theirs, roll-up last", () => {
@@ -420,8 +423,9 @@ test("renderChecks: ✓/✗ per row, notes indented under theirs, roll-up last",
   assert.equal(lines[1], "✓ labels — all 4 present");
   assert.equal(lines[4], "✓ agentflow-next — the dispatcher runs; the backlog is idle");
   assert.equal(lines[5], `  ! ${IDLE_NOTE}`);
-  assert.equal(lines[6], "");
-  assert.equal(lines.at(-1), "5 passed (1 note)");
+  assert.equal(lines[6], "✓ G3 mode — solo-comment");
+  assert.equal(lines[8], "");
+  assert.equal(lines.at(-1), "6 passed (2 notes)");
 });
 
 test("renderChecks: a failed row is marked ✗ and keeps its detail", () => {
@@ -430,7 +434,7 @@ test("renderChecks: a failed row is marked ✗ and keeps its detail", () => {
     lines[4],
     "✗ agentflow-next — exited 20 (usage/IO error) — check `gh auth status` and that the repo is reachable",
   );
-  assert.equal(lines.at(-1), "4 passed, 1 failed");
+  assert.equal(lines.at(-1), "5 passed, 1 failed (1 note)");
 });
 
 // --- release_kind ------------------------------------------------------------
@@ -537,4 +541,66 @@ test("a human approver is unaffected by any of this", () => {
     approvers: ["yuchida-tamu"],
   });
   assert.deepEqual(issues, []);
+});
+
+// --- check 6: G3 mode --------------------------------------------------------
+//
+// "Which G3 does this repo have, and why?" was answerable only by reading
+// source. Two independent facts decide it: whether agent PRs are authored by
+// somebody other than the approver (so a native review is *possible*), and
+// whether branch protection requires that review (so it is *enforced*).
+
+const g3Check = (checks) => checks.find((c) => c.name === "G3 mode");
+
+test("check 6: no agent_identity reports solo-comment, as a note rather than a failure", () => {
+  // A solo-comment repo is a legitimate configuration, not a broken adoption.
+  // `rollup` counts notes separately for exactly this kind of true-but-fine remark.
+  const checks = run({});
+  const check = g3Check(checks);
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /solo-comment/);
+  assert.match(check.note, /agent_identity/);
+  assert.equal(exitCode(checks), 0, "a solo-comment repo still exits 0");
+});
+
+test("check 6: a configured identity on a protected branch is native-review, enforced", () => {
+  const check = g3Check(
+    run({
+      config: { value: { ...validConfig, agent_identity: "agentflow-bot" }, error: null },
+      protection: { required_pull_request_reviews: { required_approving_review_count: 1 } },
+    }),
+  );
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /native-review/);
+  assert.equal(check.note, null, "nothing is owed, so there is nothing to note");
+});
+
+test("check 6: a configured identity on an unprotected branch says the review is not enforced", () => {
+  const checks = run({
+    config: { value: { ...validConfig, agent_identity: "agentflow-bot" }, error: null },
+    protection: null,
+  });
+  const check = g3Check(checks);
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /native-review/);
+  assert.match(check.note, /not enforced|unprotected/i);
+  assert.equal(exitCode(checks), 0);
+});
+
+test("check 6: unreadable protection is never reported as protected", () => {
+  const check = g3Check(
+    run({
+      config: { value: { ...validConfig, agent_identity: "agentflow-bot" }, error: null },
+      protection: undefined,
+    }),
+  );
+  assert.match(check.note, /could not be read|not looked up/i);
+});
+
+test("check 6: an unreadable config does not crash the check", () => {
+  // Check 1 already reports the broken config; this one must not throw on top of
+  // it, or one bad file takes the whole report down.
+  const check = g3Check(run({ config: { value: null, error: "ENOENT" } }));
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /solo-comment/);
 });

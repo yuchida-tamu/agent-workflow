@@ -42,15 +42,27 @@ If you edit `agents/*.md`, update the copy in `.claude/agents/` too.
 
 Gates: `/approve` is an **issue** command, for G1/G2/G4 only — the
 `agentflow · gate` workflow validates it and applies the transition
-(it deliberately ignores PR comments). G3 on this repo runs in **solo mode**:
-agent PRs are authored by the human's own account, so native review approval
-is impossible (GitHub forbids approving your own PR) and branch protection is
-unavailable (private free plan). Interim G3 artifact: an `/approve` comment
-on the PR naming the head SHA, then merge, then transition the issue manually
-— #18 wires this up properly (SHA-stamped validation + merge-event
-transition). Native-review G3 returns when agents get their own GitHub App
-identity (Phase 3). Manual fallback:
+(it deliberately ignores PR comments). **G3 has two modes**, decided by who
+authors the agent PRs — `adopt --verify` reports which one and why:
+
+- `native-review` — `agent_identity` is set, so agent PRs are authored by the
+  App and a human can submit a real approving review.
+- `solo-comment` — no `agent_identity`, so agent PRs are the human's own and
+  GitHub forbids self-review. The artifact is an `/approve` comment on the PR
+  naming the head SHA, then merge, then transition the issue manually.
+
+**This repo is in `solo-comment` mode today** — the plumbing exists (#82), the
+App itself has not been created, and creating it is a browser action only a
+human can take: `docs/github-app-runbook.md`. #18 completes the solo path
+(SHA-stamped validation + merge-event transition). Manual fallback:
 `node scripts/state/cli.js apply --issue N --to <state> --approved-gate G1..G4`.
+
+**Agents may not approve gates, and this is now enforced in code** rather than
+by this sentence. `validateApproval` refuses any bot-authored `/approve` before
+it consults `approvers`, and `approvers` is validated as human logins only. The
+single exception is G3 on a PR whose recorded verdict already authorises an
+unattended merge — there the App transcribes an engine decision, it does not
+mint one.
 
 Work-item states: `idea → spec → planned → ready → in-progress → in-review
 → merged → verified → released`; gates G1 (brief) G2 (plan, risk-based)

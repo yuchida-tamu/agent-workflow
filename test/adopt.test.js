@@ -244,12 +244,25 @@ test("settingsReport: nothing configured → all three missing, each with a runn
     "actions-access",
     "branch-protection",
     "release-environment",
+    "g3-mode",
   ]);
-  assert.deepEqual(entries.map((e) => e.status), ["missing", "missing", "missing"]);
-  for (const entry of entries) {
+  const actionable = entries.filter((e) => e.id !== "g3-mode");
+  assert.deepEqual(actionable.map((e) => e.status), ["missing", "missing", "missing"]);
+  for (const entry of actionable) {
     assert.match(entry.command, /^gh api --method PUT /, `${entry.id} prints a command`);
     assert.ok(bodyOf(entry.command), `${entry.id} body is valid JSON`);
   }
+});
+
+test("settingsReport: g3-mode reports and is never owed", () => {
+  // It is the one entry with nothing to run — the step it would name is creating
+  // a GitHub App in a browser. Marking it unsatisfied would park "give agentflow
+  // an identity" in `remaining` forever on every repo that rightly never will.
+  const { "g3-mode": g3 } = byId(report({ current: { access: null, protection: null, environment: null } }));
+  assert.equal(g3.status, "satisfied");
+  assert.equal(g3.command, null);
+  assert.match(g3.why, /solo-comment/);
+  assert.match(g3.notes.join(" "), /browser action|runbook/);
 });
 
 test("settingsReport: the printed commands target the right endpoints", () => {
@@ -266,9 +279,12 @@ test("settingsReport: the printed commands target the right endpoints", () => {
 test("settingsReport: is pure — it returns commands and never executes anything", () => {
   const entries = report({ current: { access: null, protection: null, environment: null } });
   for (const entry of entries) {
-    assert.equal(typeof entry.command, "string");
+    // g3-mode is the one entry with no command, because its remedy is a browser
+    // action rather than an API call.
+    assert.ok(entry.command === null || typeof entry.command === "string", entry.id);
     assert.ok(Array.isArray(entry.notes));
   }
+  assert.equal(entries.filter((e) => typeof e.command === "string").length, 3);
 });
 
 test("settingsReport: the G3 baseline is one approval, dismiss-stale, no force-push", () => {
@@ -311,8 +327,8 @@ test("settingsReport: everything already at baseline → satisfied, nothing prin
       environment: environmentGet([["yuchida-tamu", 4242]]),
     },
   });
-  assert.deepEqual(entries.map((e) => e.status), ["satisfied", "satisfied", "satisfied"]);
-  assert.deepEqual(entries.map((e) => e.command), [null, null, null]);
+  assert.deepEqual(entries.map((e) => e.status), ["satisfied", "satisfied", "satisfied", "satisfied"]);
+  assert.deepEqual(entries.map((e) => e.command), [null, null, null, null]);
 });
 
 test("settingsReport: a stricter access level than needed is satisfied, not rewritten", () => {
