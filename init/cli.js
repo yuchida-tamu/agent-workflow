@@ -7,7 +7,7 @@
 //                          [--default-branch main] [--required-check <ctx>]…
 //                          [--environment release] [--toolkit owner/name]
 //   agentflow-init adopt --verify --target <dir> --repo owner/name
-//   agentflow-init adopt --coverage --target <dir> [--json]
+//   agentflow-init adopt --coverage --target <dir> [--json] [--strict]
 //
 // `labels` creates/updates the label set idempotently via `gh label create
 // --force`. `project` scaffolds a consuming app: config, domains map, business
@@ -63,6 +63,7 @@ const BOOLEAN_FLAGS = {
   "--dry-run": "dryRun",
   "--verify": "verify",
   "--coverage": "coverage",
+  "--strict": "strict",
   "--json": "json",
 };
 
@@ -282,7 +283,7 @@ switch (command) {
     // repo, so it is the one adopt mode that does not need --repo.
     if (flags.coverage) {
       if (!flags.target) {
-        console.error("usage: agentflow-init adopt --coverage --target <dir> [--json]");
+        console.error("usage: agentflow-init adopt --coverage --target <dir> [--json] [--strict]");
         process.exit(20);
       }
       let files;
@@ -308,6 +309,17 @@ switch (command) {
           ? JSON.stringify({ ...report, unmapped_criticality: unmappedCriticality }, null, 2)
           : renderCoverage(report, { unmappedCriticality }),
       );
+      // `--strict` turns the warning into a failure, so the map cannot rot
+      // silently. It matters more since #46: verdicts now read criticality, so
+      // an unmapped file is not merely undocumented — it is unguarded. The
+      // report has printed the breach for a while and nothing acted on it.
+      if (flags.strict && report.warn_fraction !== null && report.unmapped_fraction > report.warn_fraction) {
+        console.error(
+          `agentflow-init: ${report.unmapped} of ${report.total} tracked file(s) are unmapped, ` +
+            `above the configured ${report.warn_fraction} threshold — extend domains.yml`,
+        );
+        process.exit(10);
+      }
       break;
     }
 
