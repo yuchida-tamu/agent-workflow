@@ -27,6 +27,21 @@ export function parseCommand(body) {
   return null;
 }
 
+// Does a validated approval at this gate itself perform the transition?
+//
+// For G1, G2 and G3 the approval *is* the act: it approves a document or a
+// merge, and moving the label is the outcome. G4 approves a **release that has
+// not happened yet** — transitioning on the approval would assert a release
+// that does not exist, and would lock `agentflow-release` out, since it
+// requires `verified`. There the label follows the artifact instead.
+//
+// Under `release_kind: none` no G4 exists at all, so the question is moot and
+// the ordinary path applies.
+export function approvalTransitions({ gate, releaseKind = null }) {
+  if (gate !== "G4") return true;
+  return releaseKind === "none";
+}
+
 export function validateApproval({ author, body, authorized, expectedGate, releaseKind = null }) {
   if (!GATES.includes(expectedGate)) {
     return { ok: false, reason: `unknown expected gate "${expectedGate}"` };

@@ -9,8 +9,9 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
-import { parseCommand, validateApproval } from "../gate/validator.js";
+import { parseCommand, validateApproval, approvalTransitions } from "../gate/validator.js";
 import { labelFor, pendingGateFor, stateFromLabels } from "../state/machine.js";
+import { resolveReleaseKind } from "../../init/config-schema.js";
 
 const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
 const repo = process.env.GITHUB_REPOSITORY;
@@ -47,6 +48,23 @@ if (verdict.rejected) {
 }
 if (!verdict.ok) {
   comment(`agentflow: ${pending.gate} approval not accepted — ${verdict.reason}.`);
+  process.exit(0);
+}
+
+// G4 is the one gate whose approval is not itself the act. G1 and G2 approve a
+// document, so the transition IS the outcome. G4 approves a *release* that has
+// not happened yet — moving the label here would assert a release that does not
+// exist, and would lock agentflow-release out, since it requires `verified`.
+// The label follows the artifact; agentflow-release applies it once the tag and
+// the GitHub release exist.
+const releaseKind = resolveReleaseKind(config).kind;
+if (!approvalTransitions({ gate: pending.gate, releaseKind })) {
+  comment(
+    `agentflow: ✅ **G4 approved** by @${author} — the release is authorised.\n\n` +
+      `The label stays \`state:${state}\` until the release exists. Run:\n\n` +
+      `\`\`\`sh\nagentflow-release --repo ${repo} --issue ${event.issue.number}\n\`\`\`\n\n` +
+      `It will find and validate this approval, cut the tag and the GitHub release, and only then transition to \`state:released\`.`
+  );
   process.exit(0);
 }
 
