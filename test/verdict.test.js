@@ -145,6 +145,60 @@ test("a fabricated verdict cannot authorise a merge without a SHA to check", () 
   assert.equal(authorises("G3", fabricated, { headSha: "abc1234" }), false);
 });
 
+// --- the stamped SHA, in the exact shape pr-verdict.js now writes -------------
+
+test("a verdict carrying its SHA authorises a matching head", () => {
+  // Mirrors scripts/actions/pr-verdict.js: `verdict-sha:` on its own line
+  // between the heading and the obligations table.
+  const sha = "0e274670a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const body = `${MARKER}
+### agentflow risk verdict: \`low\` (score 0)
+
+verdict-sha: ${sha}
+
+| requires | blocks | runs |
+|---|---|---|
+| — | — | — |
+
+No rules matched.`;
+  const v = parseVerdict(body);
+  assert.equal(v.sha, sha);
+  assert.equal(authorises("G3", v, { headSha: sha }), true);
+  assert.equal(authorises("G3", v, { headSha: "deadbeef" }), false, "a different head must not be authorised");
+});
+
+test("a stamped verdict still refuses G3 when obligations demand a human", () => {
+  const sha = "0e274670a1b2c3d4";
+  const body = `${MARKER}
+### agentflow risk verdict: \`high\` (score 0)
+
+verdict-sha: ${sha}
+
+| requires | blocks | runs |
+|---|---|---|
+| G2, human-merge | auto-merge | — |
+
+No rules matched.`;
+  assert.equal(authorises("G3", parseVerdict(body), { headSha: sha }), false);
+});
+
+test("verdicts written before the SHA existed remain parseable and simply never auto-merge", () => {
+  // Backwards compatibility in the safe direction: old comments still yield a
+  // usable verdict for G2, and are permanently closed for G3.
+  const old = `${MARKER}
+### agentflow risk verdict: \`low\` (score 0)
+
+| requires | blocks | runs |
+|---|---|---|
+| — | — | — |
+
+No rules matched.`;
+  const v = parseVerdict(old);
+  assert.equal(v.level, "low");
+  assert.equal(authorises("G2", v), true);
+  assert.equal(authorises("G3", v, { headSha: "anything" }), false);
+});
+
 // --- the G2 auto-pass decision, end to end -----------------------------------
 
 test("the exact verdict shapes this repo produces decide G2 correctly", () => {
