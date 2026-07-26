@@ -21,10 +21,18 @@ const AUTONOMY_SENTENCES = [
   "Asking permission mid-stage is a defect, not politeness.",
 ];
 
-function autonomySection(text) {
-  const index = text.indexOf(AUTONOMY_HEADING);
-  return index === -1 ? null : text.slice(index).trim();
+// Slice one `## ` section, stopping at the next heading rather than at the end
+// of the file — definitions carry several standard sections, and a comparison
+// that swallowed the ones below would pass for the wrong reason.
+function section(text, heading) {
+  const start = text.indexOf(heading);
+  if (start === -1) return null;
+  const rest = text.slice(start + heading.length);
+  const next = rest.search(/\n## /);
+  return (heading + (next === -1 ? rest : rest.slice(0, next))).trim();
 }
+
+const autonomySection = (text) => section(text, AUTONOMY_HEADING);
 
 // The paragraph is hard-wrapped, so its sentences straddle newlines. Compare on
 // normalised whitespace: rewrapping a line is not drift, changing a word is.
@@ -83,4 +91,45 @@ test("every installed copy is byte-identical to its source", () => {
       `${INSTALLED}/${file} has drifted from ${SOURCE}/${file} — edit both, or run the installer`
     );
   }
+});
+
+// --- the run ledger contract --------------------------------------------------
+
+const LEDGER_HEADING = "## Run ledger";
+
+test("every agent definition instructs the agent to open and close a ledger row", () => {
+  for (const file of definitionFiles(SOURCE)) {
+    const ledger = section(read(SOURCE, file), LEDGER_HEADING);
+    assert.ok(ledger, `${file} has no ${LEDGER_HEADING} section`);
+    assert.match(ledger, /agentflow-log start/, `${file} never opens a row`);
+    assert.match(ledger, /agentflow-log end/, `${file} never closes a row`);
+  }
+});
+
+test("the ledger instruction is identical across the roster", () => {
+  const files = definitionFiles(SOURCE);
+  const reference = flatten(section(read(SOURCE, files[0]), LEDGER_HEADING));
+  for (const file of files) {
+    assert.equal(
+      flatten(section(read(SOURCE, file), LEDGER_HEADING)),
+      reference,
+      `${file}'s ledger section has drifted — reword it everywhere or nowhere`
+    );
+  }
+});
+
+test("the contract covers failure, so an abandoned run is recorded not left open", () => {
+  const ledger = section(read(SOURCE, definitionFiles(SOURCE)[0]), LEDGER_HEADING);
+  assert.match(ledger, /abandoned/);
+  assert.match(flatten(ledger), /including when you fail/);
+});
+
+test("the autonomy section is compared in isolation from the sections below it", () => {
+  // Guards the extraction itself: if `section` ever swallowed the ledger block,
+  // these two would no longer be distinguishable and both comparisons would
+  // pass for the wrong reason.
+  const text = read(SOURCE, definitionFiles(SOURCE)[0]);
+  const autonomy = section(text, AUTONOMY_HEADING);
+  assert.ok(!autonomy.includes(LEDGER_HEADING), "autonomy section must stop at the next heading");
+  assert.ok(!section(text, LEDGER_HEADING).includes(AUTONOMY_HEADING));
 });
