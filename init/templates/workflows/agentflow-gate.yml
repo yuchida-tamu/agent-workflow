@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: __TOOLKIT_REPO__/actions/gate-check@main
+      - uses: __TOOLKIT_REPO__/actions/gate-check@v0.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           app-id: ${{ secrets.AGENTFLOW_APP_ID }}
