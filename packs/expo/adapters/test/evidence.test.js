@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendManifest, readManifest, MANIFEST_FILE } from "../lib/evidence.js";
+import { appendManifest, readManifest, reserveEntry, MANIFEST_FILE } from "../lib/evidence.js";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(join(tmpdir(), "agentflow-expo-evidence-test-"));
@@ -89,5 +89,65 @@ test("appendManifest: the manifest is never observed as a torn/partial file mid-
     for (const manifest of readResults) {
       assert.ok(Array.isArray(manifest));
     }
+  });
+});
+
+// ---- reserveEntry: an atomic "mint the next filename + record its row" ---
+// transaction, added for #134 (verify) so a numbered evidence file (a
+// screenshot) can never be assigned the same index as a concurrent writer's.
+
+test("reserveEntry: mints sequential, zero-padded filenames and records the row in one call", async () => {
+  await withTempDir(async (dir) => {
+    const first = await reserveEntry(dir, { type: "screenshot", ext: ".png", label: "boot" });
+    assert.deepEqual(first, { type: "screenshot", path: join(dir, "0001.png"), label: "boot" });
+    const second = await reserveEntry(dir, { type: "screenshot", ext: ".png", label: "after tap" });
+    assert.equal(second.path, join(dir, "0002.png"));
+
+    const manifest = await readManifest(dir);
+    assert.deepEqual(manifest, [first, second]);
+  });
+});
+
+test("reserveEntry: numbering continues a sequence started by appendManifest (one shared index across the whole bundle)", async () => {
+  await withTempDir(async (dir) => {
+    await appendManifest(dir, { type: "log", path: "app.log" });
+    const entry = await reserveEntry(dir, { type: "screenshot", ext: ".png" });
+    assert.equal(entry.path, join(dir, "0002.png"));
+  });
+});
+
+test("reserveEntry: label defaults to type, step_ref is carried through only when given", async () => {
+  await withTempDir(async (dir) => {
+    const entry = await reserveEntry(dir, { type: "screenshot", ext: ".png", step_ref: "given the app is open" });
+    assert.equal(entry.label, "screenshot");
+    assert.equal(entry.step_ref, "given the app is open");
+    assert.ok(!("step_ref" in await reserveEntry(dir, { type: "screenshot", ext: ".png" })));
+  });
+});
+
+test("reserveEntry: requires evidenceDir, type, and ext", async () => {
+  await assert.rejects(() => reserveEntry(null, { type: "screenshot", ext: ".png" }), TypeError);
+  await withTempDir(async (dir) => {
+    await assert.rejects(() => reserveEntry(dir, { ext: ".png" }), TypeError);
+    await assert.rejects(() => reserveEntry(dir, { type: "screenshot" }), TypeError);
+  });
+});
+
+// The MED-severity finding this exists to fix (#134 review): the previous
+// call site pattern — readManifest, compute a filename, do slow I/O, THEN
+// appendManifest — let two concurrent callers both read the same manifest
+// length and mint the same filename, so the second writer's file silently
+// clobbered the first's. reserveEntry closes that window by picking the
+// index and writing the row in the SAME lock-held transaction.
+test("reserveEntry: concurrent reservations never mint the same index — the race the previous read-then-append pattern had", async () => {
+  await withTempDir(async (dir) => {
+    const N = 12;
+    const entries = await Promise.all(
+      Array.from({ length: N }, () => reserveEntry(dir, { type: "screenshot", ext: ".png" }))
+    );
+    const paths = new Set(entries.map((e) => e.path));
+    assert.equal(paths.size, N, "every reservation must have minted a distinct filename");
+    const manifest = await readManifest(dir);
+    assert.equal(manifest.length, N, "every reservation's row must be durably recorded, none lost to a race");
   });
 });

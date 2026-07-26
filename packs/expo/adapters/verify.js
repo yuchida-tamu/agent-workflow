@@ -36,11 +36,11 @@ import { join } from "node:path";
 import { readFile as fsReadFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { runMain, recoverable, fatal } from "./lib/contract.js";
+import { runMain, recoverable, fatal, diagnostic } from "./lib/contract.js";
 import * as agentDevice from "./lib/agent-device.js";
 import { defaultRunner } from "./lib/proc.js";
 import { loadSession } from "./lib/session.js";
-import { appendManifest, readManifest } from "./lib/evidence.js";
+import { reserveEntry } from "./lib/evidence.js";
 
 const INTERFACE = "verify";
 const PLATFORM = "ios";
@@ -53,7 +53,26 @@ const PLATFORM = "ios";
 // back to the raw value for a shape that doesn't carry `data` (defensive,
 // not load-bearing: `invoke()` already throws on a non-zero exit, so a
 // successful call's body should always carry `data` in practice).
+//
+// `invoke()` only inspects the process exit code — it has no opinion on the
+// body. If agent-device ever exits 0 while its own body says
+// `{success:false, error:{...}}` (a daemon-level "the command didn't really
+// work" that doesn't surface as a process failure), silently returning
+// `undefined` data here would look like "nothing observed" rather than the
+// actual failure it is (#134 review). Treat that shape as an error too:
+// throw the same `AgentDeviceError` a non-zero exit would have produced,
+// carrying the body's own error detail, so every caller's existing
+// AgentDeviceError handling (callAgentDevice's dead-session mapping
+// included) applies uniformly regardless of which path detected the failure.
 export function unwrap(result) {
+  if (result && typeof result === "object" && result.success === false) {
+    const error = result.error && typeof result.error === "object" ? result.error : {};
+    const detail = error.message ? `${error.code ? `${error.code}: ` : ""}${error.message}` : "no error detail in body";
+    throw new agentDevice.AgentDeviceError(`agent-device reported success:false despite exit 0: ${detail}`, {
+      code: 0,
+      stdout: JSON.stringify(result),
+    });
+  }
   return result && typeof result === "object" && "data" in result ? result.data : result;
 }
 
@@ -86,7 +105,9 @@ const DEAD_SESSION_CODES = new Set(["SESSION_NOT_FOUND", "DEVICE_NOT_FOUND", "AP
 
 async function callAgentDevice(args, { runner, sessionId }) {
   try {
-    return await agentDevice.invoke(args, { runner });
+    const result = await agentDevice.invoke(args, { runner });
+    unwrap(result); // throws AgentDeviceError if the body says success:false despite exit 0
+    return result;
   } catch (err) {
     if (err instanceof agentDevice.AgentDeviceError) {
       const code = agentDeviceErrorCode(err);
@@ -244,7 +265,27 @@ async function actOp(request, deps) {
   if (!action || typeof action !== "object" || !action.kind) {
     throw fatal("act requires an action with a kind");
   }
-  await performAction(action, { record, deps });
+  try {
+    await performAction(action, { record, deps });
+  } catch (err) {
+    // The failure frame is often the highest-value evidence — interfaces/
+    // verify.md's "a post-action screenshot is always captured" reads
+    // literally: that includes a failed action, not just a successful one
+    // (#134 review). A screenshot failure here must never mask the original
+    // action error, so it's swallowed (diagnostic only) rather than thrown.
+    await captureScreenshot({
+      record,
+      evidenceDir: request.evidence_dir,
+      deps,
+      label: `act:${action.kind}:failed`,
+    }).catch((screenshotErr) => {
+      diagnostic(
+        `[verify] failure screenshot also failed for act:${action.kind}: ${screenshotErr.message}`,
+        deps.stderr
+      );
+    });
+    throw err;
+  }
   const screenshot = await captureScreenshot({
     record,
     evidenceDir: request.evidence_dir,
@@ -300,34 +341,33 @@ async function readOp(request, deps) {
 // Shared by snapshot and act: capture a screenshot and record it in the
 // evidence manifest. The contract's own examples number screenshots
 // sequentially within the bundle ("evidence/0007.png", "evidence/0008.png")
-// — the next index is derived from how many entries the manifest already
-// has (readManifest/appendManifest are both already shared by run.js; no lib
-// extension needed here). Without an evidence_dir (not guaranteed on every
-// call — see lib/session.js's header note on the same fallback shape) this
-// still honors "a screenshot is always captured", just outside the bundle,
-// under a random name since there's no manifest to count against.
+// — `lib/evidence.js`'s `reserveEntry` picks that index and writes the
+// manifest row atomically (under the same lock, in one transaction), so two
+// concurrent callers sharing one evidence_dir (a live `run` session and a
+// `verify` call, or two `verify` calls racing) can never both mint the same
+// filename and clobber each other's screenshot (#134 review — the manifest
+// row is written by `reserveEntry` itself, not by us after the fact).
+//
+// Without an evidence_dir (not guaranteed on every call — see
+// lib/session.js's header note on the same fallback shape) this still
+// honors "a screenshot is always captured", just outside the bundle, under a
+// random name since there's no manifest to reserve a slot in.
 async function captureScreenshot({ record, evidenceDir, deps, label }) {
-  let dir;
-  let filename;
+  let path;
   if (evidenceDir) {
-    dir = evidenceDir;
-    const manifest = await deps.readManifest(evidenceDir).catch(() => []);
-    filename = `${String(manifest.length + 1).padStart(4, "0")}.png`;
+    const entry = await deps.reserveEntry(evidenceDir, { type: "screenshot", ext: ".png", label: label ?? "screenshot" });
+    path = entry.path;
   } else {
-    dir = join(tmpdir(), "agentflow-expo-verify");
-    filename = `${randomUUID()}.png`;
+    const dir = join(tmpdir(), "agentflow-expo-verify");
+    await mkdir(dir, { recursive: true });
+    path = join(dir, `${randomUUID()}.png`);
   }
-  await mkdir(dir, { recursive: true });
-  const path = join(dir, filename);
 
   await callAgentDevice(["screenshot", "--out", path, ...sessionFlags(record)], {
     runner: deps.runner,
     sessionId: record.session_id,
   });
 
-  if (evidenceDir) {
-    await deps.appendManifest(evidenceDir, { type: "screenshot", path, label: label ?? "screenshot" });
-  }
   return path;
 }
 
@@ -338,8 +378,8 @@ function defaultHandlerDeps() {
     runner: defaultRunner,
     loadSession,
     readFile: fsReadFile,
-    readManifest,
-    appendManifest,
+    reserveEntry,
+    stderr: process.stderr,
   };
 }
 

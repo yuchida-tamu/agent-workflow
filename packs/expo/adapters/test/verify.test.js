@@ -4,7 +4,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMain, EXIT_OK, EXIT_RECOVERABLE, EXIT_FATAL } from "../lib/contract.js";
-import { appendManifest, readManifest, MANIFEST_FILE } from "../lib/evidence.js";
+import { appendManifest, readManifest, reserveEntry, MANIFEST_FILE } from "../lib/evidence.js";
 import {
   unwrap,
   normalizeElements,
@@ -112,8 +112,12 @@ function baseDeps(overrides = {}) {
     runner: fakeRunner(),
     loadSession: async () => RUNNING_RECORD,
     readFile: async () => "",
-    readManifest: async () => [],
-    appendManifest: async () => null,
+    // A no-evidence_dir-shaped default: captureScreenshot only calls this
+    // when a request actually carries evidence_dir, so most tests never
+    // exercise it. Tests that care about numbering/manifest content pass
+    // the real `reserveEntry` against a tmp dir instead (see withTempDir).
+    reserveEntry: async (dir, { type, ext, label }) => ({ type, path: join(dir, `mock${ext}`), label }),
+    stderr: { write: () => {} },
     ...overrides,
   };
 }
@@ -136,6 +140,22 @@ test("unwrap: pulls .data out of the {success,data} envelope", () => {
 test("unwrap: passes through a shape with no .data untouched", () => {
   assert.deepEqual(unwrap({ nodes: [] }), { nodes: [] });
   assert.equal(unwrap(null), null);
+});
+
+test("unwrap: success:false is an error even at exit 0 — never silently yields empty data", () => {
+  assert.throws(
+    () => unwrap({ success: false, error: { code: "COMMAND_FAILED", message: "no visible effect" } }),
+    (err) => {
+      assert.equal(err.name, "AgentDeviceError");
+      assert.match(err.message, /COMMAND_FAILED/);
+      assert.match(err.message, /no visible effect/);
+      return true;
+    }
+  );
+});
+
+test("unwrap: success:false with no error body still throws, not a silent pass-through", () => {
+  assert.throws(() => unwrap({ success: false }), /success:false/);
 });
 
 test("normalizeElements: maps agent-device nodes to the contract element shape, one-to-one", () => {
@@ -263,7 +283,7 @@ test("snapshot: builds `snapshot -i --session --platform --device --json`, maps 
       snapshot: () => jsonOk(CANNED_SNAPSHOT.data),
       screenshot: () => jsonOk({ path: "ignored" }),
     });
-    const handlers = createHandlers({ ...baseDeps({ runner }), readManifest, appendManifest });
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry }));
     const response = await handlers.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir });
 
     const snapshotCall = runner.calls.find((c) => c.args[0] === "snapshot");
@@ -284,26 +304,40 @@ test("snapshot: builds `snapshot -i --session --platform --device --json`, maps 
   });
 });
 
-test("snapshot: without evidence_dir still captures a screenshot (outside the bundle), never skips it", async () => {
+test("snapshot: without evidence_dir still captures a screenshot (outside the bundle), never reserves a manifest slot", async () => {
   const runner = fakeRunner({ snapshot: () => jsonOk(CANNED_SNAPSHOT.data) });
-  let appendCalled = false;
-  const handlers = createHandlers(baseDeps({ runner, appendManifest: async () => { appendCalled = true; } }));
+  let reserveCalled = false;
+  const handlers = createHandlers(baseDeps({ runner, reserveEntry: async () => { reserveCalled = true; } }));
   const response = await handlers.snapshot({ session_id: "sess-abc123" });
   assert.ok(response.screenshot);
-  assert.equal(appendCalled, false, "no evidence_dir means nothing to append to");
+  assert.equal(reserveCalled, false, "no evidence_dir means nothing to reserve a manifest slot in");
   const screenshotCall = runner.calls.find((c) => c.args[0] === "screenshot");
   assert.ok(screenshotCall, "screenshot must still be captured");
 });
 
 test("snapshot: second call in the same bundle numbers the screenshot 0002.png", async () => {
   await withTempDir(async (evidenceDir) => {
+    await appendManifest(evidenceDir, { type: "screenshot", path: "x", label: "y" }); // seed one prior entry
     const runner = fakeRunner({ snapshot: () => jsonOk(CANNED_SNAPSHOT.data) });
-    const handlers = createHandlers(baseDeps({
-      runner,
-      readManifest: async () => [{ type: "screenshot", path: "x", label: "y" }],
-    }));
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry }));
     const response = await handlers.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir });
     assert.equal(response.screenshot, join(evidenceDir, "0002.png"));
+  });
+});
+
+test("snapshot: two concurrent calls sharing one evidence_dir never mint the same screenshot filename (the race reserveEntry fixes)", async () => {
+  await withTempDir(async (evidenceDir) => {
+    const runner = fakeRunner({ snapshot: () => jsonOk(CANNED_SNAPSHOT.data) });
+    const handlersA = createHandlers(baseDeps({ runner, reserveEntry }));
+    const handlersB = createHandlers(baseDeps({ runner, reserveEntry }));
+    const [a, b] = await Promise.all([
+      handlersA.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir }),
+      handlersB.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir }),
+    ]);
+    assert.notEqual(a.screenshot, b.screenshot, "two concurrent captures must never collide on one filename");
+    const manifest = await readManifest(evidenceDir);
+    assert.equal(manifest.length, 2, "both entries must land in the manifest, none lost to a race");
+    assert.deepEqual(new Set(manifest.map((row) => row.path)), new Set([a.screenshot, b.screenshot]));
   });
 });
 
@@ -438,7 +472,7 @@ test("act: unsupported action kind -> fatal (20)", async () => {
 test("act: always captures a post-action screenshot and appends it to the manifest", async () => {
   await withTempDir(async (evidenceDir) => {
     const runner = fakeRunner({ press: () => jsonOk({}), screenshot: () => jsonOk({}) });
-    const handlers = createHandlers({ ...baseDeps({ runner }), readManifest, appendManifest });
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry }));
     const response = await handlers.act({
       session_id: "sess-abc123",
       action: { kind: "tap", ref: "e12" },
@@ -450,14 +484,53 @@ test("act: always captures a post-action screenshot and appends it to the manife
   });
 });
 
-test("act: a failing action (agent-device non-zero exit) is recoverable (10) and never reaches the screenshot step", async () => {
-  const runner = fakeRunner({ press: () => jsonFail("COMMAND_FAILED", "no visible effect") });
+// #134 review: "always captured" reads literally — including a failed
+// action, since the failure frame is often the highest-value evidence.
+test("act: a failing action is still recoverable (10), but the failure frame is still captured and appended before rethrowing", async () => {
+  await withTempDir(async (evidenceDir) => {
+    const runner = fakeRunner({ press: () => jsonFail("COMMAND_FAILED", "no visible effect"), screenshot: () => jsonOk({}) });
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry }));
+    await assert.rejects(
+      () => handlers.act({ session_id: "sess-abc123", action: { kind: "tap", ref: "e1" }, evidence_dir: evidenceDir }),
+      (err) => { assert.equal(err.code, EXIT_RECOVERABLE); return true; }
+    );
+    const screenshotCall = runner.calls.find((c) => c.args[0] === "screenshot");
+    assert.ok(screenshotCall, "the failure frame must still be captured");
+    const manifest = await readManifest(evidenceDir);
+    assert.equal(manifest.length, 1);
+    assert.equal(manifest[0].label, "act:tap:failed");
+  });
+});
+
+test("act: the original action error survives even when the failure screenshot itself also fails", async () => {
+  const runner = fakeRunner({
+    press: () => jsonFail("COMMAND_FAILED", "no visible effect"),
+    screenshot: () => jsonFail("SESSION_NOT_FOUND", "session gone"),
+  });
+  const handlers = createHandlers(baseDeps({ runner }));
+  await assert.rejects(
+    () => handlers.act({ session_id: "sess-abc123", action: { kind: "tap", ref: "e1" } }),
+    (err) => {
+      assert.equal(err.code, EXIT_RECOVERABLE);
+      assert.match(err.message, /COMMAND_FAILED|no visible effect/);
+      return true;
+    }
+  );
+});
+
+test("act: agent-device reporting success:false at exit 0 is still recoverable (10), not silently accepted as ok", async () => {
+  const zeroExitFail = () => ({
+    code: 0,
+    stdout: JSON.stringify({ success: false, error: { code: "COMMAND_FAILED", message: "no visible effect" } }),
+    stderr: "",
+    error: null,
+  });
+  const runner = fakeRunner({ press: zeroExitFail, screenshot: () => jsonOk({}) });
   const handlers = createHandlers(baseDeps({ runner }));
   await assert.rejects(
     () => handlers.act({ session_id: "sess-abc123", action: { kind: "tap", ref: "e1" } }),
     (err) => { assert.equal(err.code, EXIT_RECOVERABLE); return true; }
   );
-  assert.ok(!runner.calls.some((c) => c.args[0] === "screenshot"), "a failed action must not still capture a screenshot");
 });
 
 // ---- read -----------------------------------------------------------
