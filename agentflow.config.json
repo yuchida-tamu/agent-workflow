@@ -7,6 +7,7 @@
     "Could this change the policy engine's verdict for existing packs?",
     "Does this break workflow stubs already installed in consuming apps?"
   ],
+  "release_kind": "tag",
   "unmapped_criticality": "medium",
   "unmapped_warn_fraction": 0.2,
   "model_overrides": {}
