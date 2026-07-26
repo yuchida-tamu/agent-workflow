@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MARKER, render, parse, upsert, audit } from "./ledger.js";
 import { LABEL_PREFIX, STATES } from "../state/machine.js";
-import { parentOf } from "../hierarchy/gh.js";
+import { parentOf, childrenOf } from "../hierarchy/gh.js";
 
 const TOOLKIT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const OUTCOMES = ["ok", "failed", "abandoned"];
@@ -152,7 +152,11 @@ if (isMain) {
           // through the hierarchy reader, which prefers the sub-issue relation
           // and falls back to the `Child of #N` declaration.
           const hasParent = parentOf(flags.repo, issue.number, { body: issue.body }).parent !== null;
-          for (const finding of audit({ rows, tiers, state, hasParent })) {
+          // A parent delegates ready→merged to its children and lands on
+          // `verified` directly (see `PARENT_COMPLETION` in machine.js), so it
+          // never logs the implementer row that phase would normally require.
+          const hasChildren = childrenOf(flags.repo, issue.number).children.length > 0;
+          for (const finding of audit({ rows, tiers, state, hasParent, hasChildren })) {
             findings++;
             const detail =
               finding.kind === "violation"
