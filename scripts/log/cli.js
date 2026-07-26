@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MARKER, render, parse, upsert, audit } from "./ledger.js";
 import { LABEL_PREFIX, STATES } from "../state/machine.js";
+import { parentOf } from "../hierarchy/gh.js";
 
 const TOOLKIT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const OUTCOMES = ["ok", "failed", "abandoned"];
@@ -147,8 +148,10 @@ if (isMain) {
           const ledger = findLedger(flags.repo, issue.number);
           const rows = parse(ledger?.body ?? "");
           // A child is born at `ready`; its shaping and planning are logged on
-          // the parent, so they are not this item's gaps to answer for.
-          const hasParent = /^Child of #\d+/m.test(issue.body ?? "");
+          // the parent, so they are not this item's gaps to answer for. Asked
+          // through the hierarchy reader, which prefers the sub-issue relation
+          // and falls back to the `Child of #N` declaration.
+          const hasParent = parentOf(flags.repo, issue.number, { body: issue.body }).parent !== null;
           for (const finding of audit({ rows, tiers, state, hasParent })) {
             findings++;
             const detail =

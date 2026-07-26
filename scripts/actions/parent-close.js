@@ -18,6 +18,7 @@
 
 import { execFileSync } from "node:child_process";
 import { LABEL_PREFIX, STATES } from "../state/machine.js";
+import { childrenOf } from "../hierarchy/gh.js";
 
 // A child no longer holds its parent open once its own work has landed. Closed
 // counts too: an issue can be dropped rather than merged, and a parent should
@@ -112,20 +113,23 @@ if (isMain) {
       const parent = JSON.parse(
         sh(["issue", "view", String(flags.parent), "--repo", flags.repo, "--json", "number,labels,state,body"])
       );
-      const childNumbers = [...(parent.body ?? "").matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
-      const children = [...new Set(childNumbers)]
-        .filter((n) => n !== parent.number)
-        .map((n) => {
-          const child = JSON.parse(
-            sh(["issue", "view", String(n), "--repo", flags.repo, "--json", "number,labels,state"])
-          );
-          const labels = child.labels.map((l) => l.name);
-          return {
-            number: child.number,
-            closed: child.state === "CLOSED",
-            state: stateLabelsOn(labels)[0]?.slice(LABEL_PREFIX.length) ?? null,
-          };
-        });
+      // Children come from the hierarchy reader, which asks who *declares* this
+      // parent. The previous version scraped `#N` out of the parent's own body —
+      // wrong, and masked: #18's body mentions #3, #1 and #2 while its children
+      // are #24-#27, and the bug never showed because the "is the parent
+      // verified" check short-circuits before children are examined.
+      const found = childrenOf(flags.repo, parent.number);
+      const children = found.children.map((c) => {
+        const child = JSON.parse(
+          sh(["issue", "view", String(c.number), "--repo", flags.repo, "--json", "number,labels,state"])
+        );
+        const labels = child.labels.map((l) => l.name);
+        return {
+          number: child.number,
+          closed: child.state === "CLOSED",
+          state: stateLabelsOn(labels)[0]?.slice(LABEL_PREFIX.length) ?? null,
+        };
+      });
 
       const parentLabels = parent.labels.map((l) => l.name);
       const verdict = shouldCloseParent({
@@ -133,7 +137,7 @@ if (isMain) {
         closed: parent.state === "CLOSED",
         children,
       });
-      console.log(`#${parent.number}: ${verdict.close ? "close" : "leave open"} — ${verdict.reason}`);
+      console.log(`#${parent.number}: ${verdict.close ? "close" : "leave open"} — ${verdict.reason} [hierarchy: ${found.source}]`);
       if (verdict.close && !flags.dryRun) {
         const stale = stateLabelsOn(parentLabels);
         const args = ["issue", "edit", String(parent.number), "--repo", flags.repo];
