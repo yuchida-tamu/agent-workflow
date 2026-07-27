@@ -30,14 +30,14 @@ GitHub 上で動作する、プラットフォーム非依存のエージェン�
    G3 マージ、G4 リリース）と、リトライ回数を使い切ったときだけです。その間に
    あるものは、確認を挟まずに進みます。
 6. **レビューは独立かつ Opus ティア。** `code-reviewer` と `ux-reviewer` は、
-   実装したコンテキストの内側ではなく、そのつど新しく立ち上げた「冷えた」
+   実装したコンテキストの内側ではなく、そのつど新しく立ち上げた「まっさらな」
    サブエージェントとして動きます。
 
 ## あなたの入口はどれか
 
 | あなたは… | やること |
 |---|---|
-| まったく新しいプロジェクトを始める | `project-genesis` エージェント（Opus）を実行します。ヒアリングを行い、リポジトリを足場作りし、マイルストーン 1 のバックログを種まきします |
+| まったく新しいプロジェクトを始める | `project-genesis` エージェント（Opus）を実行します。ヒアリングを行い、リポジトリの土台を作り、マイルストーン 1 のバックログに初期アイテムを登録します |
 | 既存のリポジトリにループを持ち込む | このリポジトリのクローンから `node init/cli.js adopt --target <あなたのリポジトリのパス> --repo owner/name` を実行します（下のクイックスタート参照） |
 | すでに導入済みで、バックログを回し続けたい | `node scripts/next/cli.js --repo owner/name` を実行すると、次に誰が動くべきかを教えてくれます |
 
@@ -55,7 +55,7 @@ git clone --branch v0.2.0 https://github.com/yuchida-tamu/agent-workflow
 cd agent-workflow && npm install
 node init/cli.js adopt --target /path/to/your-repo --repo <owner>/<name>
 # 18 個のラベル一式（状態・優先度・リスク・ドリフト）を作成し、
-# config・domains.yml・ビジネスポリシーパックを足場作りし、
+# config・domains.yml・ビジネスポリシーパックの雛形を生成し、
 # 自動では適用できないリポジトリ設定を出力します。設置されるワークフローの
 # スタブは @v0.2.0 をピン留めします
 node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name>
@@ -98,7 +98,7 @@ node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name
 - **[docs/github-app-runbook.md](docs/github-app-runbook.md)** — agentflow に
   独自の GitHub アイデンティティを与え、G3 を `/approve` コメント
   （`solo-comment`）ではなく、本物のレビュー（`native-review`）にします。
-  （このランバックは現時点で英語のみです）
+  （このランブックは現時点で英語のみです）
 - **[docs/headless-runbook.md](docs/headless-runbook.md)** — 自分のセッション
   ではなく、GitHub がホストするランナー上でエージェントを動かします。課金は
   Claude のサブスクリプションに対して行われます。（英語のみ）

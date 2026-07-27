@@ -26,7 +26,7 @@ node init/cli.js adopt --target /path/to/your-repo --repo <owner>/<name>
 - リポジトリに欠けている分だけ、18 個のラベル一式（状態・優先度・リスク・
   ドリフト）を作成します（内部では `agentflow-init labels` を使用）。
 - 対象リポジトリに `agentflow.config.json`、`domains.yml`、初期のビジネス
-  ポリシーパック、`e2e/` ディレクトリを足場作りします。これも欠けているものだけ
+  ポリシーパック、`e2e/` ディレクトリの雛形を生成します。これも欠けているものだけ
   です。
 - エージェント定義を `.claude/agents/` に設置します。
 - ループが必要とする 3 つのリポジトリ設定（このツールキットへの Actions アクセス、
@@ -54,7 +54,7 @@ node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name
 これは、あなたのリポジトリがどの **G3 モード**（`native-review` または
 `solo-comment`）にあるか、そしてその理由も報告します（ステップ 6 参照）。
 
-## 2. 最初の Issue を種まきする
+## 2. 最初の Issue を用意する
 
 あなたのリポジトリに、`state:idea` の Issue を 1 つ起票し、最初に作りたいものを
 記述します。この時点で、その形がどうであるかは問いません。次のステージは、荒削り
@@ -83,7 +83,7 @@ node scripts/next/cli.js --repo <owner>/<name>   # 次に誰が動くかを確�
 ## 4. プラン → G2（リスクベース）
 
 いま `state:spec` にある Issue に対して `architect` エージェントを実行します。
-地形を把握し、プランのコメント（アプローチ、宣言したファイル面、リスク）を書き、
+地形を把握し、プランのコメント（アプローチ、宣言した対象ファイル、リスク）を書き、
 作業を 1 PR サイズの子 Issue（`state:ready`）へと分解し、リスクエンジンをプランに
 対して実行します（`agentflow-facts --stage plan` → `agentflow-policy evaluate`）。
 プランが着地すると、Issue は `spec → planned` へ移ります。ここはゲートなしで、
@@ -105,7 +105,7 @@ node scripts/next/cli.js --repo <owner>/<name>   # 次に誰が動くかを確�
 ## 6. PR / レビュー → G3
 
 すべての PR は独立したレビューを受けます。`code-reviewer`（および UI 面には
-`ux-reviewer`）が、そのつど新しく立ち上げた「冷えた」サブエージェントとして動き、
+`ux-reviewer`）が、そのつど新しく立ち上げた「まっさらな」サブエージェントとして動き、
 実装者自身のコンテキストの内側で動くことはありません。
 
 **ゲート G3 — マージ — には 2 つのモードがあり**、どちらであるかは `adopt --verify`
@@ -149,7 +149,7 @@ App を設定していないリポジトリは、既定で `solo-comment` モー
 ## レベルアップ
 
 上記のうち 2 つは「スターター」構成であり、いずれも、卒業したくなったときのための
-ランバックがあります。
+ランブックがあります。
 
 - **[docs/github-app-runbook.md](github-app-runbook.md)** — agentflow に独自の
   GitHub アイデンティティを与え、G3 を `native-review` にします。エージェントの
