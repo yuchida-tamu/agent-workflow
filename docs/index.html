@@ -200,7 +200,7 @@
   }
   .wnode:hover { transform: translateY(-2px); }
   @media (prefers-reduced-motion: reduce) { .wnode:hover { transform: none; } }
-  .wnode[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
+  .wnode[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
   .wnode .wtop { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; }
   .wnode .wnum { font-family: var(--font-mono); font-size: 1.1rem; font-weight: 700; color: var(--accent); line-height: 1; }
   .wnode .wgate { font-family: var(--font-mono); font-size: .64rem; font-weight: 700; letter-spacing: .05em; color: var(--gate); background: var(--gate-soft); padding: .12rem .38rem; border-radius: 5px; }
@@ -229,12 +229,12 @@
   /* ---- Get started ---- */
   .paths { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 0 0 2rem; }
   @media (max-width: 780px) { .paths { grid-template-columns: 1fr; } }
-  .path { background: var(--paper-2); border: 1px solid var(--line); border-radius: 12px; padding: 1.3rem 1.3rem 1.4rem; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+  .path { min-width: 0; background: var(--paper-2); border: 1px solid var(--line); border-radius: 12px; padding: 1.3rem 1.3rem 1.4rem; box-shadow: var(--shadow); display: flex; flex-direction: column; }
   .path .ptag { font-family: var(--font-mono); font-size: .66rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); background: var(--accent-2); align-self: flex-start; padding: .2rem .5rem; border-radius: 6px; margin-bottom: .8rem; }
   .path h3 { margin: 0 0 .5rem; font-size: 1.2rem; }
   .path p { margin: 0 0 1rem; font-size: .9rem; color: var(--muted); line-height: 1.6; flex: 1; }
-  .path pre { margin: 0; }
-  pre.code { background: var(--code-bg); border: 1px solid var(--line); border-radius: 9px; padding: .85rem 1rem; overflow-x: auto; font-family: var(--font-mono); font-size: .78rem; line-height: 1.65; color: var(--ink); }
+  .path pre { margin: 0; min-width: 0; }
+  pre.code { min-width: 0; max-width: 100%; background: var(--code-bg); border: 1px solid var(--line); border-radius: 9px; padding: .85rem 1rem; overflow-x: auto; font-family: var(--font-mono); font-size: .78rem; line-height: 1.65; color: var(--ink); }
   pre.code .cm { color: var(--muted); }
   .quickstart { margin: 0 0 .75rem; }
   .quick-cap { font-size: .85rem; color: var(--muted); margin: 0 0 2rem; max-width: 60ch; }
@@ -344,7 +344,7 @@
     <p class="eyebrow reveal" data-i18n="wiring.eyebrow"></p>
     <h2 class="reveal" data-i18n="wiring.h2"></h2>
     <p class="section-lead reveal" data-i18n="wiring.body"></p>
-    <div class="wiring-track reveal" id="wiringTrack" role="tablist" aria-label="Loop stages"></div>
+    <div class="wiring-track reveal" id="wiringTrack" role="group" aria-label="Loop stages"></div>
     <div class="wdetail reveal" id="wiringDetail" role="region" aria-live="polite"></div>
     <p class="wiring-link reveal" data-i18n-html="wiring.link"></p>
   </div>
@@ -714,9 +714,9 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
       var btn = document.createElement("button");
       btn.type = "button";
       btn.className = "wnode";
-      btn.setAttribute("role", "tab");
       btn.setAttribute("data-idx", i);
-      btn.setAttribute("aria-selected", i === selectedStage ? "true" : "false");
+      btn.setAttribute("aria-controls", "wiringDetail");
+      btn.setAttribute("aria-expanded", i === selectedStage ? "true" : "false");
       var gateHtml = s.gate
         ? '<span class="wgate">' + s.gate + '</span>'
         : '<span class="wgate none">—</span>';
