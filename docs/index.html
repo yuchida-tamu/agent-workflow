@@ -1,0 +1,900 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-workflow — the loop</title>
+<meta name="description" content="A platform-agnostic agentic development loop that runs on GitHub. Ideas go in as issues; tested, released features come out — with humans present only at deliberate approval gates.">
+<style>
+  :root {
+    --paper: #F5F6FA;
+    --paper-2: #FFFFFF;
+    --ink: #1B1E28;
+    --muted: #5B6072;
+    --faint: #8A8FA3;
+    --accent: #4630EB;         /* Expo indigo — "agent / work" */
+    --accent-soft: #ECEAFD;
+    --accent-2: #F4F2FE;
+    --event: #0E7A6F;          /* trigger teal — "GitHub event" */
+    --event-soft: #E1F1EF;
+    --gate: #A65D0A;           /* amber — "human gate" */
+    --gate-soft: #FBF0E1;
+    --script: #47702B;         /* green — "deterministic script" */
+    --script-soft: #EBF3E2;
+    --line: #E1E2EC;
+    --line-2: #D3D5E0;
+    --code-bg: #ECEDF4;
+    --shadow: 0 1px 2px rgba(27,30,40,.04), 0 8px 30px rgba(27,30,40,.06);
+    --grid: rgba(70,48,235,.06);
+
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-display: "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, "Hiragino Sans", "Yu Gothic UI", sans-serif;
+    --font-ja: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Yu Gothic", "YuGothic", "Meiryo", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --h1-spacing: -0.02em;
+    --lh-body: 1.68;
+    --lh-lead: 1.55;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0F1117; --paper-2: #171A23; --ink: #E9EBF3; --muted: #A0A5B8; --faint: #737892;
+      --accent: #9C90FF; --accent-soft: #241F45; --accent-2: #1D1A35;
+      --event: #45C6B4; --event-soft: #0E2723;
+      --gate: #ECA847; --gate-soft: #2C2113;
+      --script: #97C566; --script-soft: #1B2513;
+      --line: #262A38; --line-2: #313545; --code-bg: #1E2130;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 34px rgba(0,0,0,.28);
+      --grid: rgba(156,144,255,.07);
+    }
+  }
+  html[data-lang="ja"] {
+    --font-sans: var(--font-ja);
+    --font-display: var(--font-ja);
+    --h1-spacing: 0em;
+    --lh-body: 1.9;
+    --lh-lead: 1.85;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: var(--lh-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+  h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; font-weight: 600; }
+  ::selection { background: var(--accent-soft); }
+
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 1.5rem; }
+  section { padding: clamp(3.5rem, 8vw, 6.5rem) 0; border-top: 1px solid var(--line); }
+  section:first-of-type { border-top: none; }
+
+  .eyebrow {
+    font-family: var(--font-mono); font-size: .72rem; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 1rem;
+    display: inline-flex; align-items: center; gap: .55rem;
+  }
+  .eyebrow::before { content: ""; width: 1.6rem; height: 1px; background: var(--accent); opacity: .55; }
+  h2 { font-size: clamp(1.55rem, 3.8vw, 2.35rem); line-height: 1.2; letter-spacing: -0.01em; margin: 0 0 1rem; }
+  html[data-lang="ja"] h2 { letter-spacing: 0; }
+  .section-lead { color: var(--muted); font-size: 1.06rem; line-height: var(--lh-lead); max-width: 62ch; margin: 0 0 2.25rem; }
+
+  code, .mono { font-family: var(--font-mono); font-size: .86em; }
+  :not(pre) > code { background: var(--code-bg); padding: .12em .38em; border-radius: 5px; letter-spacing: 0; }
+
+  /* ---- Header ---- */
+  header.top {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--paper) 82%, transparent);
+    backdrop-filter: saturate(1.4) blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .top .wrap { display: flex; align-items: center; justify-content: space-between; height: 3.5rem; padding-top: 0; padding-bottom: 0; }
+  .brand { font-family: var(--font-mono); font-size: .92rem; font-weight: 600; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: .5rem; }
+  .brand .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-2); }
+  .lang { display: inline-flex; border: 1px solid var(--line-2); border-radius: 999px; overflow: hidden; }
+  .lang button {
+    font-family: var(--font-mono); font-size: .74rem; letter-spacing: .04em;
+    border: 0; background: transparent; color: var(--muted); padding: .32rem .7rem; cursor: pointer; line-height: 1.4;
+  }
+  .lang button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { .lang button[aria-pressed="true"] { color: #12131a; } }
+
+  /* ---- Hero ---- */
+  .hero { position: relative; padding-top: clamp(3.5rem, 8vw, 6rem); overflow: hidden; }
+  .hero::before {
+    content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 34px 34px;
+    -webkit-mask-image: radial-gradient(120% 80% at 78% 20%, #000 0%, transparent 62%);
+            mask-image: radial-gradient(120% 80% at 78% 20%, #000 0%, transparent 62%);
+  }
+  .hero .wrap { position: relative; z-index: 1; }
+  .hero h1 {
+    font-size: clamp(2.1rem, 6.4vw, 4rem); line-height: 1.05; letter-spacing: var(--h1-spacing);
+    margin: 0 0 1.2rem; max-width: 17ch;
+  }
+  html[data-lang="ja"] .hero h1 { line-height: 1.35; max-width: 22ch; }
+  .hero .lead { font-size: clamp(1.05rem, 2.4vw, 1.3rem); line-height: var(--lh-lead); color: var(--muted); max-width: 58ch; margin: 0 0 2rem; }
+  .cta { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 2.5rem; }
+  .btn {
+    font-family: var(--font-sans); font-size: .95rem; font-weight: 600; text-decoration: none;
+    padding: .7rem 1.25rem; border-radius: 9px; border: 1px solid transparent; cursor: pointer;
+    display: inline-flex; align-items: center; gap: .5rem; transition: transform .15s ease, background .15s ease, border-color .15s ease;
+  }
+  .btn.primary { background: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { .btn.primary { color: #12131a; } }
+  .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line-2); }
+  .btn:hover { transform: translateY(-1px); }
+  .btn.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  @media (prefers-reduced-motion: reduce) { .btn:hover { transform: none; } }
+
+  .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; max-width: 760px; }
+  .legend .item { display: flex; gap: .6rem; align-items: baseline; padding: .7rem .85rem; background: var(--paper-2); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow); }
+  .legend .swatch { width: .7rem; height: .7rem; border-radius: 3px; flex: none; transform: translateY(1px); }
+  .legend .k { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; display: block; }
+  .legend .d { font-size: .8rem; color: var(--muted); display: block; line-height: 1.4; }
+  .sw-event { background: var(--event); } .k-event { color: var(--event); }
+  .sw-script { background: var(--script); } .k-script { color: var(--script); }
+  .sw-agent { background: var(--accent); } .k-agent { color: var(--accent); }
+  .sw-gate { background: var(--gate); } .k-gate { color: var(--gate); }
+
+  /* ---- Loop animation ---- */
+  .loop-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: clamp(1.5rem, 4vw, 3rem); align-items: center; }
+  @media (max-width: 800px) { .loop-grid { grid-template-columns: 1fr; } }
+  .loop-stage { position: relative; }
+  .loop-stage svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .ring-bg { fill: none; stroke: var(--line-2); stroke-width: 1.5; }
+  .ring-fg { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; }
+  .lnode circle { fill: var(--paper-2); stroke: var(--accent); stroke-width: 1.6; transition: transform .3s ease, fill .3s ease, stroke .3s ease; transform-box: fill-box; transform-origin: center; }
+  .lnode.on circle { fill: var(--accent); stroke: var(--accent); }
+  @media (prefers-reduced-motion: reduce) { .lnode circle { transition: none; } }
+  .lnode text { font-family: var(--font-mono); font-size: 11px; letter-spacing: .02em; fill: var(--muted); font-weight: 600; }
+  .lnode.on text { fill: var(--accent); }
+  .lpulse { fill: var(--accent); filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 55%, transparent)); }
+  .lcenter-a { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; fill: var(--faint); }
+  .lcenter-b { font-family: var(--font-display); font-size: 15px; font-weight: 600; fill: var(--ink); }
+  .loop-caption { margin-top: 1.75rem; font-size: .92rem; color: var(--muted); border-left: 2px solid var(--event); padding-left: .9rem; max-width: 46ch; }
+
+  /* ---- Ladder ---- */
+  .ladder { display: grid; gap: .85rem; margin: 0 0 1.5rem; }
+  .rung { display: grid; grid-template-columns: 3.5rem 1fr; gap: 1.1rem; align-items: start;
+    background: var(--paper-2); border: 1px solid var(--line); border-radius: 12px; padding: 1.15rem 1.3rem; box-shadow: var(--shadow); position: relative; overflow: hidden; }
+  .rung::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
+  .rung.r0::before { background: var(--script); } .rung.r1::before { background: var(--event); }
+  .rung.r2::before { background: var(--accent); opacity: .6; } .rung.r3::before { background: var(--accent); }
+  .rung .lv { font-family: var(--font-mono); font-weight: 700; font-size: 1.35rem; line-height: 1; padding-top: .15rem; }
+  .rung.r0 .lv { color: var(--script); } .rung.r1 .lv { color: var(--event); }
+  .rung.r2 .lv, .rung.r3 .lv { color: var(--accent); }
+  .rung h3 { margin: 0 0 .1rem; font-size: 1.02rem; }
+  .rung .tier { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: .45rem; }
+  .rung p { margin: 0; font-size: .92rem; color: var(--muted); line-height: 1.6; }
+  .note-line { border-left: 2px solid var(--accent); padding-left: .95rem; color: var(--muted); font-size: .95rem; max-width: 60ch; }
+
+  /* ---- Gates ---- */
+  .gates-tagline { font-family: var(--font-display); font-size: clamp(1.25rem, 3vw, 1.7rem); font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; max-width: 24ch; margin: 0 0 1.75rem; }
+  html[data-lang="ja"] .gates-tagline { letter-spacing: 0; }
+  .gates-tagline b { color: var(--accent); font-weight: 600; }
+  .gates { display: grid; grid-template-columns: repeat(2, 1fr); gap: .85rem; margin: 0 0 1.75rem; }
+  @media (max-width: 640px) { .gates { grid-template-columns: 1fr; } }
+  .gate { background: var(--paper-2); border: 1px solid var(--line); border-left: 3px solid var(--gate); border-radius: 10px; padding: 1.1rem 1.25rem; box-shadow: var(--shadow); }
+  .gate .gid { font-family: var(--font-mono); font-weight: 700; color: var(--gate); font-size: .85rem; letter-spacing: .04em; }
+  .gate h3 { margin: .2rem 0 .4rem; font-size: 1.02rem; }
+  .gate p { margin: 0; font-size: .9rem; color: var(--muted); line-height: 1.6; }
+
+  /* ---- Wiring ---- */
+  .wiring-track { display: flex; gap: 0; overflow-x: auto; padding: .5rem .25rem 1.25rem; margin: 0 -.25rem; scroll-snap-type: x proximity; }
+  .wiring-track::-webkit-scrollbar { height: 8px; }
+  .wiring-track::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px; }
+  .wnode {
+    scroll-snap-align: start; flex: 0 0 auto; width: 148px; text-align: left; cursor: pointer;
+    background: var(--paper-2); border: 1px solid var(--line); border-radius: 11px; padding: .8rem .85rem;
+    font-family: inherit; color: var(--ink); transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; box-shadow: var(--shadow);
+  }
+  .wnode:hover { transform: translateY(-2px); }
+  @media (prefers-reduced-motion: reduce) { .wnode:hover { transform: none; } }
+  .wnode[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
+  .wnode .wtop { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; }
+  .wnode .wnum { font-family: var(--font-mono); font-size: 1.1rem; font-weight: 700; color: var(--accent); line-height: 1; }
+  .wnode .wgate { font-family: var(--font-mono); font-size: .64rem; font-weight: 700; letter-spacing: .05em; color: var(--gate); background: var(--gate-soft); padding: .12rem .38rem; border-radius: 5px; }
+  .wnode .wgate.none { color: var(--faint); background: transparent; }
+  .wnode .wtitle { font-family: var(--font-display); font-weight: 600; font-size: .98rem; margin-bottom: .2rem; }
+  .wnode .wtrig { font-family: var(--font-mono); font-size: .64rem; color: var(--muted); line-height: 1.45; word-break: break-word; }
+  .warrow { flex: 0 0 auto; align-self: center; color: var(--faint); padding: 0 .3rem; font-size: 1rem; }
+  .warrow.loopback { color: var(--event); font-weight: 700; }
+  @media (max-width: 720px) {
+    .wiring-track { flex-direction: column; overflow-x: visible; align-items: stretch; }
+    .wnode { width: auto; }
+    .warrow { align-self: center; transform: rotate(90deg); padding: .15rem 0; }
+  }
+  .wdetail { background: var(--paper-2); border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 12px; padding: 1.25rem 1.4rem 1.4rem; box-shadow: var(--shadow); min-height: 12rem; }
+  .wdetail h3 { margin: 0 0 .3rem; font-size: 1.12rem; }
+  .wdetail .wd-role { font-family: var(--font-mono); font-size: .74rem; color: var(--accent); margin-bottom: .9rem; }
+  .wdetail dl { display: grid; grid-template-columns: 5.5rem 1fr; gap: .35rem 1rem; margin: 0; font-size: .92rem; }
+  @media (max-width: 480px) { .wdetail dl { grid-template-columns: 1fr; gap: .05rem; } .wdetail dt { margin-top: .6rem; } }
+  .wdetail dt { font-family: var(--font-mono); font-size: .64rem; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); padding-top: .28rem; }
+  .wdetail dd { margin: 0; color: var(--ink); line-height: 1.6; }
+  .wd-note { margin-top: 1rem; font-size: .86rem; color: var(--gate); background: var(--gate-soft); border-radius: 8px; padding: .6rem .8rem; line-height: 1.55; }
+  .wd-note b { font-family: var(--font-mono); font-size: .62rem; letter-spacing: .07em; text-transform: uppercase; display: block; margin-bottom: .15rem; }
+  .wiring-link { margin-top: 1.25rem; font-size: .9rem; }
+  .wiring-link a { color: var(--accent); }
+
+  /* ---- Get started ---- */
+  .paths { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 0 0 2rem; }
+  @media (max-width: 780px) { .paths { grid-template-columns: 1fr; } }
+  .path { min-width: 0; background: var(--paper-2); border: 1px solid var(--line); border-radius: 12px; padding: 1.3rem 1.3rem 1.4rem; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+  .path .ptag { font-family: var(--font-mono); font-size: .66rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); background: var(--accent-2); align-self: flex-start; padding: .2rem .5rem; border-radius: 6px; margin-bottom: .8rem; }
+  .path h3 { margin: 0 0 .5rem; font-size: 1.2rem; }
+  .path p { margin: 0 0 1rem; font-size: .9rem; color: var(--muted); line-height: 1.6; flex: 1; }
+  .path pre { margin: 0; min-width: 0; }
+  pre.code { min-width: 0; max-width: 100%; background: var(--code-bg); border: 1px solid var(--line); border-radius: 9px; padding: .85rem 1rem; overflow-x: auto; font-family: var(--font-mono); font-size: .78rem; line-height: 1.65; color: var(--ink); }
+  pre.code .cm { color: var(--muted); }
+  .quickstart { margin: 0 0 .75rem; }
+  .quick-cap { font-size: .85rem; color: var(--muted); margin: 0 0 2rem; max-width: 60ch; }
+  .honesty { display: flex; gap: .9rem; background: var(--gate-soft); border: 1px solid color-mix(in srgb, var(--gate) 30%, transparent); border-radius: 12px; padding: 1.1rem 1.3rem; margin: 0 0 2rem; }
+  .honesty .hlabel { font-family: var(--font-mono); font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; color: var(--gate); font-weight: 700; flex: none; padding-top: .15rem; }
+  .honesty p { margin: 0; font-size: .9rem; line-height: 1.6; color: var(--ink); }
+  .links { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .7rem; }
+  .links a { display: flex; align-items: center; justify-content: space-between; gap: .5rem; text-decoration: none; color: var(--ink);
+    background: var(--paper-2); border: 1px solid var(--line); border-radius: 10px; padding: .85rem 1.05rem; font-weight: 600; font-size: .92rem; transition: border-color .15s ease; }
+  .links a:hover { border-color: var(--accent); color: var(--accent); }
+  .links a::after { content: "↗"; color: var(--faint); font-weight: 400; }
+  .links a:hover::after { color: var(--accent); }
+
+  footer { border-top: 1px solid var(--line); padding: 2.5rem 0 3.5rem; color: var(--muted); font-size: .85rem; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; justify-content: space-between; align-items: center; }
+  footer a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+
+  /* ---- Reveal (only when JS + motion allowed) ---- */
+  html.motion .reveal { opacity: 0; transform: translateY(20px); transition: opacity .7s cubic-bezier(.22,.61,.36,1), transform .7s cubic-bezier(.22,.61,.36,1); }
+  html.motion .reveal.in { opacity: 1; transform: none; }
+  html.motion .reveal.d1 { transition-delay: .08s; }
+  html.motion .reveal.d2 { transition-delay: .16s; }
+  html.motion .reveal.d3 { transition-delay: .24s; }
+
+  a.skip { position: absolute; left: -999px; top: 0; background: var(--accent); color: #fff; padding: .6rem 1rem; border-radius: 0 0 8px 0; z-index: 100; }
+  a.skip:focus { left: 0; }
+</style>
+</head>
+<body>
+<a class="skip" href="#main" data-i18n="a11y.skip">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="dot"></span>agent-workflow</a>
+    <div class="lang" role="group" aria-label="Language">
+      <button type="button" data-setlang="en" aria-pressed="true">EN</button>
+      <button type="button" data-setlang="ja" aria-pressed="false">日本語</button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+<a id="top"></a>
+
+<!-- BEAT 1 — HERO -->
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow" data-i18n="hero.eyebrow"></p>
+    <h1 data-i18n="hero.h1"></h1>
+    <p class="lead" data-i18n="hero.lead"></p>
+    <div class="cta">
+      <a class="btn primary" href="#loop" data-i18n="hero.ctaLoop"></a>
+      <a class="btn ghost" href="#start" data-i18n="hero.ctaStart"></a>
+    </div>
+    <div class="legend" aria-hidden="false">
+      <div class="item"><span class="swatch sw-event"></span><span><span class="k k-event" data-i18n="legend.event"></span><span class="d" data-i18n="legend.eventDesc"></span></span></div>
+      <div class="item"><span class="swatch sw-script"></span><span><span class="k k-script" data-i18n="legend.script"></span><span class="d" data-i18n="legend.scriptDesc"></span></span></div>
+      <div class="item"><span class="swatch sw-agent"></span><span><span class="k k-agent" data-i18n="legend.agent"></span><span class="d" data-i18n="legend.agentDesc"></span></span></div>
+      <div class="item"><span class="swatch sw-gate"></span><span><span class="k k-gate" data-i18n="legend.gate"></span><span class="d" data-i18n="legend.gateDesc"></span></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- BEAT 2 — THE LOOP, ANIMATED -->
+<section id="loop">
+  <div class="wrap">
+    <div class="loop-grid">
+      <div class="reveal">
+        <p class="eyebrow" data-i18n="loop.eyebrow"></p>
+        <h2 data-i18n="loop.h2"></h2>
+        <p class="section-lead" style="margin-bottom:0" data-i18n="loop.body"></p>
+        <p class="loop-caption" data-i18n="loop.caption"></p>
+      </div>
+      <div class="loop-stage reveal d1">
+        <svg id="loopSvg" viewBox="0 0 400 400" role="img" aria-labelledby="loopTitle"></svg>
+        <span id="loopTitle" hidden></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- BEAT 3 — DETERMINISM LADDER -->
+<section id="ladder">
+  <div class="wrap">
+    <p class="eyebrow reveal" data-i18n="ladder.eyebrow"></p>
+    <h2 class="reveal" data-i18n="ladder.h2"></h2>
+    <p class="section-lead reveal" data-i18n="ladder.body"></p>
+    <div class="ladder" id="ladderList"></div>
+    <p class="note-line reveal" data-i18n="ladder.escalation"></p>
+  </div>
+</section>
+
+<!-- BEAT 4 — GATES & THE HUMAN'S JOB -->
+<section id="gates">
+  <div class="wrap">
+    <p class="eyebrow reveal" data-i18n="gates.eyebrow"></p>
+    <h2 class="reveal" data-i18n="gates.h2"></h2>
+    <p class="gates-tagline reveal" data-i18n-html="gates.tagline"></p>
+    <p class="section-lead reveal" data-i18n="gates.body"></p>
+    <div class="gates" id="gatesList"></div>
+    <p class="note-line reveal" data-i18n="gates.authors"></p>
+  </div>
+</section>
+
+<!-- BEAT 5 — INTERACTIVE WIRING -->
+<section id="wiring">
+  <div class="wrap">
+    <p class="eyebrow reveal" data-i18n="wiring.eyebrow"></p>
+    <h2 class="reveal" data-i18n="wiring.h2"></h2>
+    <p class="section-lead reveal" data-i18n="wiring.body"></p>
+    <div class="wiring-track reveal" id="wiringTrack" role="group" aria-label="Loop stages"></div>
+    <div class="wdetail reveal" id="wiringDetail" role="region" aria-live="polite"></div>
+    <p class="wiring-link reveal" data-i18n-html="wiring.link"></p>
+  </div>
+</section>
+
+<!-- BEAT 6 — GET STARTED -->
+<section id="start">
+  <div class="wrap">
+    <p class="eyebrow reveal" data-i18n="start.eyebrow"></p>
+    <h2 class="reveal" data-i18n="start.h2"></h2>
+    <p class="section-lead reveal" data-i18n="start.body"></p>
+    <div class="paths reveal" id="pathsList"></div>
+    <div class="quickstart reveal">
+      <pre class="code"><span class="cm" id="quickCm"></span>
+git clone --branch v0.2.0 https://github.com/yuchida-tamu/agent-workflow
+cd agent-workflow &amp;&amp; npm install
+node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name&gt;</pre>
+    </div>
+    <p class="quick-cap reveal" data-i18n="start.quickstartCaption"></p>
+    <div class="honesty reveal">
+      <span class="hlabel" data-i18n="start.honestyLabel"></span>
+      <p data-i18n="start.honesty"></p>
+    </div>
+    <div class="links reveal">
+      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/README.md" data-i18n="links.readme"></a>
+      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/docs/getting-started.md" data-i18n="links.gettingStarted"></a>
+      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.html" data-i18n="links.architecture"></a>
+      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/CHANGELOG.md" data-i18n="links.changelog"></a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span data-i18n="footer.text"></span>
+    <span><a href="https://github.com/yuchida-tamu/agent-workflow">github.com/yuchida-tamu/agent-workflow</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /*I18N_START*/
+  var T = {
+    en: {
+      "a11y.skip": "Skip to content",
+      "hero.eyebrow": "A platform-agnostic agentic development loop · on GitHub",
+      "hero.h1": "Ideas go in as issues. Tested, released features come out.",
+      "hero.lead": "Humans are present only at deliberate approval gates. Everything a script can decide, a script decides — agents spend tokens only on judgment.",
+      "hero.ctaLoop": "See the loop",
+      "hero.ctaStart": "Get started",
+      "legend.event": "Event", "legend.eventDesc": "A GitHub webhook or schedule",
+      "legend.script": "Script", "legend.scriptDesc": "Deterministic · zero tokens",
+      "legend.agent": "Agent", "legend.agentDesc": "Model-routed inference",
+      "legend.gate": "Gate", "legend.gateDesc": "A human decision",
+
+      "loop.eyebrow": "The loop",
+      "loop.h2": "One turn, start to finish.",
+      "loop.body": "An idea enters as an issue and moves clockwise: shaped into a brief, planned into tasks, built on isolated branches, reviewed by independent agents, and shipped. What QA finds re-enters as new issues — so the loop closes and turns again.",
+      "loop.caption": "GitHub is the event bus: every arrow is a webhook, every stage is stateless. Kill anything mid-run and the next event picks up exactly where the labels say things stand.",
+      "loop.center": "the loop",
+
+      "ladder.eyebrow": "Ground rule 1 · the determinism ladder",
+      "ladder.h2": "Scripts before models. Cheap models before frontier.",
+      "ladder.body": "Every step sits on the lowest rung that can do it reliably. Deterministic checks always run before any agent is invoked — never spend tokens on work a free check would have rejected.",
+      "ladder.escalation": "A step moves up exactly one rung when it fails, and the escalation is logged with a reason. Nothing routes to a higher tier for mechanical work.",
+
+      "gates.eyebrow": "Ground rule 2 · human touchpoints",
+      "gates.h2": "Four gates, and nothing else asks.",
+      "gates.tagline": "Humans decide <b>what</b> and <b>whether</b>. Agents decide <b>how</b>.",
+      "gates.body": "Human decisions live only at four gates; between them the loop runs without asking. Work and decisions have different authors — agents author branches, commits, PRs and reviews; humans author approvals.",
+      "gates.authors": "This is enforced, not agreed: the gate validator refuses any bot-authored approval before it even consults the approver list, and the approvers are validated as human logins only.",
+
+      "wiring.eyebrow": "The wiring",
+      "wiring.h2": "Seven stages, one event bus.",
+      "wiring.body": "Each stage is triggered by a GitHub event, flows through deterministic scripts, then micro-agents, then full agents, and ends at a human gate where one exists. Tap a stage for what it does, why it sits on that rung, and what it emits.",
+      "wiring.hint": "Tap a stage",
+      "wiring.link": "This is a curated view of the full <a href=\"https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.html\">architecture graph</a>, which wires every node and lane in detail.",
+      "wiring.loopback": "loops back",
+      "wiring.triggerLabel": "Trigger", "wiring.roleLabel": "Runs", "wiring.gateLabel": "Gate",
+      "wiring.whatLabel": "What", "wiring.emitsLabel": "Emits", "wiring.noteLabel": "In progress",
+      "wiring.detailHint": "Select a stage above to see what it does, why it sits on that rung of the ladder, and what it emits.",
+
+      "start.eyebrow": "Get started",
+      "start.h2": "Three ways in.",
+      "start.body": "The loop is steady-state machinery. Establishing its baseline — a domain map, conventions, CI, a bootable app — happens once, before the loop, by one of three paths.",
+      "start.quickstartCaption": "Pin a released version, not @main: the workflow stubs adopt installs reference this same tag, so your loop's behavior changes only when you choose to upgrade.",
+      "start.honestyLabel": "Status",
+      "start.honesty": "v0.2.0 is the current release. The deterministic core, the agent roster, App identity, and headless review are shipped and run this repo's own backlog. The pack-expo platform adapters (run · verify · execute-step · ship) are specified but not yet built — treat platform support as experimental until a pack lands against those interfaces.",
+
+      "links.readme": "README",
+      "links.gettingStarted": "Getting started",
+      "links.architecture": "Architecture doc",
+      "links.changelog": "Changelog",
+
+      "footer.text": "agent-workflow · the loop manages its own backlog"
+    },
+    ja: {
+      "a11y.skip": "本文へスキップ",
+      "hero.eyebrow": "GitHub 上で動く、プラットフォーム非依存のエージェント開発ループ",
+      "hero.h1": "アイデアは Issue として入り、テスト済み・リリース済みの機能として出てくる。",
+      "hero.lead": "人が関わるのは、意図的に置かれた承認ゲートだけです。スクリプトで決められることはスクリプトが決め、エージェントは判断が要る場面にだけトークンを使います。",
+      "hero.ctaLoop": "ループを見る",
+      "hero.ctaStart": "はじめる",
+      "legend.event": "イベント", "legend.eventDesc": "GitHub の webhook やスケジュール",
+      "legend.script": "スクリプト", "legend.scriptDesc": "決定論的・トークン 0",
+      "legend.agent": "エージェント", "legend.agentDesc": "モデルにルーティングされた推論",
+      "legend.gate": "ゲート", "legend.gateDesc": "人の判断",
+
+      "loop.eyebrow": "ループ",
+      "loop.h2": "アイデアから出荷まで、ループの一周。",
+      "loop.body": "アイデアは Issue として入り、時計回りに進みます。ブリーフへ整形され、タスクへ計画され、独立したブランチで実装され、独立したエージェントにレビューされ、そしてリリースされます。QA が見つけた問題は新しい Issue として戻り、ループが閉じて再び回り始めます。",
+      "loop.caption": "GitHub がイベントバスです。どの矢印も webhook で、どのステージもステートレス。途中で何を止めても、次のイベントがラベルの示す地点から正確に再開します。",
+      "loop.center": "ループ",
+
+      "ladder.eyebrow": "基本原則 1 · 決定論のはしご",
+      "ladder.h2": "モデルよりスクリプトを。フロンティアより安価なモデルを。",
+      "ladder.body": "どのステップも、確実にこなせる最も低い段に置かれます。決定論的なチェックは必ずエージェントの起動より先に走ります。無料のチェックで弾けたはずの作業に、トークンを使うことはありません。",
+      "ladder.escalation": "ステップが失敗したときに上がれるのは、ちょうど一段だけです。しかもその昇格は理由とともに記録されます。機械的な作業のためにより上位のティアへ回されることはありません。",
+
+      "gates.eyebrow": "基本原則 2 · 人が関わる場所",
+      "gates.h2": "4 つのゲート、それ以外は何も尋ねません。",
+      "gates.tagline": "<b>何を</b>・<b>やるかどうか</b>は人が決め、<b>どうやるか</b>はエージェントが決めます。",
+      "gates.body": "人の判断が生きるのは 4 つのゲートだけです。その間、ループは尋ねずに進みます。作業と判断は作者が異なります。エージェントはブランチ・コミット・PR・レビューを作り、人は承認を作ります。",
+      "gates.authors": "これは約束ではなくコードで強制されています。ゲートの検証器は、承認者リストを参照するより前に、ボットが作成した承認をすべて拒否します。承認者は人間のログインのみとして検証されます。",
+
+      "wiring.eyebrow": "配線図",
+      "wiring.h2": "7 つのステージ、1 本のイベントバス。",
+      "wiring.body": "各ステージは GitHub イベントで起動し、決定論的なスクリプト、マイクロエージェント、そしてフルエージェントへと流れ、ゲートがある場所では人の判断で終わります。ステージをタップすると、何をするか・なぜその段にいるか・何を発行するかがわかります。",
+      "wiring.hint": "ステージをタップ",
+      "wiring.link": "これは、すべてのノードとレーンを詳しく配線した<a href=\"https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.html\">アーキテクチャ図</a>を厳選して抜き出したビューです。",
+      "wiring.loopback": "受付へ戻る",
+      "wiring.triggerLabel": "トリガー", "wiring.roleLabel": "実行者", "wiring.gateLabel": "ゲート",
+      "wiring.whatLabel": "内容", "wiring.emitsLabel": "発行", "wiring.noteLabel": "進行中",
+      "wiring.detailHint": "上のステージを選ぶと、何をするか・なぜその段にいるか・何を発行するかが表示されます。",
+
+      "start.eyebrow": "はじめる",
+      "start.h2": "入口は 3 つ。",
+      "start.body": "ループは定常状態の仕組みです。その土台（ドメインマップ、規約、CI、起動できるアプリ）を整えるのはループの前に一度だけで、次の 3 つの入口のいずれかから始めます。",
+      "start.quickstartCaption": "@main ではなくリリース済みのバージョンを固定します。adopt が導入するワークフローのスタブは同じタグを参照するため、ループの挙動はあなたがアップグレードを選んだときだけ変わります。",
+      "start.honestyLabel": "状況",
+      "start.honesty": "現在のリリースは v0.2.0 です。決定論的なコア、エージェント一式、App アイデンティティ、ヘッドレスレビューは出荷済みで、このリポジトリ自身のバックログを動かしています。pack-expo のプラットフォームアダプタ（run・verify・execute-step・ship）は仕様のみで未実装です。パックがこれらのインターフェースに実装されるまでは、プラットフォーム対応は実験的なものとお考えください。",
+
+      "links.readme": "README",
+      "links.gettingStarted": "はじめかた",
+      "links.architecture": "アーキテクチャ資料",
+      "links.changelog": "変更履歴",
+
+      "footer.text": "agent-workflow · ループが自らのバックログを回しています"
+    }
+  };
+
+  var LOOP = [
+    { en: "Idea", ja: "アイデア" },
+    { en: "Shape", ja: "整形" },
+    { en: "Plan", ja: "計画" },
+    { en: "Build", ja: "実装" },
+    { en: "Review", ja: "レビュー" },
+    { en: "Ship", ja: "リリース" }
+  ];
+
+  var LADDER = [
+    { cls: "r0", lv: "L0",
+      en: { h: "Scripts & static checks", tier: "zero tokens",
+        p: "Anything decidable by rules over structured data: state transitions, labels, lint, typecheck, unit tests, worktree setup, E2E replay, issue filing, version bumps, and releases." },
+      ja: { h: "スクリプトと静的チェック", tier: "トークン 0",
+        p: "構造化データに対するルールで決まること。状態遷移、ラベル操作、lint、型チェック、ユニットテスト、worktree の用意、E2E リプレイ、Issue の起票、バージョン更新、リリースなど。" } },
+    { cls: "r1", lv: "L1",
+      en: { h: "Small model — Haiku", tier: "bounded classification",
+        p: "Classify, extract, or summarize against a clear rubric where a wrong answer is cheap to catch: issue triage, duplicate detection, diff summaries, failure clustering." },
+      ja: { h: "小型モデル — Haiku", tier: "限定的な分類",
+        p: "明確なルーブリックに沿った分類・抽出・要約で、誤りをすぐ安く見つけられる作業。Issue のトリアージ、重複検出、差分の要約、失敗のクラスタリングなど。" } },
+    { cls: "r2", lv: "L2",
+      en: { h: "Mid model — Sonnet", tier: "code within a plan",
+        p: "Writing and modifying code against an approved plan, authoring tests, fix loops, exploratory QA, and compiling E2E traces. The workhorse tier." },
+      ja: { h: "中型モデル — Sonnet", tier: "計画に沿った実装",
+        p: "承認済みの計画に沿ったコードの記述と修正、テストの作成、修正ループ、探索的 QA、E2E トレースのコンパイル。主戦力のティアです。" } },
+    { cls: "r3", lv: "L3",
+      en: { h: "Frontier model — Opus / Fable", tier: "open-ended judgment",
+        p: "Shaping briefs from fuzzy intent, architecture and decomposition, independent code and UX review, adversarial verification of findings, diagnosing why something is stuck. Rare, deliberate, and worth it." },
+      ja: { h: "フロンティアモデル — Opus / Fable", tier: "自由度の高い判断",
+        p: "曖昧な意図からのブリーフ整形、アーキテクチャ設計とタスク分解、独立したコード／UX レビュー、指摘の敵対的検証、行き詰まりの診断。まれで、意図的で、その価値がある場面だけです。" } }
+  ];
+
+  var GATES = [
+    { id: "G1",
+      en: { h: "Brief approval", p: "A /approve comment on the shaped issue — the cheapest place in the whole loop to correct course, before any plan or code exists." },
+      ja: { h: "ブリーフの承認", p: "整形された Issue への /approve コメント。計画もコードもまだ無い、ループ全体で最も安く方向を正せる場所です。" } },
+    { id: "G2",
+      en: { h: "Plan approval", p: "Required only when the risk engine's obligations say so — driven by the project's own domain map and policy rules. Low-risk plans pass automatically." },
+      ja: { h: "計画の承認", p: "リスクエンジンの義務が求めるときだけ必要です。プロジェクト自身のドメインマップとポリシールールが判断します。低リスクの計画は自動で通ります。" } },
+    { id: "G3",
+      en: { h: "Merge approval", p: "PR-native, in one of two modes: a real approving review when the App authors agent PRs, or a SHA-naming /approve comment when they are your own. Proven low-risk classes graduate to auto-merge, which leaves an authority record — never a forged approval." },
+      ja: { h: "マージの承認", p: "PR 上で行われ、2 つのモードのいずれかです。App が Agent の PR を作成する場合は本物の承認レビュー、あなた自身の PR の場合は head SHA を明記した /approve コメント。実績のある低リスクのクラスは自動マージへ昇格し、偽装された承認ではなく権限の記録を残します。" } },
+    { id: "G4",
+      en: { h: "Release approval", p: "A validated /approve G4 authorises the release but deliberately does not move the label. agentflow-release cuts the tag and GitHub Release, then transitions verified → released — so the label always follows the artifact." },
+      ja: { h: "リリースの承認", p: "検証済みの /approve G4 はリリースを承認しますが、あえてラベルは動かしません。agentflow-release がタグと GitHub Release を作成し、その後で verified → released へ遷移します。ラベルは常に成果物に従います。" } }
+  ];
+
+  var STAGES = [
+    { num: "0", gate: "G1",
+      en: { title: "Intake", trig: "issues.opened · labeled: idea", role: "Triage (Haiku) → Product Shaper (Opus)",
+        what: "Turns fuzzy input — a message, an idea, a QA finding — into a concrete brief with acceptance criteria. Pre-structured QA reports skip the interview.",
+        emits: "A brief comment → G1 → state:spec." },
+      ja: { title: "受付（Intake）", trig: "issues.opened · labeled: idea", role: "トリアージ (Haiku) → Product Shaper (Opus)",
+        what: "メッセージ・アイデア・QA の指摘といった曖昧な入力を、受け入れ基準を備えた具体的なブリーフに変えます。構造化済みの QA レポートはインタビューを省きます。",
+        emits: "ブリーフのコメント → G1 → state:spec。" } },
+    { num: "1", gate: "G2",
+      en: { title: "Plan", trig: "labeled: state:spec", role: "Architect (Opus) + Explorer subagents (Haiku)",
+        what: "The risk engine evaluates the plan's declared surface and the brief's business-impact fields against the project's policy packs and domain map. The Architect writes the plan and decomposes it into one-PR-sized child issues.",
+        emits: "A plan comment + child issues in state:ready." },
+      ja: { title: "計画（Plan）", trig: "labeled: state:spec", role: "Architect (Opus) + Explorer サブエージェント (Haiku)",
+        what: "リスクエンジンが、計画の宣言範囲とブリーフのビジネス影響フィールドを、プロジェクトのポリシーパックとドメインマップに照らして評価します。Architect が計画を書き、1 PR 分の子 Issue に分解します。",
+        emits: "計画コメントと、state:ready の子 Issue。" } },
+    { num: "2", gate: "",
+      en: { title: "Implement", trig: "labeled: state:ready", role: "Implementer (Sonnet)",
+        what: "A prep script checks dependencies, creates an isolated worktree, and enforces the local lint/typecheck/test loop the agent must pass before pushing. One Implementer per task, in parallel.",
+        emits: "A PR with description and passing local checks.",
+        note: "Simulator self-verification is a pack-expo capability — specified, not yet built." },
+      ja: { title: "実装（Implement）", trig: "labeled: state:ready", role: "Implementer (Sonnet)",
+        what: "準備スクリプトが依存関係を確認し、独立した worktree を作り、push 前に通すべきローカルの lint／型チェック／テストのループを課します。タスクごとに 1 つの Implementer が並行して動きます。",
+        emits: "説明とローカルチェック通過済みの PR。",
+        note: "シミュレータでの自己検証は pack-expo の機能です。仕様はありますが、まだ実装されていません。" } },
+    { num: "3", gate: "G3",
+      en: { title: "Review", trig: "pull_request.opened · synchronize", role: "Code + UX Reviewers (Opus)",
+        what: "Full CI runs first — red CI blocks all agent review, so zero tokens go to broken code. Then the Code and UX Reviewers run as fresh subagents with no shared context with the implementer; their findings are adversarially verified before anyone acts. This is the first stage to run headless.",
+        emits: "Verified findings → fix loop, or a clean summary → G3.",
+        note: "UX review drives real pixels through a pack adapter — specified, not yet built." },
+      ja: { title: "レビュー（Review）", trig: "pull_request.opened · synchronize", role: "Code + UX レビュアー (Opus)",
+        what: "まず CI が全部走ります。CI が赤ならエージェントのレビューはブロックされ、壊れたコードにトークンは一切使いません。その後、Code と UX のレビュアーが、実装者と文脈を共有しない新しいサブエージェントとして動きます。指摘は誰かが動く前に敵対的に検証されます。ここが最初にヘッドレスで動くステージです。",
+        emits: "検証済みの指摘 → 修正ループ、またはクリーンな要約 → G3。",
+        note: "UX レビューが実際のピクセルを操作するのは pack のアダプタ経由です。仕様はありますが、まだ実装されていません。" } },
+    { num: "4", gate: "",
+      en: { title: "Integrate", trig: "push: main · check_suite", role: "Build Sentinel (Sonnet · red only)",
+        what: "Every merge runs full CI and a fresh build, and rebases queued PRs. The Build Sentinel is invoked only when main goes red — it fixes forward or reverts, then escalates if still red. On the happy path, integration costs zero tokens.",
+        emits: "Green main + an installable build, or an escalation." },
+      ja: { title: "統合（Integrate）", trig: "push: main · check_suite", role: "Build Sentinel (Sonnet · 赤のときだけ)",
+        what: "マージのたびに CI 一式と新しいビルドが走り、待機中の PR をリベースします。Build Sentinel は main が赤になったときだけ呼ばれ、前進修正するか差し戻し、それでも赤ならエスカレーションします。うまくいっている限り、統合のトークンはゼロです。",
+        emits: "緑の main とインストール可能なビルド、またはエスカレーション。" } },
+    { num: "5", gate: "",
+      en: { title: "QA", trig: "schedule: nightly · post-merge smoke", role: "E2E replay runner (0 tokens) · QA Explorer (Sonnet)",
+        what: "Agent-compiled E2E traces replay deterministically with no model in the loop. Failures are clustered and filed as issues; the QA Explorer probes new and changed flows for edge cases. Findings re-enter intake as new issues — this is the edge that closes the loop.",
+        emits: "Structured results, bug issues → back to Intake.",
+        note: "Replay and re-derivation drive the app through pack adapters — core-complete, awaiting pack-expo." },
+      ja: { title: "QA", trig: "schedule: nightly · post-merge smoke", role: "E2E リプレイランナー (0 トークン) · QA Explorer (Sonnet)",
+        what: "エージェントがコンパイルした E2E トレースを、ループ内にモデルを置かず決定論的にリプレイします。失敗はクラスタリングして Issue にし、QA Explorer が新規・変更されたフローのエッジケースを探ります。見つかった問題は新しい Issue として受付に戻り、これがループを閉じる辺になります。",
+        emits: "構造化された結果とバグ Issue → 受付へ。",
+        note: "リプレイと再導出はアプリを pack のアダプタ経由で操作します。コアは完成済みで、pack-expo を待っています。" } },
+    { num: "6", gate: "G4",
+      en: { title: "Release", trig: "workflow_dispatch", role: "agentflow-release (script)",
+        what: "A human decides a release is ready. A validated /approve G4 authorises but does not move any label; the release script reads the version, cuts an annotated tag and a GitHub Release, and only then transitions verified → released. The label follows the artifact, never the approval.",
+        emits: "A tag + GitHub Release, then state:released." },
+      ja: { title: "リリース（Release）", trig: "workflow_dispatch", role: "agentflow-release（スクリプト）",
+        what: "人がリリースの準備完了を判断します。検証済みの /approve G4 は承認しますがラベルは動かしません。リリーススクリプトがバージョンを読み、注釈付きタグと GitHub Release を作成し、その後で初めて verified → released へ遷移します。ラベルは承認ではなく成果物に従います。",
+        emits: "タグと GitHub Release、そして state:released。" } }
+  ];
+
+  var PATHS = [
+    { cmd: "agent: project-genesis",
+      en: { tag: "New project", title: "Genesis", p: "Run the project-genesis agent (Opus). It interviews you once, scaffolds the repo, CLAUDE.md, and config, and seeds the milestone-1 backlog in state:idea — then hands off to the loop." },
+      ja: { tag: "新規プロジェクト", title: "Genesis", p: "project-genesis エージェント（Opus）を実行します。一度だけインタビューし、リポジトリ・CLAUDE.md・設定を用意し、milestone-1 のバックログを state:idea で投入してから、ループに引き継ぎます。" } },
+    { cmd: "node init/cli.js adopt --target <path> --repo owner/name",
+      en: { tag: "Existing repo", title: "Adopt", p: "From a clone of this repo, point the installer at yours. It creates the 18-label set, scaffolds config, domains.yml and a business policy pack, and prints the repo settings you apply yourself." },
+      ja: { tag: "既存リポジトリ", title: "Adopt（導入）", p: "このリポジトリのクローンから、インストーラをあなたのリポジトリに向けます。18 個のラベル一式を作り、設定・domains.yml・ビジネスポリシーパックを用意し、あなた自身が適用するリポジトリ設定を出力します。" } },
+    { cmd: "node scripts/next/cli.js --repo owner/name",
+      en: { tag: "Already adopted", title: "Keep moving", p: "Ask the crawl-phase dispatcher who acts next, and why. Drive the loop one command at a time, or wire it to events." },
+      ja: { tag: "導入済み", title: "進め続ける", p: "クロールフェーズのディスパッチャに、次に誰が動くか・その理由を尋ねます。1 コマンドずつループを進めても、イベントに接続してもかまいません。" } }
+  ];
+  /*I18N_END*/
+
+  // ---- State ----
+  var lang = "en";
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var selectedStage = 0;
+
+  function tt(key) { return (T[lang] && T[lang][key]) || (T.en && T.en[key]) || key; }
+
+  // ---- Apply translations ----
+  function apply() {
+    document.documentElement.lang = lang;
+    document.documentElement.setAttribute("data-lang", lang);
+    document.title = lang === "ja" ? "agent-workflow — ループ" : "agent-workflow — the loop";
+
+    var nodes = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < nodes.length; i++) nodes[i].textContent = tt(nodes[i].getAttribute("data-i18n"));
+    var htmlNodes = document.querySelectorAll("[data-i18n-html]");
+    for (var j = 0; j < htmlNodes.length; j++) htmlNodes[j].innerHTML = tt(htmlNodes[j].getAttribute("data-i18n-html"));
+
+    document.getElementById("quickCm").textContent =
+      lang === "ja" ? "# リリース済みのバージョンを固定します" : "# pin a released version";
+
+    var btns = document.querySelectorAll(".lang button");
+    for (var b = 0; b < btns.length; b++) {
+      var isOn = btns[b].getAttribute("data-setlang") === lang;
+      btns[b].setAttribute("aria-pressed", isOn ? "true" : "false");
+    }
+
+    renderLadder();
+    renderGates();
+    renderPaths();
+    renderWiring();
+    renderDetail();
+    labelLoop();
+  }
+
+  function el(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  function renderLadder() {
+    var box = document.getElementById("ladderList");
+    box.innerHTML = "";
+    LADDER.forEach(function (r, i) {
+      var d = r[lang];
+      var row = el("div", "rung reveal " + r.cls + (i % 2 ? " d1" : ""));
+      row.appendChild(el("div", "lv", r.lv));
+      var body = el("div");
+      body.appendChild(el("h3", null, esc(d.h)));
+      body.appendChild(el("span", "tier", esc(d.tier)));
+      body.appendChild(el("p", null, esc(d.p)));
+      row.appendChild(body);
+      box.appendChild(row);
+    });
+    observe(box);
+  }
+
+  function renderGates() {
+    var box = document.getElementById("gatesList");
+    box.innerHTML = "";
+    GATES.forEach(function (g, i) {
+      var d = g[lang];
+      var card = el("div", "gate reveal" + (i % 2 ? " d1" : ""));
+      card.appendChild(el("div", "gid", g.id));
+      card.appendChild(el("h3", null, esc(d.h)));
+      card.appendChild(el("p", null, esc(d.p)));
+      box.appendChild(card);
+    });
+    observe(box);
+  }
+
+  function renderPaths() {
+    var box = document.getElementById("pathsList");
+    box.innerHTML = "";
+    PATHS.forEach(function (pth, i) {
+      var d = pth[lang];
+      var card = el("div", "path reveal d" + (i + 1));
+      card.appendChild(el("span", "ptag", esc(d.tag)));
+      card.appendChild(el("h3", null, esc(d.title)));
+      card.appendChild(el("p", null, esc(d.p)));
+      card.appendChild(el("pre", "code", esc(pth.cmd)));
+      box.appendChild(card);
+    });
+    observe(box);
+  }
+
+  function renderWiring() {
+    var track = document.getElementById("wiringTrack");
+    track.innerHTML = "";
+    STAGES.forEach(function (s, i) {
+      var d = s[lang];
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "wnode";
+      btn.setAttribute("data-idx", i);
+      btn.setAttribute("aria-controls", "wiringDetail");
+      btn.setAttribute("aria-expanded", i === selectedStage ? "true" : "false");
+      var gateHtml = s.gate
+        ? '<span class="wgate">' + s.gate + '</span>'
+        : '<span class="wgate none">—</span>';
+      btn.innerHTML =
+        '<div class="wtop"><span class="wnum">' + s.num + '</span>' + gateHtml + '</div>' +
+        '<div class="wtitle">' + esc(d.title) + '</div>' +
+        '<div class="wtrig">' + esc(d.trig) + '</div>';
+      btn.addEventListener("click", function () { selectedStage = i; renderWiring(); renderDetail(); });
+      track.appendChild(btn);
+
+      if (i < STAGES.length - 1) {
+        track.appendChild(el("span", "warrow", "→"));
+      } else {
+        track.appendChild(el("span", "warrow loopback", "↺"));
+      }
+    });
+    observe(track);
+  }
+
+  function renderDetail() {
+    var box = document.getElementById("wiringDetail");
+    var s = STAGES[selectedStage];
+    var d = s[lang];
+    var gate = s.gate || (lang === "ja" ? "なし" : "none");
+    var html =
+      '<h3>' + esc(s.num) + ' · ' + esc(d.title) + '</h3>' +
+      '<div class="wd-role">' + esc(d.role) + '</div>' +
+      '<dl>' +
+        '<dt>' + esc(tt("wiring.triggerLabel")) + '</dt><dd><span class="mono">' + esc(d.trig) + '</span></dd>' +
+        '<dt>' + esc(tt("wiring.gateLabel")) + '</dt><dd>' + esc(gate) + '</dd>' +
+        '<dt>' + esc(tt("wiring.whatLabel")) + '</dt><dd>' + esc(d.what) + '</dd>' +
+        '<dt>' + esc(tt("wiring.emitsLabel")) + '</dt><dd>' + esc(d.emits) + '</dd>' +
+      '</dl>' +
+      (d.note ? '<div class="wd-note"><b>' + esc(tt("wiring.noteLabel")) + '</b>' + esc(d.note) + '</div>' : "");
+    box.innerHTML = html;
+  }
+
+  // ---- Loop animation ----
+  var loopSvg = document.getElementById("loopSvg");
+  var CX = 200, CY = 200, R = 128;
+  var ringPath, ringLen, lnodeEls = [], pulseEl, nodePos = [];
+
+  function buildLoop() {
+    var ns = "http://www.w3.org/2000/svg";
+    loopSvg.innerHTML = "";
+    lnodeEls = []; nodePos = [];
+
+    // circle path: start at top (12 o'clock), clockwise
+    var dPath = "M " + CX + " " + (CY - R) +
+      " A " + R + " " + R + " 0 1 1 " + (CX - 0.01) + " " + (CY - R) + " Z";
+    ringPath = document.createElementNS(ns, "path");
+    ringPath.setAttribute("d", dPath);
+    ringPath.setAttribute("class", "ring-bg");
+    loopSvg.appendChild(ringPath);
+    ringLen = ringPath.getTotalLength();
+
+    var fg = document.createElementNS(ns, "path");
+    fg.setAttribute("d", dPath);
+    fg.setAttribute("class", "ring-fg");
+    loopSvg.appendChild(fg);
+    fgEl = fg;
+
+    // center label
+    var ca = document.createElementNS(ns, "text");
+    ca.setAttribute("class", "lcenter-a"); ca.setAttribute("x", CX); ca.setAttribute("y", CY - 6);
+    ca.setAttribute("text-anchor", "middle"); ca.setAttribute("id", "loopCenterA");
+    loopSvg.appendChild(ca);
+    var cb = document.createElementNS(ns, "text");
+    cb.setAttribute("class", "lcenter-b"); cb.setAttribute("x", CX); cb.setAttribute("y", CY + 14);
+    cb.setAttribute("text-anchor", "middle"); cb.setAttribute("id", "loopCenterB");
+    loopSvg.appendChild(cb);
+
+    // nodes evenly spaced along the path (so the pulse passes through them)
+    for (var i = 0; i < LOOP.length; i++) {
+      var pt = ringPath.getPointAtLength((i / LOOP.length) * ringLen);
+      nodePos.push(pt);
+      var g = document.createElementNS(ns, "g");
+      g.setAttribute("class", "lnode");
+      var c = document.createElementNS(ns, "circle");
+      c.setAttribute("cx", pt.x); c.setAttribute("cy", pt.y); c.setAttribute("r", 9);
+      g.appendChild(c);
+      var t = document.createElementNS(ns, "text");
+      var ux = (pt.x - CX) / R, uy = (pt.y - CY) / R;
+      t.setAttribute("x", pt.x + ux * 22);
+      t.setAttribute("y", pt.y + uy * 22 + 4);
+      t.setAttribute("text-anchor", ux > 0.3 ? "start" : (ux < -0.3 ? "end" : "middle"));
+      g.appendChild(t);
+      loopSvg.appendChild(g);
+      lnodeEls.push({ g: g, text: t });
+    }
+
+    pulseEl = document.createElementNS(ns, "circle");
+    pulseEl.setAttribute("r", 6);
+    pulseEl.setAttribute("class", "lpulse");
+    loopSvg.appendChild(pulseEl);
+
+    labelLoop();
+
+    if (reduce) {
+      // static, complete: all nodes on, no motion, no pulse
+      fgEl.style.strokeDasharray = "none";
+      pulseEl.style.display = "none";
+      lnodeEls.forEach(function (n) { n.g.classList.add("on"); });
+    } else {
+      fgEl.style.strokeDasharray = COMET + " " + (ringLen - COMET);
+      requestAnimationFrame(tick);
+    }
+  }
+
+  var fgEl, COMET = 46, pos = 0, last = 0;
+
+  function labelLoop() {
+    for (var i = 0; i < lnodeEls.length; i++) lnodeEls[i].text.textContent = LOOP[i][lang];
+    var a = document.getElementById("loopCenterA");
+    var b = document.getElementById("loopCenterB");
+    if (a) a.textContent = "GitHub";
+    if (b) b.textContent = tt("loop.center");
+    loopSvg.setAttribute("aria-label", tt("loop.body"));
+    var lt = document.getElementById("loopTitle");
+    if (lt) lt.textContent = tt("loop.body");
+  }
+
+  function tick(ts) {
+    if (!last) last = ts;
+    var dt = ts - last; last = ts;
+    pos = (pos + dt * 0.055) % ringLen;         // speed
+    fgEl.setAttribute("stroke-dashoffset", -pos);
+    var p = ringPath.getPointAtLength(pos);
+    pulseEl.setAttribute("cx", p.x);
+    pulseEl.setAttribute("cy", p.y);
+    // light the node the pulse is closest to
+    var seg = ringLen / LOOP.length;
+    var active = Math.round(pos / seg) % LOOP.length;
+    for (var i = 0; i < lnodeEls.length; i++) {
+      if (i === active) lnodeEls[i].g.classList.add("on");
+      else lnodeEls[i].g.classList.remove("on");
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // ---- Scroll reveals ----
+  var io = null;
+  function observe(root) {
+    if (!io) return;
+    var items = (root || document).querySelectorAll(".reveal:not(.in)");
+    for (var i = 0; i < items.length; i++) io.observe(items[i]);
+  }
+  function initReveals() {
+    if (reduce || !("IntersectionObserver" in window)) return;
+    document.documentElement.classList.add("motion");
+    io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
+    observe(document);
+  }
+
+  // ---- Language init + wiring ----
+  function setLang(l) {
+    lang = (l === "ja") ? "ja" : "en";
+    try { localStorage.setItem("awf-lang", lang); } catch (e) {}
+    apply();
+  }
+  var langBtns = document.querySelectorAll(".lang button");
+  for (var k = 0; k < langBtns.length; k++) {
+    langBtns[k].addEventListener("click", function () { setLang(this.getAttribute("data-setlang")); });
+  }
+
+  var saved = null;
+  try { saved = localStorage.getItem("awf-lang"); } catch (e) {}
+  if (saved === "ja" || saved === "en") lang = saved;
+  else if ((navigator.language || "").toLowerCase().indexOf("ja") === 0) lang = "ja";
+
+  initReveals();
+  buildLoop();
+  apply();
+})();
+</script>
+</body>
+</html>
