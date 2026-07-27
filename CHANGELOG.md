@@ -6,6 +6,8 @@ whether to adopt, not for a contributor replaying history. See
 `agent-loop-architecture.html` for the design and `STATUS.md` for the
 build-status ledger this summarizes.
 
+日本語版: [`CHANGELOG.ja.md`](CHANGELOG.ja.md)
+
 ## v0.2.0 — first complete release
 
 (Everything below describes the toolkit as of this tag.)

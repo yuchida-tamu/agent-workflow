@@ -6,6 +6,8 @@ you're starting a brand-new project instead, run the `project-genesis` agent
 (Opus tier) — it interviews you and does the equivalent of everything below
 in one pass.
 
+日本語版: [`docs/getting-started.ja.md`](getting-started.ja.md)
+
 ## 1. Install, labels, config, domains
 
 From a clone of `yuchida-tamu/agent-workflow`, pointed at your project:

@@ -9,6 +9,8 @@ decide, a script decides — agents spend tokens only on judgment.
 (the authoritative design, with an interactive wiring graph). 🚧 **Build
 status:** [`STATUS.md`](STATUS.md). Repo: `yuchida-tamu/agent-workflow`.
 
+日本語版: [`README.ja.md`](README.ja.md)
+
 ## Ground rules
 
 1. **Determinism-first.** Anything a script can decide is a script, zero

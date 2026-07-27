@@ -1,0 +1,924 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>エージェントループ・アーキテクチャ — agent-workflow ツールキット</title>
+<style>
+  :root {
+    --paper: #FBFBFD;
+    --ink: #23262F;
+    --muted: #5D6272;
+    --accent: #4630EB;
+    --accent-soft: #EDEBFD;
+    --micro-soft: #F4F2FE;
+    --gate: #A65D0A;
+    --gate-soft: #FBF1E3;
+    --trigger: #0E7A6F;
+    --trigger-soft: #E4F3F1;
+    --script: #47702B;
+    --script-soft: #EDF4E4;
+    --line: #E2E3EC;
+    --card: #FFFFFF;
+    --code-bg: #F1F1F7;
+    --band: rgba(70, 48, 235, 0.025);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #13151C; --ink: #E8EAF2; --muted: #9BA1B5;
+      --accent: #8B7DFF; --accent-soft: #241F45; --micro-soft: #1E1B36;
+      --gate: #E8A33D; --gate-soft: #2E2312;
+      --trigger: #3FBFAE; --trigger-soft: #0F2723;
+      --script: #8FBF5F; --script-soft: #1C2614;
+      --line: #2A2D3A; --card: #191C26; --code-bg: #1F2230;
+      --band: rgba(139, 125, 255, 0.04);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #13151C; --ink: #E8EAF2; --muted: #9BA1B5;
+    --accent: #8B7DFF; --accent-soft: #241F45; --micro-soft: #1E1B36;
+    --gate: #E8A33D; --gate-soft: #2E2312;
+    --trigger: #3FBFAE; --trigger-soft: #0F2723;
+    --script: #8FBF5F; --script-soft: #1C2614;
+    --line: #2A2D3A; --card: #191C26; --code-bg: #1F2230;
+    --band: rgba(139, 125, 255, 0.04);
+  }
+  :root[data-theme="light"] {
+    --paper: #FBFBFD; --ink: #23262F; --muted: #5D6272;
+    --accent: #4630EB; --accent-soft: #EDEBFD; --micro-soft: #F4F2FE;
+    --gate: #A65D0A; --gate-soft: #FBF1E3;
+    --trigger: #0E7A6F; --trigger-soft: #E4F3F1;
+    --script: #47702B; --script-soft: #EDF4E4;
+    --line: #E2E3EC; --card: #FFFFFF; --code-bg: #F1F1F7;
+    --band: rgba(70, 48, 235, 0.025);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+  .shell { max-width: 980px; margin: 0 auto; padding: 3.5rem 1.5rem 6rem; }
+  .prose { max-width: 70ch; }
+
+  h1, h2, h3 { font-family: "Avenir Next", Seravek, system-ui, sans-serif; text-wrap: balance; }
+  h1 { font-size: 2.1rem; font-weight: 600; line-height: 1.2; margin: 0.5rem 0 0.75rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.35rem; font-weight: 600; margin: 3.5rem 0 0.75rem; letter-spacing: -0.005em; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.75rem 0 0.5rem; }
+  p { margin: 0.75rem 0; }
+  .lead { font-size: 1.1rem; color: var(--muted); max-width: 62ch; }
+
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 2rem; }
+
+  code, .mono {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.86em;
+    background: var(--code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+  }
+  pre.block {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+  }
+
+  .legend { display: flex; gap: 1.1rem; flex-wrap: wrap; margin: 1.25rem 0 0; font-size: 0.85rem; color: var(--muted); align-items: center; }
+  .tag {
+    display: inline-block;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+  .tag.agent   { color: var(--accent);  background: var(--accent-soft); }
+  .tag.gate    { color: var(--gate);    background: var(--gate-soft); }
+  .tag.trigger { color: var(--trigger); background: var(--trigger-soft); }
+  .tag.script  { color: var(--script);  background: var(--script-soft); }
+
+  .diagram-wrap { overflow-x: auto; margin: 1.5rem 0; padding: 1rem 0; }
+  pre.mermaid { background: none; margin: 0; min-width: 640px; }
+
+  /* Interactive wiring graph */
+  .graph-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    margin: 1.5rem 0 0;
+  }
+  #wiring { display: block; }
+  #wiring .node { cursor: pointer; }
+  #wiring .node rect { transition: filter 0.15s ease; }
+  @media (prefers-reduced-motion: reduce) {
+    #wiring .node rect { transition: none; }
+  }
+  #wiring .node:hover rect, #wiring .node:focus rect { filter: brightness(0.96); }
+  #wiring .node:focus { outline: none; }
+  #wiring .node:focus rect { stroke-width: 2.5; }
+  #wiring .node.selected rect { stroke-width: 2.5; }
+  #wiring text { font-family: system-ui, -apple-system, sans-serif; pointer-events: none; }
+  #wiring .n-title { font-size: 11.5px; font-weight: 600; fill: var(--ink); }
+  #wiring .n-sub { font-size: 10px; fill: var(--muted); }
+  #wiring .lane-label {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    fill: var(--muted); font-weight: 600;
+  }
+  #wiring .col-label {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+    fill: var(--muted);
+  }
+  #wiring .edge { stroke: var(--muted); stroke-width: 1.3; fill: none; opacity: 0.55; }
+  #wiring .edge.dashed { stroke-dasharray: 5 4; }
+  #wiring .edge.loop { stroke: var(--trigger); opacity: 0.8; }
+  #wiring .edge-label { font-size: 9.5px; fill: var(--trigger); font-weight: 600; }
+  #wiring .band { fill: var(--band); }
+
+  .detail {
+    border: 1px solid var(--line);
+    border-top: 3px solid var(--accent);
+    border-radius: 0 0 8px 8px;
+    background: var(--card);
+    padding: 1.1rem 1.4rem 1.25rem;
+    margin: -1px 0 0.5rem;
+    min-height: 9.5rem;
+  }
+  .detail h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+  .detail .chips { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+  .detail p { font-size: 0.9rem; margin: 0.4rem 0; max-width: 75ch; }
+  .detail p strong { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-right: 0.3rem; }
+  .detail .hint { color: var(--muted); font-size: 0.88rem; }
+
+  .table-wrap { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; min-width: 600px; }
+  th {
+    text-align: left;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+    padding: 0.5rem 1rem 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  td { padding: 0.65rem 1rem 0.65rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { white-space: nowrap; font-weight: 600; }
+
+  ul { padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  li::marker { color: var(--accent); }
+
+  .ladder { counter-reset: rung; list-style: none; padding: 0; margin: 1.25rem 0; display: grid; gap: 0.75rem; }
+  .ladder li {
+    counter-increment: rung;
+    display: grid; grid-template-columns: 2.5rem 1fr; gap: 1rem;
+    background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+    padding: 0.85rem 1.1rem; margin: 0;
+  }
+  .ladder li::before {
+    content: "L" counter(rung, decimal);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 600; color: var(--accent); font-size: 0.95rem; padding-top: 0.1rem;
+  }
+  .ladder li:first-child::before { content: "L0"; }
+  .ladder li:nth-child(2)::before { content: "L1"; }
+  .ladder li:nth-child(3)::before { content: "L2"; }
+  .ladder li:nth-child(4)::before { content: "L3"; }
+  .ladder strong { display: block; margin-bottom: 0.1rem; }
+  .ladder span { color: var(--muted); font-size: 0.9rem; }
+
+  .stage {
+    display: grid; grid-template-columns: 3.25rem 1fr; gap: 0 1.25rem;
+    border-top: 1px solid var(--line); padding: 1.75rem 0;
+  }
+  .stage:last-of-type { border-bottom: 1px solid var(--line); }
+  .stage-num {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 1.4rem; color: var(--accent); font-weight: 500; line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+  }
+  .stage h3 { margin: 0 0 0.25rem; font-size: 1.15rem; }
+  .stage .purpose { color: var(--muted); margin: 0 0 1rem; max-width: 62ch; }
+  .stage dl {
+    display: grid; grid-template-columns: 6.5rem 1fr; gap: 0.4rem 1rem;
+    margin: 0; font-size: 0.92rem; max-width: 68ch;
+  }
+  .stage dt {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); padding-top: 0.2rem;
+  }
+  .stage dd { margin: 0; }
+  .stage dt.t-trigger { color: var(--trigger); }
+  .stage dt.t-gate { color: var(--gate); }
+  .stage dt.t-script { color: var(--script); }
+
+  .gates { display: grid; gap: 0.75rem; margin: 1.25rem 0; padding: 0; list-style: none; }
+  .gates li {
+    display: grid; grid-template-columns: 3rem 1fr; gap: 1rem;
+    background: var(--card); border: 1px solid var(--line);
+    border-left: 3px solid var(--gate); border-radius: 6px;
+    padding: 0.85rem 1.1rem; margin: 0;
+  }
+  .gates .gid {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 600; color: var(--gate); font-size: 0.95rem; padding-top: 0.1rem;
+  }
+  .gates strong { display: block; margin-bottom: 0.1rem; }
+  .gates span { color: var(--muted); font-size: 0.9rem; }
+
+  .phases { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.25rem 0; }
+  .phase { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1rem 1.1rem; }
+  .phase h3 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+  .phase .ph-label {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
+  }
+  .phase p { font-size: 0.88rem; color: var(--muted); margin: 0.35rem 0 0; }
+  @media (max-width: 680px) {
+    .phases { grid-template-columns: 1fr; }
+    .stage { grid-template-columns: 1fr; }
+    .stage dl { grid-template-columns: 5.5rem 1fr; }
+  }
+
+  .principle { border-left: 3px solid var(--accent); padding: 0.1rem 0 0.1rem 1.1rem; margin: 1.25rem 0; }
+  .principle p { margin: 0.35rem 0; }
+
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+</style>
+<style>
+  /* 日本語版タイポグラフィの最小オーバーライド（内容のみ日本語化。挙動は不変） */
+  body {
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI",
+      "Yu Gothic", "YuGothic", "Meiryo", system-ui, -apple-system, sans-serif;
+    line-height: 1.85;
+  }
+  h1, h2, h3 {
+    font-family: "Hiragino Sans", "Yu Gothic UI", "Yu Gothic", "Avenir Next",
+      Seravek, system-ui, sans-serif;
+    letter-spacing: 0;
+  }
+  .lead, .detail p, .stage .purpose, .stage dd, .phase p, .ladder span,
+  .gates span, li { line-height: 1.85; }
+  #wiring text {
+    font-family: "Hiragino Sans", "Yu Gothic UI", "Yu Gothic", system-ui,
+      -apple-system, sans-serif;
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <p class="eyebrow">アーキテクチャ · v1.0 · 2026年7月26日</p>
+    <h1>プラットフォーム非依存のエージェント型開発ループ</h1>
+    <p class="lead">GitHub 上に構築した、閉ループの開発ワークフローです。再利用可能なツールキットとして設計しています。コアがループを所有し、<strong>プラットフォームの知識</strong>（最初のパック: React Native Expo）と<strong>ビジネスの知識</strong>（プロジェクトごと）は、いずれも注入されます。基本原則は<strong>既定で決定論的であること</strong>。スクリプトで行える手順はすべてスクリプトにし、エージェントは推論・判断・統合のためだけに取っておきます。そして各エージェント呼び出しは、その仕事をこなせる最も安価なモデルへとルーティングされます。</p>
+    <div class="legend">
+      <span><span class="tag trigger">イベント</span>&nbsp; GitHub の Webhook / スケジュール</span>
+      <span><span class="tag script">スクリプト</span>&nbsp; 決定論的、トークンゼロ</span>
+      <span><span class="tag agent">エージェント</span>&nbsp; モデルルーティングされた推論</span>
+      <span><span class="tag gate">ゲート</span>&nbsp; 人間の判断</span>
+    </div>
+    <p class="eyebrow" style="text-transform: none; letter-spacing: 0; color: var(--muted); margin: 1.25rem 0 0;">この文書は英語版 <code>agent-loop-architecture.html</code>（<code>6bbc019</code> 時点）の内容に基づいています。英語版: <a href="agent-loop-architecture.html">agent-loop-architecture.html</a></p>
+  </header>
+
+  <h2>変わったこと: v0.8 → v1.0</h2>
+  <p class="prose">v0.8 はプランでした。v1.0 は、このリポジトリ自身のバックログを動かしているループを記述します。この文書はいまや、出荷済みのコードと突き合わせて整合させてあります。あらゆるセクションと、配線グラフのあらゆるノードは、実在する挙動を反映しています。まだ<em>仕様化されているが未実装</em>のわずかなものは、現在形で記述するのではなく、そのように明示してあります。</p>
+  <div class="principle prose">
+    <p><strong>v0.8 以降に着地したもの（決定論的、テスト済み）:</strong> <strong>リスクエンジン</strong>（事実／演算子パック、単調な義務の合併、ロックされたルール）。これには広げられた<strong>自己改変ガード</strong>（いまや利用側リポジトリが設置するワークフローである <code>init/templates/**</code> と <code>actions/**</code>、加えて <code>policies/**</code>、<code>domains.yml</code>、<code>e2e/traces/**</code> をカバー）と、ドメインマップの重要度という軸をついに機能させる<strong>高重要度ドメイン</strong>のルールが含まれます。さらに、<strong>実行台帳と監査</strong>（<code>agentflow-log</code>）、統治ルールが<em>不在は拒否</em>である<strong>判定リーダー</strong>、<strong>G3 自動マージの権限レコード</strong>（PR は、人間を要さない判定のときにだけ自らをマージし、つねに記録を残します。偽の <code>/approve</code> を作ることは決してありません）、<strong>承認インボックス</strong>モジュール（G1／G2／G4 のキューと成果物の選定）、<strong>agentflow 自身の GitHub App アイデンティティ</strong>（作業は App として、判断は人間として。ボットの承認はコードで拒否）、<strong>サブ Issue 階層</strong>のリーダー（GitHub ネイティブなサブ Issue と、<code>Child of #N</code> のテキストフォールバック。どちらが答えたかを報告）、<strong><code>release_kind</code></strong> のセマンティクス、ルーティングされたティアで動く 11 個の<strong>エージェント定義</strong>、そしてランナー上での<strong>ヘッドレスレビュー</strong>（ステージ 1）。</p>
+    <p><strong>まだ仕様化されているが未出荷のもの:</strong> <code>pack-expo</code> の<strong>ケイパビリティアダプター</strong>（<code>run</code> · <code>verify</code> · <code>execute-step</code> · <code>ship</code>）とスキル群。そのため、実際のアプリを駆動するもの（実装者のセルフ検証、UX レビューのピクセル、E2E の<strong>トレース派生と再生実行</strong>）は、コアには配線されているものの、パックがこれらの継ぎ目を実装するまで、端から端までは動きません。加えて、<strong>ヘッドレスディスパッチの起動</strong>（作られているが、あらゆる状態でオフ出荷）、<strong>夜間 QA</strong> のヘッドレス（保留。セルフホストの macOS ランナーが必要）、そしてインターフェースを真に検証する 2 つ目のプラットフォームパックです。</p>
+  </div>
+
+  <h2>確定した決定事項</h2>
+  <ul class="prose">
+    <li><strong>バックログの置き場所: GitHub Issues。</strong> ラベルがステートマシンをエンコードし、コメントが承認を運びます（リリースゲートもその 1 つで、検証済みの <code>/approve G4</code> として。その遷移は、承認したタグに追随します）。そして GitHub Actions がイベントバスです。1 つのプラットフォームがすべての状態を保持します。</li>
+    <li><strong>E2E モデル: エージェントがコンパイルし、決定論的に再生する。</strong> Maestro は不採用（セレクタ保守の負担が重く、遅い）。シナリオは Gherkin で書き、エージェントが各ステップを<em>一度だけ</em>解釈してコンパイル済みトレースを出力します。ランナーはそれ以降、決定論的に再生します。トークンはスイートの規模ではなく、UI の変更に比例します。</li>
+    <li><strong>プラットフォーム非依存のコア。</strong> このリポジトリ（<code>agent-workflow</code>）はツールキットであってアプリではなく、プラットフォーム固有のものは一切含みません。プラットフォームの能力はパック（最初は <code>pack-expo</code>）へと抽出されます。どのプロジェクトも、コア + パックを設置すれば、プロジェクトごとの config でループ一式を得られます。</li>
+    <li><strong>決定論第一 + モデルルーティング。</strong> 下記の 2 つの基本原則が、配線図のあらゆる手順を統治します。</li>
+    <li><strong>リスク基準は注入され、内部に取り込まれない。</strong> ツールキットは決定論的なポリシー<em>エンジン</em>を出荷します。各プロジェクトは、ドメインマップ、ポリシールール、インテークの質問を通じて、自身のビジネスリスク基準を供給します。技術的なルーブリックは、既定のベースラインパックにすぎません。</li>
+  </ul>
+
+  <h2>3 層の知識モデル</h2>
+  <p class="prose">3 種類の知識、3 人の所有者。リスクエンジンで実証されたのと同じ注入パターンが、あらゆる層の境界に適用されます。下位の層はメカニズムと継ぎ目を定義し、上位の層が知識を供給します。</p>
+  <ul class="ladder">
+    <li><div><strong>コア — ループの仕組み（このツールキット）</strong><span>ステートマシン、GitHub の配線、ゲート G1–G4、ポリシーエンジンとプラットフォーム中立なベースラインルール、エージェントの陣容、振る舞いを記述するシナリオ DSL の文法とランナーのコア、卒業台帳、インストーラー。プラットフォームには無関心で、エージェントのプロンプトは<em>ケイパビリティ</em>を参照し、プラットフォームのツールを参照することはありません。</span></div></li>
+    <li><div><strong>プラットフォームパック — この種のアプリをどう作り、どう駆動するか</strong><span>スキル群（<code>expo-dev</code>、<code>mobile-verify</code>、EAS の <code>release</code>）、E2E のステップ実行器（モバイルでは agent-device）、ビルド／配布のパイプライン、プラットフォームのハードトリガーとなるポリシールール（<code>ios/**</code>、SDK のバンプ、ネイティブ依存。これは文字どおり、もう 1 つのポリシーパックにすぎず、同じ単調な合併で結合されます）、そしてランナー要件（rn-expo はセルフホストの macOS ランナーを宣言します）。最初のパックは <code>pack-expo</code>。Web パックなら、同じ継ぎ目に Playwright を差し込むことになります。</span></div></li>
+    <li><div><strong>プロジェクト — この製品が何で、何がリスクなのか</strong><span>ドメインマップ、ビジネスポリシーパック、インテークの質問、このアプリのシナリオ、規約のオーバーライド、そして <code>agentflow.config.json</code>。config は自身のプラットフォームを宣言します: <code>platform: rn-expo</code>。</span></div></li>
+  </ul>
+
+  <h3>ケイパビリティインターフェース — コアが定義する継ぎ目</h3>
+  <p class="prose">4 つのインターフェースが、コアとパックの間の契約のすべてです。コアのエージェントとスクリプトがこれらを消費し、パックがこれらを実装します。</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>インターフェース</th><th>契約</th><th>消費者</th><th>rn-expo での実装</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>run</code></td><td>観測可能な環境でアプリを起動する</td><td>実装者、UX レビュアー、QA エクスプローラー</td><td>Expo 開発サーバー + iOS シミュレータ</td></tr>
+        <tr><td><code>verify</code></td><td>動作中のアプリを駆動し、証跡（スクリーンショット、ログ）を取得する</td><td>実装者のセルフ検証、UX レビュアー</td><td>agent-device</td></tr>
+        <tr><td><code>execute-step</code></td><td>コンパイル済みの 1 ステップトレースを決定論的に再生する</td><td>E2E シナリオランナー</td><td>agent-device のステップアダプター</td></tr>
+        <tr><td><code>ship</code></td><td>ビルド、配布、提出</td><td>統合スクリプト + リリーススクリプト</td><td>EAS のビルド／サブミット、TestFlight</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="principle prose">
+    <p><strong>初日から抽象化しすぎないこと:</strong> インターフェースをいま命名して仕様化するのは、定義するのが安価で、コアを清潔に保てるからです。v1.0 時点で 4 つの継ぎ目は <code>interfaces/</code> に文書化されており、あらゆるコアの消費者がそれらを呼び出します。しかし <code>pack-expo</code> はまだアダプターを<em>実装していません</em>。<code>packs/expo/</code> が出荷するのは、そのポリシーパックとランナー宣言だけです。パックが継ぎ目を埋めるまで、実際のアプリを駆動するものはすべて不活性です。継ぎ目を真に検証するのは 2 つ目のパック（おそらく Web）であり、それは、最初のパックに対してループが端から端まで動くようになるまで待ちます。</p>
+  </div>
+
+  <h2>基本原則 1 — 決定論のラダー</h2>
+  <p class="prose">ループのあらゆる手順は、それを確実にこなせる最も低い段に置かれます。ある手順が段を 1 つ上がるのは、その下の段が結果を判断できないことが実証されたときだけです。決定論的なチェックはつねに、どのエージェントも呼ばれる<em>前に</em>走ります。無料のチェックが弾いたはずの作業に、トークンを費やしてはいけません。</p>
+  <ul class="ladder">
+    <li><div><strong>スクリプトと静的チェック — トークンゼロ</strong><span>構造化データに対するルールで判断できるものすべて。状態遷移、ラベル管理、テンプレート検証、依存関係チェック、リント／型チェック／単体テスト、ワークツリーの準備、E2E シナリオの実行、構造化レポートからの Issue 起票、バージョンのバンプ、変更履歴、EAS サブミット。</span></div></li>
+    <li><div><strong>小型モデル（Haiku）— 境界のある分類</strong><span>明確なルーブリックに照らして分類・抽出・要約し、誤答が安価に検出・修正できるもの。Issue のトリアージ、重複検出、diff の要約、E2E 失敗のクラスタリング、リスクスコアのタイブレーク。</span></div></li>
+    <li><div><strong>中型モデル（Sonnet）— プランの範囲内でのコード</strong><span>承認済みプランに対するコードの記述・変更、テストの作成、修正ループ、探索的な QA パス、E2E トレースのコンパイル。主力ティアです。</span></div></li>
+    <li><div><strong>フロンティアモデル（Opus / Fable）— 答えの定まらない判断</strong><span>曖昧な意図からのブリーフのシェイピング、アーキテクチャプラン、タスク分解、独立したコードと UX のレビュー、レビュー所見の敵対的検証、何かが行き詰まった理由の診断。まれで、意図的で、それだけの価値があるもの。</span></div></li>
+  </ul>
+  <div class="principle prose">
+    <p><strong>エスカレーションのルール:</strong> ある手順が失敗したとき、段をちょうど 1 つだけ上がることができ、そのエスカレーションは理由とともに記録されます。機械的な作業のために、より上位のティアへルーティングされるものはなく、どのエージェントも、その手前にある決定論的なチェックが通る前には走りません。</p>
+  </div>
+
+  <h2>基本原則 2 — モデルルーティングのポリシー</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>タスク</th><th>ティア</th><th>なぜこのティアか</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>状態遷移、CI、E2E 実行、リリース</td><td>スクリプト（L0）</td><td>完全にルールで判断でき、正しさは判断なしに検証できる</td></tr>
+        <tr><td>Issue のトリアージ、重複チェック、優先度</td><td>Haiku（L1）</td><td>ルーブリックのある閉じた集合の分類。誤りは数秒後の G1 ですぐ表面化する</td></tr>
+        <tr><td>レビュアー向けの diff 要約</td><td>Haiku（L1）</td><td>判断ではなく圧縮。人間とレビュアーに安価に情報を渡す</td></tr>
+        <tr><td>E2E 失敗のクラスタリングとレポート草案</td><td>Haiku（L1）</td><td>構造化されたランナー出力に対するパターンのグルーピング</td></tr>
+        <tr><td>実装、テスト作成、修正ループ</td><td>Sonnet（L2）</td><td>承認済みプランに導かれたコード生成。難しい決定はプランが担っている</td></tr>
+        <tr><td>コードレビュー、UX レビュー</td><td>Opus（L3）</td><td>品質を支えるゲート。実装者のコンテキストから独立した、新しいサブエージェントとして動き、その言葉がクリティカルなコードをマージする</td></tr>
+        <tr><td>探索的 QA</td><td>Sonnet（L2）</td><td>定義されたルーブリックの範囲内での判断（フロー、エッジケースの探り）</td></tr>
+        <tr><td>プロダクトのシェイピング、アーキテクチャ、分解</td><td>Opus（L3）</td><td>答えの定まらない統合。ここでの誤った決定は、最も高くつく種類のもの</td></tr>
+        <tr><td>レビュー所見の敵対的検証</td><td>Opus（L3）</td><td>実装者の修正サイクルを費やす前に、偽陽性を潰す</td></tr>
+        <tr><td>境界付きリトライ後の行き詰まり診断</td><td>Opus（L3）</td><td>人間へエスカレートする前の最後の手段</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>リスクポリシー — ルーブリックではなく、エンジン</h2>
+  <p class="prose">技術的なルールだけではリスクを見誤ります。チェックアウトフローへの 40 行の変更は、設定画面の 800 行のリファクタリングよりも重大です。しかしビジネスリスクはプロジェクト固有なので、ツールキットがそれをハードコードしてはいけません。切り分けはこうです。<strong>ツールキットは決定論的なポリシーエンジンを出荷し、リスク基準はプロジェクトが所有するデータとする。</strong> 3 つの層を一緒に評価し、後の層が権威を持ちます。</p>
+  <ul class="ladder">
+    <li><div><strong>ポリシーエンジン — ツールキット</strong><span>汎用の、決定論的な評価器。宣言された面（プラン時）か実際の diff（PR 時）に、ブリーフの構造化フィールドを加えて受け取り、有効なあらゆるルールパックを評価して、単なるスコアではなく<em>義務</em>を出力します。</span></div></li>
+    <li><div><strong>技術ベースラインパック — ツールキットの既定</strong><span>ハードトリガー: ネイティブな面（<code>ios/</code>、<code>app.config.*</code>、<code>eas.json</code>）、SDK／RN のバンプ、ネイティブ依存、スキーマ／マイグレーション、シークレット、そしてワークフローファイルそのもの（エージェントが自分のゲートを緩めることはありません）。加算的な要因: 新規依存、広く import される共有モジュール、diff サイズ、テストなしで変更されたロジック。プロジェクトはそのすべてを拡張・再重み付け・オーバーライドできます。</span></div></li>
+    <li><div><strong>ビジネスパック — プロジェクト所有、権威あり</strong><span>プロジェクトごとに書かれるドメインマップ、ポリシールール、インテークの質問。リスク判断が実際に宿るのはここです。ベースラインは、あらゆる RN Expo プロジェクトに共通するものを捉えるだけです。</span></div></li>
+  </ul>
+
+  <h3>ドメインマップ — ビジネス判断を一度だけエンコードする</h3>
+  <p class="prose">要となる成果物。ビジネス上の能力をコードに対応づける、プロジェクト所有のファイルです。人間が重要度の判断をちょうど一度だけ下し（「チェックアウトはクリティカル、設定はそうでない」）、エンジンがそれを永遠に決定論的に強制します。これこそが、ビジネスを踏まえたゲーティングを L0 の段に保つものです。</p>
+  <pre class="block"># domains.yml — ツールキットではなく、プロジェクトが所有する
+checkout:
+  description: "Purchase flow from cart through receipt"
+  criticality: critical        # ビジネス上の判断。人間が、一度だけ下す
+  paths: ["src/features/checkout/**"]
+  screens: ["/checkout/*"]
+  scenarios: ["@checkout"]     # E2E シナリオのタグ
+onboarding:
+  criticality: high
+  paths: ["src/features/onboarding/**"]</pre>
+  <p class="prose">同じマップは、ループ全体で無料で再利用されます。マージ後のスモークは、触れたドメインのシナリオタグを走らせ、UX レビュアーはどのドメインの受け入れ基準が適用されるかを知らされ、変更履歴はドメインごとにグループ化され、信頼の卒業は変更クラス<em>×ドメイン</em>ごとに追跡されます。あるクラスが <code>settings</code> では卒業していても、<code>checkout</code> ではまだ人間のゲートを要する、ということがありえます。</p>
+
+  <h3>ポリシールール — スコアではなく、義務</h3>
+  <pre class="block"># policies/business.yml — プロジェクト所有
+rules:
+  - when: domain.criticality == "critical"
+    then: [require: G2, block: auto-merge, run: domain-scenarios-pre-merge]
+  - when: brief.compliance_impact == true
+    then: [require: G2, notify: reviewer]</pre>
+  <p class="prose">エンジンの判定は、一連の帰結です。G2 を要求する、自動マージをブロックする、追加シナリオを走らせる、誰かに通知する。これらが要因ごとのコメントとして投稿され（監査可能）、ラベルとして適用されます（そのラベル自体が、ディスパッチのイベントになります）。ベースラインパックからの低／中／高のスコアは、ルールへの入力の 1 つにすぎなくなります。</p>
+
+  <h3>インテークの質問 — ビジネスリスクを源泉で宣言する</h3>
+  <p class="prose">各プロジェクトは、Product Shaper がインテークのヒアリング中に尋ねるべきビジネスインパクトの質問を注入します。この変更は、ユーザーが支払うものや、価格について目にするものを変えるか。個人データに触れるか。ユーザーにとってその挙動の変化は不可逆か。答えはブリーフ上の構造化フィールドとなり、上記のルールが決定論的に消費します。アイデアを持つ人は、どんな diff 解析よりも、変更のビジネス上の意味をよく知っています。</p>
+  <div class="principle prose">
+    <p><strong>相互チェックのドリフト検出:</strong> ブリーフが宣言したインパクトと、diff のドメインフットプリントは一致しなければなりません。ブリーフが <code>revenue_impact: false</code> と言ったのに、PR が <code>checkout</code> ドメインに着地したなら、エンジンはその矛盾を検出してエスカレートします。ブリーフが誤っていたか、実装がさまよったかのどちらかです。どちらにせよ、プラン対 diff のスコープチェックと同じく、決定論的です。</p>
+  </div>
+  <p class="prose"><strong>未対応づけのコード</strong>は、プロジェクトごとのポリシー上の選択であり、エンジンは既定の立場を取りません。<code>unmapped_criticality</code> は既定で <code>null</code> の config 値で、その場合、未対応づけのファイルは変更の重要度に何も寄与しません（そして、対応づけの<em>元</em>となる <code>domains.yml</code> が存在して初めて適用されます）。未対応づけのコードを勘定に入れたいプロジェクトは、その値を設定するか、記録される Haiku 呼び出しに、ドメインの説明に照らして変更を分類させます（ルーティングポリシーに沿って。そしてマップを育てる後押しにもなります）。エンジンは <code>domains.unmapped_fraction</code> を第一級の事実として表面化させます。コアにハードコードされた閾値はありませんが、プロジェクトが腐敗検出のルールをゼロから書く必要はありません。インストーラーが <code>unmapped_warn_fraction</code>（テンプレート既定値 <code>0.2</code>）を出発点の config 値として出荷し、<code>agentflow-init adopt --coverage</code> がすでにそれを強制して、リポジトリの未対応づけの割合が自分で設定した予算を超えるたびに警告します。</p>
+
+  <h3>ポリシーパックのスキーマ — すべてに 1 つのルール形状</h3>
+  <p class="prose">ハードトリガー、加算的なスコア要因、ビジネスルールは、すべて<em>同じルール形状</em>です。違うのは、どの義務を出力するかだけ。これがエンジンを小さく保ち、技術的であれビジネス的であれ、あらゆる基準を等しく注入可能にします。</p>
+  <pre class="block"># policies/business.yml
+pack: my-app-business
+version: 1
+rules:
+  - id: critical-domain
+    description: "Critical business domains always get human plan review"
+    stage: both                  # plan | pr | both
+    when:
+      all:
+        - fact: domains.max_criticality
+          in: [critical]
+    then:
+      require: [G2, human-merge]
+      block: [auto-merge]
+      run: [domain-scenarios]    # 触れたドメインの @tag が pre-merge で走る
+
+  - id: native-surface           # 「ハードトリガー」も、ただのルール…
+    when: { fact: diff.files, matches: ["ios/**", "app.config.*"] }
+    then: { floor: high, require: [G2], block: [auto-merge] }
+
+  - id: large-diff               # …そして「加算的な要因」もまた然り
+    when: { fact: diff.loc, gte: 800 }
+    then: { score: +4 }</pre>
+  <p class="prose"><strong>条件</strong>は、構造化された事実／演算子のツリーです。閉じた演算子集合（<code>is</code>、<code>in</code>、<code>gte</code>、<code>lte</code>、<code>contains</code>、<code>matches</code>、<code>exists</code>）に対する <code>all</code> / <code>any</code> / <code>not</code>。パースすべき式言語はありません。あらゆるパックは、走る前に JSON Schema で検証でき、評価は自明に決定論的です。読みやすい文字列のシュガーは、必要になれば後からこの形式へコンパイルできます。</p>
+  <p class="prose"><strong>義務</strong>は、意図的に閉じた 7 つの動詞の語彙です。<code>require</code>（G2、human-merge）· <code>block</code>（auto-merge）· <code>run</code>（シナリオタグ／名前付きチェック）· <code>notify</code> · <code>label</code> · <code>score: +N</code> · <code>floor: &lt;level&gt;</code>。スコアからレベルへの閾値と、レベルごとの既定義務は config に置かれ、加算的な層を同じ語彙に差し込みます。</p>
+
+  <h4 style="font-family: 'Avenir Next', Seravek, system-ui, sans-serif; font-size: 0.95rem; margin: 1.5rem 0 0.4rem;">事実カタログ — エンジンの公開契約</h4>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>名前空間</th><th>例</th><th>利用可能な時点</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>brief.*</code></td><td>プロジェクトが定義するインテークの答え: <code>revenue_impact</code>、<code>compliance_impact</code></td><td>plan + PR</td></tr>
+        <tr><td><code>plan.*</code></td><td>宣言された面: <code>files[]</code>、<code>new_dependencies[]</code>、<code>schema_change</code></td><td>plan + PR</td></tr>
+        <tr><td><code>diff.*</code></td><td><code>files[]</code>、<code>loc</code>、<code>new_dependencies[]</code>、<code>deleted_exports</code>、<code>tests_changed</code></td><td>PR のみ</td></tr>
+        <tr><td><code>domains.*</code></td><td><code>touched[]</code>、<code>max_criticality</code>、<code>unmapped_fraction</code> — <code>domains.yml</code> から導出</td><td>両方</td></tr>
+        <tr><td><code>drift.*</code></td><td><code>scope</code>（diff ⊄ plan）、<code>brief_domain</code>（宣言インパクト対ドメインフットプリントの矛盾）</td><td>PR のみ</td></tr>
+        <tr><td><code>history.*</code></td><td><code>class_graduated</code> — 変更クラス×ドメインごと、卒業台帳から</td><td>PR のみ</td></tr>
+        <tr><td><code>score.*</code>、<code>meta.*</code></td><td><code>score.total</code>、<code>meta.stage</code>、<code>meta.change_class</code>、<code>meta.maturity</code>（genesis | steady）</td><td>両方</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle prose">
+    <p><strong>合併こそが安全性の性質:</strong> 義務は<em>合併</em>されるだけです。より多くのパックを評価しても、制約を追加することはあっても、取り除くことは決してありません。だから、推論すべき優先順位の演算はありません。緩めることは明示的でスコープが限られます。プロジェクトパックは、ベースラインのスコアリングルールを id 単位で <code>disable</code> したり再重み付けしたりできますが、ツールキットが <code>locked: true</code> と印を付けたルール（ワークフローとポリシーファイル自体に対する自己改変ガード）は、どのパックも無効化できません。エージェントも — config も — 自分の檻を開けることはできません。</p>
+  </div>
+
+  <p class="prose"><strong>パックはテスト可能です。</strong> 評価は純粋（事実を入れ、判定を出す）なので、パックはフィクスチャテスト付きで出荷され、<code>agentflow policy test</code> で走ります。例となる事実集合に対して、期待される義務をアサートします。これが、プロジェクトが安全にリスクポリシーを進化させる方法です。ルールを厳しくし、フィクスチャを走らせ、過去のどのシナリオがいまなら別のゲートを通るかを、正確に見ます。ポリシーファイルの変更自体が <code>locked</code> ルールの領域なので、それらはつねに G3 で人間を通過します。</p>
+  <pre class="block">tests:
+  - name: "checkout copy change still blocks auto-merge"
+    facts: { diff: { files: ["src/features/checkout/Receipt.tsx"], loc: 4 } }
+    expect: { block: [auto-merge] }</pre>
+  <p class="prose"><strong>判定</strong>は決定論的な JSON ドキュメントです。評価されたあらゆるルール、マッチした事実、義務の合併、結果として得られるレベルを含み、要因ごとのコメントとしてレンダリングされ、<code>risk:*</code> ／義務のラベルとして適用されます。そのラベル自体が、次のステージへのディスパッチイベントです。同じエンジンを 2 回走らせます。プラン時は <code>plan.* + brief.*</code> に対して、PR 時は <code>diff.*</code> に対して。PR 時には <code>drift.*</code> の事実が有効になります。</p>
+
+  <h2>配線 — 対話的</h2>
+  <p class="prose">GitHub がイベントバスです。下の各列は 1 つのステージで、GitHub のイベントによって左から右へトリガーされ、決定論的なスクリプト、次にマイクロエージェント、次にフルのエージェントへと下へ流れ、人間のゲートがあるところでそこに至ります。<strong>任意のノードをクリック</strong>すると、それが何をするか、なぜラダーのその段に位置するか、そして何を出力するかが分かります。破線のティール色のエッジは、ループが閉じるところです。QA の所見が、新しい Issue としてインテークに再び入ってきます。このグラフは、ループを <code>pack-expo</code> で<em>インスタンス化した</em>ものを示します。ノードがシミュレータ、agent-device、EAS と言っているところは、それがコアの前提ではなく、パックによるコアのケイパビリティインターフェースの実装です。v1.0 時点で、それらのパックアダプターは仕様化されているがまだ作られていないので、実際のアプリを駆動するノード（実装者のセルフ検証、UX レビュー、E2E ランナー）は、今日端から端まで動くものではなく、意図された姿を記述しています。</p>
+
+  <div class="graph-wrap">
+    <svg id="wiring" width="1270" height="512" viewBox="0 0 1270 512" role="img" aria-label="配線図: GitHub のイベントが、7 つのステージにわたってスクリプト、マイクロエージェント、エージェント、人間のゲートをトリガーする"></svg>
+  </div>
+  <div class="detail" id="detail">
+    <h3 id="d-title">このグラフの読み方</h3>
+    <div class="chips" id="d-chips"></div>
+    <p class="hint" id="d-body">各列はステージ、各行は決定論のラダーの段です。作業はつねに、GitHub のイベント（最上段）を通じて列に入り、トークンが費やされる前にあらゆる決定論的チェックを通過します。ノードを選択すると（クリック、または Tab + Enter）、その詳細がここに表示されます。</p>
+  </div>
+
+  <h2>GitHub がステートマシンをどうエンコードするか</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>関心事</th><th>GitHub の仕組み</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>作業アイテムの状態</td><td><code>state:*</code> ラベル（<code>idea → spec → planned → ready → in-progress → in-review → merged → verified</code>）。あらゆるラベル変更が Webhook イベント</td></tr>
+        <tr><td>ステージのディスパッチ</td><td><code>issues</code>、<code>pull_request</code>、<code>issue_comment</code>、<code>check_suite</code>、<code>push</code>、<code>schedule</code>、<code>workflow_dispatch</code> に対する GitHub Actions</td></tr>
+        <tr><td>人間の承認（G1、G2、G4）</td><td><code>/approve [gate]</code> の Issue コメント。<code>agentflow-gate</code> が <code>approvers</code> リストに照らして検証。ボットが作成した承認は、承認者リストが参照される<em>前に</em>拒否される。慣行ではなく <code>validateApproval</code> で強制</td></tr>
+        <tr><td>マージゲート（G3）</td><td>PR ネイティブで、2 つのモードのいずれか。<code>native-review</code>（App アイデンティティがエージェント PR を作成するときの、本物の承認レビュー）か、<code>solo-comment</code>（それが人間自身のものであるときの、SHA を明記した <code>/approve</code> コメントとその後のマージ）。記録済みの判定が人間を要さない変更クラスは、偽の承認ではなく権限レコードを投稿する自動マージへと卒業する</td></tr>
+        <tr><td>リリースゲート（G4）</td><td>検証済みの <code>/approve G4</code> Issue コメントは<em>承認する</em>が、遷移はさせない。<code>agentflow-release</code> が注釈付きタグと GitHub Release を作成し、リリースが存在して初めて <code>verified → released</code> の遷移を行う。<code>release_kind</code> が統治: <code>tag</code>（この経路）、<code>store</code>（パックの <code>ship</code> アダプターへ委譲）、または <code>none</code>（<code>verified</code> が終端、G4 なし）</td></tr>
+        <tr><td>親 ↔ 子の構造</td><td>利用可能なところでは GitHub ネイティブなサブ Issue、フォールバックは子の本文冒頭の <code>Child of #N</code> 行。階層リーダー（内部モジュール <code>scripts/hierarchy/</code>。それ自体の CLI ではない）は、親を<em>宣言する</em>ものから子を導出し、どちらの経路が答えたかを報告する</td></tr>
+        <tr><td>成果物と監査証跡</td><td>ブリーフ、プラン、リスク判定はマーカー管理された Issue コメントとして。スクリーンショットは PR に。作業アイテムごとに <strong>実行台帳</strong> コメント 1 つ（<code>agentflow-log</code>）。その人間可読なテーブルが<em>ストレージそのもの</em>。<code>agentflow-log audit</code> はモデルティア違反、未知のエージェント、フェーズの欠落を検出する。沈黙は合格ではなく、所見</td></tr>
+        <tr><td>プラットフォームランナー</td><td>プラットフォームパックが宣言する。rn-expo はシミュレータのジョブ（セルフ検証、UX レビュー、E2E）にセルフホストの macOS ランナーを要求し、それ以外はクラウドランナーが扱う。ヘッドレスレビューは今日クラウドランナー上で走る</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose">オーケストレーターは、長時間走るプロセスとしては消えます。GitHub Actions が<em>オーケストレーターそのもの</em>です。各ワークフローはステートレスで、Issue／PR から必要なものをすべて読み、適切なスクリプトかエージェントをディスパッチし、結果を書き戻します。実行中の何かを止めても、次のイベントが、ラベルが示すとおりの地点から、まさに拾い上げます。</p>
+
+  <h2>6 つのステージ、改訂版</h2>
+
+  <div class="stage">
+    <div class="stage-num">0</div>
+    <div>
+      <h3>着想とインテーク</h3>
+      <p class="purpose">曖昧な入力 — メッセージ、アイデアの Issue、QA の所見 — を、受け入れ基準を備えた具体的なブリーフへと変える。</p>
+      <dl>
+        <dt class="t-trigger">トリガー</dt><dd><code>issues.opened</code> または <code>labeled: idea</code>。QA ファイラーの Issue は構造化済みで届き、ヒアリングを飛ばす。</dd>
+        <dt class="t-script">スクリプト</dt><dd>テンプレート検証、状態遷移、投稿者権限チェック。</dd>
+        <dt>エージェント</dt><dd>トリアージのマイクロエージェント（Haiku）: 種別、重複、優先度。<strong>Product Shaper</strong>（Opus）: 人間にヒアリングし、ブリーフを書く。</dd>
+        <dt class="t-gate">ゲート</dt><dd><strong>G1 — ブリーフ承認</strong>。<code>/approve</code> コメント経由。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">1</div>
+    <div>
+      <h3>プランニング</h3>
+      <p class="purpose">承認済みブリーフ → 技術プラン → 依存順に並んだ、各々 1 PR サイズの子 Issue。</p>
+      <dl>
+        <dt class="t-trigger">トリガー</dt><dd><code>labeled: state:spec</code>。</dd>
+        <dt class="t-script">スクリプト</dt><dd>リスクエンジン。プランの宣言された面と、ブリーフのビジネスインパクトのフィールドを、プロジェクトが注入したポリシーパックとドメインマップに照らして評価する。その義務が、G2 が必要かどうかを決める。</dd>
+        <dt>エージェント</dt><dd><strong>Architect</strong>（Opus）。コードベースのマッピングには、読み取り専用の Explorer サブエージェント（Haiku）を伴う。</dd>
+        <dt class="t-gate">ゲート</dt><dd><strong>G2 — プラン承認</strong>。リスクスコアが低いときは自動で通る。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">2</div>
+    <div>
+      <h3>実装</h3>
+      <p class="purpose">各タスクを隔離されたブランチで作り、PR が存在する前にシミュレータでセルフ検証する。</p>
+      <dl>
+        <dt class="t-trigger">トリガー</dt><dd><code>labeled: state:ready</code> で、未解決の依存がない（スクリプトがチェック）。</dd>
+        <dt class="t-script">スクリプト</dt><dd>依存チェック、ワークツリー + ブランチの準備、プッシュ前にエージェントが通さねばならないローカルのリント／型チェック／テストのループ。</dd>
+        <dt>エージェント</dt><dd><strong>Implementer</strong>（Sonnet）。タスクごとに 1 つ、タスク横断で並列に、シミュレータのセルフ検証のため macOS ランナー上で。</dd>
+        <dt class="t-gate">ゲート</dt><dd>なし。境界付きリトライ、次に Opus の行き詰まり診断、次に人間へのエスカレーション。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">3</div>
+    <div>
+      <h3>レビュー</h3>
+      <p class="purpose">まず決定論的な CI。エージェントの判断は、それをすでに通ったコードに対してのみ。</p>
+      <dl>
+        <dt class="t-trigger">トリガー</dt><dd><code>pull_request.opened</code> / <code>synchronize</code>。</dd>
+        <dt class="t-script">スクリプト</dt><dd>フル CI — リント、型チェック、単体テスト、ビルド。赤い CI はあらゆるエージェントレビューをブロックする。壊れたコードにトークンゼロ。</dd>
+        <dt>エージェント</dt><dd>diff 要約（Haiku）。<strong>Code Reviewer</strong> + <strong>UX Reviewer</strong>（Opus）。各々、実装者と共有コンテキストを持たない新しいサブエージェントとして立ち上がる。所見は、誰かが動く前に敵対的に検証される（Opus）。これはヘッドレスに走る最初のステージ。<code>headless.review</code> がオンなら、code-reviewer はセッションのないランナー上で、読み取り専用かつプランモードで起動し、課金は Claude のサブスクリプションに対して行われる（<code>ANTHROPIC_API_KEY</code> はその環境から取り除かれる）。</dd>
+        <dt class="t-gate">ゲート</dt><dd><strong>G3 — PR 承認</strong>（native-review または solo-comment）。記録済みの判定が人間を要さないクラスは、偽の承認ではなく権限レコードを残す自動マージへと卒業する。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">4</div>
+    <div>
+      <h3>統合</h3>
+      <p class="purpose">main がすでに緑であるあいだ、トークンを費やさずに緑を保つ。</p>
+      <dl>
+        <dt class="t-trigger">トリガー</dt><dd><code>push: main</code>。<code>check_suite.completed</code>。</dd>
+        <dt class="t-script">スクリプト</dt><dd>マージのたびに CI + EAS 開発クライアントのビルド。キュー中の PR のリベース。</dd>
+        <dt>エージェント</dt><dd><strong>Build Sentinel</strong>（Sonnet）。赤い結果のときに<em>のみ</em>呼ばれる。修正するか差し戻し、それでも赤ならエスカレートする。</dd>
+        <dt class="t-gate">ゲート</dt><dd>なし。エスカレーションのみ。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-num">5</div>
+    <div>
+      <h3>テストと QA</h3>
+      <p class="purpose">決定論的な回帰テストは夜間に。エージェントの創造性は探索にのみ。このエッジがループを閉じる。</p>
+      <dl>
+        <dt class="t-trigger">トリガー</dt><dd><code>schedule</code>（夜間）+ マージ後のスモークのサブセット。</dd>
+        <dt class="t-script">スクリプト</dt><dd><strong>E2E 再生ランナー</strong>。エージェントがコンパイルしたトレースから、Gherkin シナリオを agent-device 上で再生する。エージェントによる再派生は、再生失敗時のみ。スイートは、出荷される機能ごとに育つ。受け入れ基準がシナリオになる。</dd>
+        <dt>エージェント</dt><dd>失敗のクラスタリング + 構造化されたバグ起票（Haiku）。<strong>QA Explorer</strong>（Sonnet）。新規・変更されたフローだけに対する探索的パス。</dd>
+        <dt class="t-gate">ゲート</dt><dd>ここにはなし。所見は Issue としてインテークへ戻る。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <h2>入口の経路 — プロジェクトはどうループに到達するか</h2>
+  <p class="prose">ループは定常状態の機構です。あらゆるステージは<em>ベースラインに対して</em>決定論的です。ドメインマップ、規約、CI、起動可能なアプリ。そのベースラインを確立することはステージではありません。それはループの前に、3 つの経路のいずれかで一度だけ起こります。</p>
+  <ul class="ladder">
+    <li><div><strong>Genesis — 新しいプロジェクト</strong><span>一発の <code>project-genesis</code> エージェント（Opus）。セッション内で人間にヒアリングし（多肢選択）、次にループの前提条件を確立します。アプリの骨格、リポジトリ + ラベル、インテークの質問を含む config、規約のドキュメント、ドメインマップ v0、CI。そして<em>マイルストーン 1 の Issue を <code>state:idea</code> でバックログに種まきします</em>。その種まきされたバックログが引き継ぎです。genesis は終了し、<code>agentflow-next</code> が Issue #1 を拾い、ループがその後のすべてを所有します。</span></div></li>
+    <li><div><strong>Adoption — 既存のアプリ</strong><span><code>agentflow-init project</code> と、コードベースの構造からドメインマップの草案を提案する adoption-audit エージェント。人間が各重要度を確認します（人間のままであるべき唯一の判断）。既存の規約は、発明されるのではなく、読み取られます。</span></div></li>
+    <li><div><strong>定常状態 — すでにループの中</strong><span>上で配線した 6 つのステージ。</span></div></li>
+  </ul>
+  <div class="principle prose">
+    <p><strong>成熟度はモード切り替えではなく、事実:</strong> config が <code>maturity: genesis | steady</code> を宣言し、<code>meta.maturity</code> としてポリシーエンジンに表面化されます。あらゆる変更が新しい画面、新しい依存、新しいドメインである若いプロジェクトは、定常状態のスコアリングでは窒息してしまいます。genesis のあいだ、パックはスコアリングルールを和らげ、G2 をロックされたトリガーのために取っておきます。一方で自動マージは、いずれにせよ不可能なままです。<code>steady</code> への切り替えは、それ自体が意図的な人間の判断です。基盤が定まったと宣言する、その瞬間です。</p>
+  </div>
+
+  <h2>人間との接点</h2>
+  <ul class="gates">
+    <li><span class="gid">G1</span><div><strong>ブリーフ承認</strong><span>シェイプされた Issue への <code>/approve</code> コメント。軌道修正に最も安価な場所。</span></div></li>
+    <li><span class="gid">G2</span><div><strong>プラン承認</strong><span>リスクエンジンの義務がそう言うときにのみ必要。プロジェクト自身のドメインマップとポリシールールが駆動する。些細な修正はそのまま流れる。</span></div></li>
+    <li><span class="gid">G3</span><div><strong>マージ承認</strong><span><code>agent_identity</code> が agentflow に、作業の作成者となる独自の GitHub App を与えているところではネイティブな PR レビュー。そうでないところでは、SHA を明記した <code>/approve</code> コメント。GitHub は自分の PR の承認を禁じるため。<code>adopt --verify</code> が、リポジトリがどのモードにあるか、そしてその理由を報告する。実証された低リスクのクラスは、ラベル駆動の自動マージへと卒業していく。</span></div></li>
+    <li><span class="gid">G4</span><div><strong>リリース承認</strong><span>検証済みの <code>/approve G4</code> コメントはリリースを承認するが、意図的にラベルを動かさない。<code>agentflow-release</code> がそれから注釈付きタグと GitHub Release を作成し、そのリリースが存在して初めて <code>verified → released</code> の遷移を行う。ラベルは成果物に追随するので、<code>state:released</code> が、その裏に何もない状態で真になることは決してない。<code>release_kind</code> が、この経路が走るのか、パックの <code>ship</code> アダプターが走るのか、あるいはそのアイテムがすでに終端だったのかを決める。</span></div></li>
+  </ul>
+  <p class="prose"><strong>常設のルール:</strong> どのステージでもいつでも割り込めます。あらゆるエージェントは、境界付きリトライを使い切ったとき、空回りする代わりに通知でエスカレートします。沈黙はつねに進行を意味し、決して停滞ではありません。そしてゲートは、人間のいる場所で人間に会いに行きます。対話的なセッションでは、エージェントは多肢選択のプロンプトで判断を集め、人間自身の <code>gh</code> アカウントを通じて <code>/approve</code> の成果物を投稿します。記録は GitHub であって、会話ではありません。コメント駆動の承認は、非同期の経路として残ります。純粋な<strong>承認インボックス</strong>モジュールが、いま G1、G2、G4 で待っているすべてを集め、各アイテムを、それが照らして判断されるべき正確な成果物（ブリーフ、プラン、リリースのコメント）と対にし、成果物のないアイテムを提示することを拒みます。だから、キューをさばく人間が、誰も書いていないブリーフを承認してしまうことはありません。G3 は、そのキューから意図的に欠けています。マージは diff によって判断されるものであって、リストからではないからです。</p>
+  <p class="prose"><strong>作業と判断は、作成者が異なります。</strong> エージェントは作業を作成します。ブランチ、コミット、PR、レビューと判定のコメントを、agentflow の GitHub App として。人間は判断を作成します。<code>/approve</code>、レビュー承認、マージを。これは合意ではなく強制されています。ゲートバリデーターは、承認者リストを参照する前に、ボットが作成したいかなる承認も拒み、<code>approvers</code> は人間のログインだけとして検証されます。例外は 1 つ存在し、その権限はエージェントのものではなくエンジンのものです。記録済みのリスク判定がすでに <code>human-merge</code> を持たず、<code>auto-merge</code> のブロックも持たず、マージされる head を明確に記述している PR に対する G3 です。それはまさに、ループがすでに無人でマージする条件なので、App は判断を発行するのではなく、書き写します。これを裁定する判定リーダーは、たった 1 つのルール — <em>不在は拒否</em> — に基づきます。判定が欠けているか、パースできないか、SHA を持たないか、別のコードに対して計算されたものなら、何も承認しません。そしてループが無人でマージするとき、それはマージを先に記録してからマージし、何がそれを許したかを名指す権限レコードを残します。そのレコードは、<code>/approve</code> の行に決して似ないよう、構造上禁じられています。App はどこでも任意です。App のないリポジトリは、人間自身の認証で同じループを走らせます。</p>
+
+  <h2>E2E モデル — 一度コンパイルし、永遠に再生する</h2>
+  <p class="prose">シナリオは Gherkin で書かれます。振る舞いを表し、読みやすく、タグ付き（<code>@checkout</code> はドメインマップに束縛され、<code>@smoke</code> はマージ後のサブセットを印します）。この振る舞いの層の下には、人間が書かないコンパイル済みの成果物があります。</p>
+  <ul class="prose">
+    <li><strong>初回 — エージェントが解釈する（L2）。</strong> Sonnet のエージェントがステップ（「ユーザーがチェックアウトをタップしたとき」）を読み、パックの <code>verify</code> プリミティブを通じてアプリを駆動し、<strong>コンパイル済みトレース</strong>を出力します。解決されたセレクタ（固定の解決順: <code>testID</code> → アクセシビリティラベル → 可視テキスト）を伴う、順序付けられたプリミティブなアクション、待機、アサーション。トレースは <code>e2e/traces/</code> にコミットされます。バージョン管理され、レビュー可能なコードです。</li>
+    <li><strong>それ以降のあらゆる実行 — 決定論的な再生（L0）。</strong> ランナーはトレースをドライバーに対して直接再生します。ループの中にモデルはなく、速く、トークンゼロ、同一の判定。これが夜間スイートです。</li>
+    <li><strong>再生失敗 — ラダーが決める。</strong> <code>trace-deriver</code> エージェントがステップを再派生します（1 段のエスカレーション、記録あり）。成功すれば、UI は変わったが振る舞いは保たれています。トレースは PR 経由で更新され、それは G3 を通るので、アサーションをこっそり弱めるトレースも、なお人間に会います。エージェントも失敗すれば、振る舞いが壊れています。証跡バンドル → トリアージ → Issue としてインテークへ。</li>
+  </ul>
+  <p class="prose"><strong>v1.0 の状況:</strong> ランナーのコアは作られてテスト済みです。Gherkin のパーサー、タグ選択、<code>execute-step</code> アダプター上でのトレース再生、<code>needs-derivation</code> の発行。そして <code>trace-deriver</code> エージェントは定義済みです。しかし、トレースをコンパイルすること（<code>verify</code> の駆動）も、それを再生すること（<code>execute-step</code> の駆動）も、プラットフォームパックのアダプターを通じて走り、<code>pack-expo</code> はまだそれらを実装していません。だからこのモデル全体は、仕様化されコアに配線されてはいますが、パックが継ぎ目を埋めるまで、端から端までは走りません。</p>
+  <div class="principle prose">
+    <p><strong>経済性:</strong> トークンは、新しいシナリオと変わった UI にのみ費やされます。スイートの規模ではなく、変更に比例します。変わっていないアプリでの 50 シナリオの夜間実行は、何もかかりません。そして「不安定なセレクタ」対「本物の回帰」が、判断ではなく決定論的な区別になります。</p>
+  </div>
+
+  <h2>ツールキットのパッケージング — コア、パック、プロジェクト</h2>
+  <p class="prose">知識の層ごとに 1 つ、3 つの成果物。インストーラーは、プロジェクトをコアと、宣言されたプラットフォームパックに配線し、両者のバージョンをピン留めします。実質的なものはすべて、1 か所でアップグレードされます。</p>
+  <pre class="block">agent-workflow/                     # コア — このリポジトリ、プラットフォームに無関心
+├── actions/          # 複合 GitHub Actions: gate-check · risk-verdict · dispatch · post-merge · auto-merge
+├── scripts/          # state · policy engine · facts · gate validator · verdict reader · log (ledger/audit) · release · identity · hierarchy · next · e2e
+├── policies/         # プラットフォーム中立なベースラインパック（diff サイズ、共有モジュール、テスト、広げた自己改変ガード、高ドメインルール）
+├── scenarios/        # 振る舞いの DSL 文法 + ランナーのコア（実行器に非依存）
+├── agents/           # 11 個の定義: product-shaper · architect · implementer · code/ux reviewers (Opus) · sentinel · qa-explorer · trace-deriver · triage · project-genesis · adoption-auditor
+├── interfaces/       # run · verify · execute-step · ship — コア↔パックの契約
+└── init/             # インストーラー: アプリのリポジトリをコア + 宣言されたパックに配線
+
+packs/expo/                         # プラットフォームパック — React Native Expo
+├── policies/         # ✅ プラットフォームのハードトリガー: ios/**、app.config.*、SDK バンプ、ネイティブ依存
+├── runners.yml       # ✅ 宣言: シミュレータのジョブ向けセルフホスト macOS ランナー
+├── skills/           # ⏳ 仕様化済み、未実装: expo-dev · mobile-verify · release (EAS)
+└── adapters/         # ⏳ 仕様化済み、未実装: run/verify → シミュレータ + agent-device · execute-step · ship → EAS
+
+your-app/                           # プロジェクト — 利用側の任意のリポジトリ
+├── .github/workflows/agentflow-*.yml   # ピン留めしたコアの Action を呼ぶ薄いスタブ
+├── agentflow.config.json               # platform: rn-expo · インテークの質問 · モデルのオーバーライド
+├── domains.yml                         # ビジネス能力 → コードのマップ + 重要度
+├── policies/business.yml               # このアプリのリスクルール（権威あり）
+└── e2e/scenarios/*.feature             # このアプリの振る舞いのシナリオ</pre>
+  <p class="prose">アプリごとの config は、プロジェクトが異なる場所です。夜間のスイープがどのフローを歩くか、G2 にとって何が高リスクとみなされるか、どの変更クラスが自動マージできるか、そしてモデルティアのオーバーライド。ステートマシン、エージェント、インターフェースはどこでも同一です。それが、それらを決定論的で、ルーブリック駆動で、プラットフォームに無関心に保つことの見返りです。</p>
+
+  <h2>導入の道のり — クロール、ウォーク、ラン</h2>
+  <div class="phases">
+    <div class="phase">
+      <span class="ph-label">フェーズ 1 · クロール — 出荷済み</span>
+      <h3>スクリプト + 手動ディスパッチ</h3>
+      <p>L0 の層。ステートマシンの CLI、ラベル、ゲートバリデーター、リスクエンジン + 事実、判定リーダー、実行台帳、E2E ランナーのコア、<code>agentflow-next</code>。作られてテスト済み。エージェントは <code>/next</code> 経由で 1 つのローカルセッションから走る。これが、今日このリポジトリ自身のバックログを動かす、決定論的な骨格。</p>
+    </div>
+    <div class="phase">
+      <span class="ph-label">フェーズ 2 · ウォーク — おおむね出荷済み</span>
+      <h3>Actions 駆動 + 並列</h3>
+      <p>11 個のエージェント定義、インストーラー（<code>init labels/project/adopt</code>）、App アイデンティティ、複合 Actions（<code>gate-check</code>、<code>risk-verdict</code>、<code>dispatch</code>、<code>post-merge</code>、<code>auto-merge</code>）は出荷済み。まだ未着手: 実装者が並列のワークツリーでセルフ検証できるようにする <code>pack-expo</code> アダプターと、最初の実際の利用側アプリでのループ実行。セルフホスト macOS ランナーでの夜間 QA はコストの都合で保留。</p>
+    </div>
+    <div class="phase">
+      <span class="ph-label">フェーズ 3 · ラン — 部分的</span>
+      <h3>段階的な自律</h3>
+      <p>実証された変更クラスの判定ゲート付き自動マージと、低リスクプランの G2 自動通過は出荷済み。インストーラーは数分でリポジトリをループ対応にする。<strong>ヘッドレスレビュー</strong>（ステージ 1）は今日ランナー上で走る。<strong>ヘッドレスディスパッチの起動</strong>は作られているが、あらゆる状態でオフ出荷。ケイパビリティの継ぎ目を真に試す 2 つ目のプラットフォームパック（Web）は、まだこの先。</p>
+    </div>
+  </div>
+
+  <h2>ビルド状況 — v1.0</h2>
+  <p class="prose">決定論的なコアは作られ、テストされ、このリポジトリ自身のバックログを動かしています。残るのは、プラットフォームパックと、レビューより先のヘッドレスなステージです。<strong>未対応づけのコード</strong>は、コアに組み込みの既定を持ちません。<code>unmapped_criticality</code> はプロジェクトごとの config 値（既定 <code>null</code> — 寄与なし、<code>domains.yml</code> が存在するところにのみ適用）で、<code>domains.unmapped_fraction</code> は、プロジェクトがゲートにできる第一級の事実です。Haiku による分類はプロジェクトごとのオプトイン。インストーラーはそうしたゲートを 1 つすでに出荷しています。<code>unmapped_warn_fraction</code>（テンプレート既定値 <code>0.2</code>、<code>adopt --coverage</code> が強制）。だから腐敗検出は、ゼロから書くルールではなく、調整する config の数字です。<strong>ランナーの構成:</strong> セルフホストの Mac 1 台。GitHub Actions の concurrency グループでキューイングされます（シミュレータのジョブは 2 に上限）。スケールのトリガーは機械的で、キューの待ち時間の中央値が約 10 分を持続的に超えたら 1 台足します。<strong>インターフェースのシグネチャ</strong>は <code>interfaces/</code> に仕様化されています。各アダプターは実行可能ファイルで、stdin/stdout の JSON、共有された終了コード（0 正常 · 10 回復可能 · 20 致命的）が、その上の境界付きリトライのスクリプトに流れ込みます。ただし、まだどのパックもそれらを実装していません。<strong>E2E:</strong> 上記のコンパイル&再生モデル。コアは完成し、それらのアダプターを待っています。</p>
+
+  <footer>
+    agent-workflow · ループアーキテクチャ v1.0 · 2026年7月26日改訂 · 出荷済みのコードと突き合わせて整合。決定論的なコア、エージェントの陣容、App アイデンティティ、ヘッドレスレビューは稼働中。pack-expo アダプターとヘッドレスディスパッチの起動はまだこの先。 · この文書は英語版 agent-loop-architecture.html（6bbc019 時点）の内容に基づいています。
+  </footer>
+</div>
+<script>
+(function () {
+  var LANES = [
+    { key: "E", label: "GitHub イベント", y: 26 },
+    { key: "D", label: "決定論的", y: 112 },
+    { key: "M", label: "マイクロエージェント", y: 198 },
+    { key: "A", label: "エージェント", y: 284 },
+    { key: "G", label: "人間のゲート", y: 384 }
+  ];
+  var NH = 52, NW = 148, GUTTER = 132, COLSTEP = 161;
+  var COLS = ["0 · インテーク", "1 · プラン", "2 · 実装", "3 · レビュー", "4 · 統合", "5 · QA", "6 · リリース"];
+
+  function cx(col) { return GUTTER + col * COLSTEP; }
+  function laneY(k) { for (var i = 0; i < LANES.length; i++) if (LANES[i].key === k) return LANES[i].y; return 0; }
+
+  var nodes = [
+    { id: "e0", col: 0, lane: "E", t: "issues.opened", s: "または labeled: idea", type: "event",
+      what: "人間がアイデアやバグを起票するか、QA ファイラーが構造化された Issue を開きます。これはループの唯一の入口で、システム自身の所見を含め、すべてがここを通ります。",
+      why: "GitHub の Webhook。無料で、即時で、すでに記録のシステムです。",
+      emits: "インテークのワークフローをディスパッチします。" },
+    { id: "d0", col: 0, lane: "D", t: "インテークスクリプト", s: "テンプレートチェック · 遷移", type: "script",
+      what: "Issue をインテークテンプレートに照らして検証し、ラベルを正規化し、アイテムをステートマシンに入れます。不正な入力は、何が欠けているかを説明するコメントとともに拒否します。",
+      why: "構造化フィールドに対する純粋なルールチェック。判断は関与しないので、トークンは費やしません。",
+      emits: "state:idea の有効な Issue、または修正を促すコメント。" },
+    { id: "m0", col: 0, lane: "M", t: "トリアージ", s: "種別 · 重複 · 優先度", type: "micro", tier: "Haiku",
+      what: "アイテムを分類し（バグ／機能／雑務）、オープンな Issue に対して重複をチェックし、優先度を提案します。",
+      why: "ルーブリックのある閉じた集合の分類。誤った判断は数秒後の G1 で捕まるので、最も安価なモデルが正解のモデルです。",
+      emits: "種別、優先度、重複のラベル。" },
+    { id: "a0", col: 0, lane: "A", t: "Product Shaper", s: "ヒアリング経由のブリーフ", type: "agent", tier: "Opus",
+      what: "人間にヒアリングして、曖昧な意図をブリーフへと変えます。問題、ユーザーストーリー、受け入れ基準、スコープ外。加えて、プロジェクトが注入したビジネスインパクトの質問。その答えは、リスクエンジンが消費する構造化フィールドになります。ヒアリングは既定で、人間のエージェントセッション内で、多肢選択の質問として行われます（タイピングは媒体ではなくフォールバック）。Issue コメントでのヒアリングは、ヘッドレス実行のための非同期のフォールバックです。ブリーフはどちらにせよ Issue に着地します。記録は GitHub であって、会話ではありません。QA ファイラーからの構造化済みのバグ報告は、ヒアリングを飛ばします。",
+      why: "曖昧さから本当の意図を引き出すのは、答えの定まらない判断です。インテークの中で、フロンティアモデルに値する唯一の場所です。",
+      emits: "ブリーフ。Issue コメントとして投稿されます。" },
+    { id: "g0", col: 0, lane: "G", t: "G1 · ブリーフ承認", s: "/approve コメント", type: "gate",
+      what: "人間がブリーフを確認します。セッション内で多肢選択のプロンプトを通じて（エージェントはそれから、人間自身の gh アカウントを通じて /approve コメントを投稿するので、監査の成果物は同一です）、または /approve を直接コメントして。スクリプトが承認者を検証し、状態を切り替えます。",
+      why: "ループ全体で軌道修正に最も安価な場所。どんなプランやコードも存在する前です。",
+      emits: "labeled: state:spec → プランニングをトリガーします。" },
+
+    { id: "e1", col: 1, lane: "E", t: "labeled: state:spec", s: "ブリーフ承認済み", type: "event",
+      what: "G1 承認スクリプトが状態ラベルを適用し、そのラベルイベントがプランニングのワークフローをディスパッチします。",
+      why: "ラベル変更はステートマシンの遷移です。どれも無料の Webhook です。",
+      emits: "プランニングをディスパッチします。" },
+    { id: "d1", col: 1, lane: "D", t: "リスクエンジン", s: "ポリシーパック · ドメインマップ", type: "script",
+      what: "プランの宣言された面と、ブリーフのビジネスインパクトのフィールドを、プロジェクトが注入したポリシーパックに照らして評価します。ドメインマップ（コード領域ごとのビジネス重要度）に技術ベースラインを加えたもの。単なるスコアではなく義務を出力します。G2 を要求する、自動マージをブロックする、ドメインシナリオを走らせる。PR 時には実際の diff に対して再実行され、プラン対 diff、ブリーフ対ドメインの不一致が自動的にエスカレートします。",
+      why: "ビジネスリスクの判断は、ドメインマップで人間が一度だけ下し、その後は永遠に決定論的に強制されます。エンジンはツールキット、あらゆる基準はプロジェクトが所有するデータです。",
+      emits: "risk:* ラベル + 監査可能な、要因ごとのコメント。" },
+    { id: "a1", col: 1, lane: "A", t: "Architect", s: "+ Explorer サブエージェント", type: "agent", tier: "Opus",
+      what: "コードベースを読み（Haiku 上の安価な読み取り専用 Explorer サブエージェント経由）、技術プランを書き、それを依存順に並んだ、各々 1 PR サイズの子 Issue へと分解します。",
+      why: "アーキテクチャと分解は、ループの中で最もレバレッジの高い判断です。悪いプランは、下流でコストを何倍にもします。",
+      emits: "プランのコメント + state:ready の子 Issue（高リスクなら G2 まで保留）。" },
+    { id: "g1", col: 1, lane: "G", t: "G2 · プラン承認", s: "低リスクなら自動通過", type: "gate",
+      what: "高リスクのプランは、人間が /approve で承認します。低リスクのプランは、リスクスコアラーに従って自動的に通ります。",
+      why: "リスクベースのゲーティング。人間の注意は、誤ったプランが高くつくところにのみ向かいます。",
+      emits: "子 Issue が state:ready へ解放されます。" },
+
+    { id: "e2", col: 2, lane: "E", t: "labeled: state:ready", s: "子タスクごと", type: "event",
+      what: "解放された各子 Issue は自身のイベントを発火するので、独立したタスクが並列にディスパッチされます。",
+      why: "Issue ごとのイベントが、無料で並列性を与えます。作るべきスケジューラはありません。",
+      emits: "タスクごとに 1 つの実装ジョブをディスパッチします。" },
+    { id: "d2", col: 2, lane: "D", t: "準備スクリプト", s: "依存 · ワークツリー · チェック", type: "script",
+      what: "依存する Issue がクローズされていることを確認し、ブランチと隔離されたワークツリーを作成し、実装者がプッシュ前に通さねばならないローカルのチェックループ（リント、型チェック、単体テスト）を強制します。",
+      why: "環境のセットアップと合否のチェックは機械的です。エージェントは、準備の整ったワークスペースと、厳しい品質のバーを受け継ぐべきです。",
+      emits: "準備されたワークツリー + 緑／赤のローカルチェックコマンド。" },
+    { id: "a2", col: 2, lane: "A", t: "Implementer", s: "ビルド + セルフ検証", type: "agent", tier: "Sonnet",
+      what: "1 つのタスクをテストファーストで実装し、それから iOS シミュレータでアプリを起動し、PR を開く前に変更を視覚的に確認します（スクリーンショットを添付）。セルフホストの macOS ランナー上で走ります。",
+      why: "承認済みプランに対するコード生成は、主力のティアです。難しい決定はすでにプランが担っています。",
+      emits: "説明、スクリーンショット、通過したローカルチェックを備えた PR。" },
+
+    { id: "e3", col: 3, lane: "E", t: "pull_request.opened", s: "または synchronize", type: "event",
+      what: "PR（またはそれへの新しいプッシュ）が、レビューパイプラインをディスパッチします。",
+      why: "ネイティブな GitHub イベント。レビューの状態は PR 自体に宿ります。",
+      emits: "CI を、次にレビューをディスパッチします。" },
+    { id: "d3", col: 3, lane: "D", t: "CI ゲート", s: "リント · 型 · 単体 · ビルド", type: "script",
+      what: "フルの決定論的 CI。エージェントのレビュアーは、それが緑になるまでブロックされます。壊れたコードがモデルに届くことはありません。",
+      why: "コアのコストルール。無料のチェックが先に走り、赤い CI はレビューにトークンゼロを意味します。",
+      emits: "緑のチェックスイート → エージェントレビューを解錠します。" },
+    { id: "m3", col: 3, lane: "M", t: "diff 要約", s: "レビュアー + 人間向け", type: "micro", tier: "Haiku",
+      what: "diff を要約し、ブリーフの受け入れ基準に対応づけて、エージェントのレビュアーと人間の双方に、安価な見取りのパスを与えます。",
+      why: "判断ではなく圧縮。",
+      emits: "PR 上の要約コメント。" },
+    { id: "a3", col: 3, lane: "A", t: "Code + UX レビュアー", s: "新しいコンテキスト · 検証済み", type: "agent", tier: "Opus",
+      what: "Code Reviewer は正しさ、規約、セキュリティをチェックします。UX Reviewer はブランチをシミュレータで走らせ、実際のピクセルを受け入れ基準に照らして判断します。両者とも新しいサブエージェントとして立ち上がります。実装者との共有コンテキストはないので、レビューはコードが何をするかを判断し、なぜ書かれたかを判断することは決してありません。所見は、実装者が動く前に敵対的に検証されます。",
+      why: "レビューはループの、荷重を支える品質ゲートです。その言葉がクリティカルなコードをマージするので、フロンティアモデルに値します。そして実装者の推論からの独立こそが、その判断を、対価を払う価値のあるものにします。",
+      emits: "検証済みの所見 → 実装者の修正ループ、または G3 向けのクリーンな要約。" },
+    { id: "g3", col: 3, lane: "G", t: "G3 · PR 承認", s: "2 モード · 自動マージ", type: "gate",
+      what: "PR ネイティブで、エージェント PR を誰が作成するかで決まる 2 つのモードのいずれか。native-review: App アイデンティティが PR を作成するので、人間が本物の承認レビューを提出します。solo-comment: PR は人間自身のもの（GitHub は自己レビューを禁じる）なので、成果物は SHA を明記した /approve コメントとその後のマージです。adopt --verify が、リポジトリがどのモードにあるか、そしてその理由を報告します。記録済みの判定が人間を要さない変更クラスは、自動マージへと卒業します。それはマージを先に記録してからマージし、何がそれを許したかを名指す権限レコードを残します。偽の /approve は決してありません。",
+      why: "ブランチ保護が、このゲートを、エージェントによるものも含めてバイパス不能にします。唯一の無人の経路は、どのエージェントでもなく、エンジンの記録済みの判定によって承認されます。",
+      emits: "main へのマージ、加えてネイティブなレビューまたは権限レコードのコメント。" },
+
+    { id: "e4", col: 4, lane: "E", t: "push: main", s: "check_suite の結果", type: "event",
+      what: "main への各マージが統合パイプラインを発火し、完了したチェックスイートが結果とともに再び発火します。",
+      why: "2 つの無料のイベントが、ハッピーパスと失敗パスの両方をカバーします。",
+      emits: "ビルドをディスパッチします。結果は、赤のときのみ Sentinel へルーティングされます。" },
+    { id: "d4", col: 4, lane: "D", t: "CI + EAS ビルド", s: "マージごとに開発クライアント", type: "script",
+      what: "フル CI を走らせ、新しい EAS 開発クライアントのビルドを生成し、加えてキュー中の PR をリベースします。",
+      why: "完全に機械的。そしてハッピーパスでは、統合はトークンゼロです。",
+      emits: "緑の main + インストール可能なビルド、または赤いスイート。" },
+    { id: "a4", col: 4, lane: "A", t: "Build Sentinel", s: "赤のときのみ走る", type: "agent", tier: "Sonnet",
+      what: "main が赤になったときのみ呼ばれます。診断し、前進的に修正するか、問題のマージを差し戻し、どちらにせよ人間に通知します。",
+      why: "条件付きの呼び出しがコストモデルです。エージェントは、定常ではなく例外のために存在します。",
+      emits: "緑の main が回復、またはエスカレーション。" },
+
+    { id: "e5", col: 5, lane: "E", t: "schedule: nightly", s: "+ マージ後スモーク", type: "event",
+      what: "夜間の cron がフルのスイープを走らせます。各マージも、変わったフローに触れるシナリオの、小さなスモークのサブセットをトリガーします。",
+      why: "時間ベースとマージベースのトリガーを組み合わせることで、フルのスイートをたえず走らせることなく、フィードバックの遅延を低く保ちます。",
+      emits: "E2E ランナーを（そして夜間には QA Explorer を）ディスパッチします。" },
+    { id: "d5", col: 5, lane: "D", t: "E2E 再生ランナー", s: "コンパイル済みトレース · トークンゼロ", type: "script",
+      what: "エージェントがコンパイルしたトレース（解決されたセレクタ、待機、アサーション）を、ドライバーに対してステップごとに再生します。ループの中にモデルはありません。再生失敗時には、trace-deriver エージェントがステップを一度再派生します。成功は UI が変わったこと（トレースは PR 経由で更新）、失敗は振る舞いが壊れたこと（バグを起票）を意味します。ランナーのコアは出荷済みです。Gherkin のパース、タグ選択、execute-step アダプター上での再生、needs-derivation の発行。しかし再生も派生も、パックの execute-step と verify アダプターを通じてアプリを駆動し、pack-expo はまだそれを作っていないので、今日、端から端まで走るトレースはありません。スイートは機能が出荷されるにつれて育ちます。受け入れ基準がシナリオの骨格へとコンパイルされます。",
+      why: "回帰テストは決定論的で、速く、無料でなければなりません。トークンは新しいシナリオと変わった UI にのみ費やされ、変わっていないアプリの夜間実行には決して費やされません。",
+      emits: "証跡を伴う構造化された合否の結果、トレース更新の PR、トリアージへ回す本物の失敗。" },
+    { id: "m5", col: 5, lane: "M", t: "失敗トリアージ + ファイラー", s: "クラスタリング · Issue 起票", type: "micro", tier: "Haiku",
+      what: "失敗をクラスタリングし（10 個の重複報告ではなく、1 つの根本原因）、ランナーの証跡から構造化されたバグ報告を起草し、スクリプトがそれらを Issue として起票します。それらは通常の正面玄関からインテークに再び入ります。",
+      why: "構造化された出力に対するグルーピングと起草は、安価なモデルの仕事です。起票そのものはスクリプトです。",
+      emits: "構造化済みの Issue → ステージ 0 へ戻る（ループのエッジ）。" },
+    { id: "a5", col: 5, lane: "A", t: "QA Explorer", s: "探索的パス", type: "agent", tier: "Sonnet",
+      what: "新規・最近変わったフローに焦点を当てた、夜間の探索的ドッグフーディング。シナリオがまだカバーしていないエッジケースを探り、固定する価値のある振る舞いに、新しいシナリオを提案します。",
+      why: "探索は、本当に創造性を必要とする唯一の QA タスクです。繰り返し可能なものはすべてランナーのものです。",
+      emits: "所見は同じトリアージ／ファイラーの経路へ。シナリオの提案は PR として。" },
+
+    { id: "e6", col: 6, lane: "E", t: "workflow_dispatch", s: "人間が起動", type: "event",
+      what: "人間がリリースの準備ができたと判断し、リリースワークフローを手動でトリガーします（またはマイルストーン完了のラベルがそれを提案できます）。",
+      why: "リリースは自動化ではなく意図です。トリガーそのものが人間の行為です。",
+      emits: "リリースパイプラインを G4 へディスパッチします。" },
+    { id: "g6", col: 6, lane: "G", t: "G4 · リリース承認", s: "/approve · 承認のみ", type: "gate",
+      what: "人間が、検証済みの /approve G4 コメントでリリースを承認します。そのコメントは承認しますが、意図的にラベルを動かしません。state:released への遷移は、リリースが実際に存在して初めて起こります。release_kind が「リリース」の意味を決めます。tag は agentflow-release を走らせ、store はパックの ship アダプターへ引き渡し、none は G4 をまったく設けず 'verified' を終端にします。",
+      why: "ラベルは、承認ではなく成果物に追随しなければなりません。ラベルを直接動かした G4 が、かつて、裏にタグのないアイテムを released と印付けたことがありました（#45）。",
+      emits: "agentflow-release を承認します。状態の変化はまだありません。" },
+    { id: "d6", col: 6, lane: "D", t: "リリーススクリプト", s: "タグ · リリース · 遷移", type: "script",
+      what: "release_kind: tag のための agentflow-release。package.json からバージョンを読み、自ら発行することは決してない、検証済みの G4 承認を確認し、それから注釈付きの git タグを作成してプッシュし、生成されたノートで GitHub Release を作成し、そのあとで初めて verified → released へ遷移させます。バージョンをバンプすることも、変更履歴ファイルを書くことも、ストアへ提出することもありません。ストアへの出荷はパックの ship アダプターです。--verify は、裏にタグのないアイテムが state:released になっていないことをアサートします。",
+      why: "承認されれば、あらゆるステップは機械的です。承認からリリースが存在するまでの間、トークンゼロ。遷移は信頼ではなく成果物にゲートされます。",
+      emits: "タグ + GitHub Release、そして state:released。" }
+  ];
+
+  var chains = [
+    ["e0","d0","m0","a0","g0"],
+    ["e1","d1","a1","g1"],
+    ["e2","d2","a2"],
+    ["e3","d3","m3","a3","g3"],
+    ["e4","d4"],
+    ["e5","d5","m5","a5"],
+    ["e6","g6"]
+  ];
+  var cross = [
+    { from: "g0", to: "e1" },
+    { from: "g1", to: "e2" },
+    { from: "a2", to: "e3" },
+    { from: "g3", to: "e4" },
+    { from: "d4", to: "e5", dashed: true },
+    { from: "d4", to: "a4", dashed: true, side: true }
+  ];
+
+  var byId = {};
+  nodes.forEach(function (n) { byId[n.id] = n; });
+  function nx(n) { return cx(n.col); }
+  function ny(n) { return laneY(n.lane); }
+
+  var FILL = { event: "var(--trigger-soft)", script: "var(--script-soft)", micro: "var(--micro-soft)", agent: "var(--accent-soft)", gate: "var(--gate-soft)" };
+  var STROKE = { event: "var(--trigger)", script: "var(--script)", micro: "var(--accent)", agent: "var(--accent)", gate: "var(--gate)" };
+  var TYPENAME = { event: "GitHub イベント", script: "決定論的スクリプト", micro: "マイクロエージェント", agent: "エージェント", gate: "人間のゲート" };
+  var TAGCLASS = { event: "trigger", script: "script", micro: "agent", agent: "agent", gate: "gate" };
+
+  var W = 1270;
+  var svgParts = [];
+  svgParts.push('<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)" opacity="0.7"/></marker><marker id="arrLoop" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="var(--trigger)"/></marker></defs>');
+
+  LANES.forEach(function (l, i) {
+    if (i % 2 === 1) svgParts.push('<rect class="band" x="0" y="' + (l.y - 14) + '" width="' + W + '" height="' + (NH + 28) + '"/>');
+    svgParts.push('<text class="lane-label" x="14" y="' + (l.y + NH / 2 + 3) + '">' + l.label + '</text>');
+  });
+  COLS.forEach(function (c, i) {
+    svgParts.push('<text class="col-label" x="' + (cx(i) + NW / 2) + '" y="14" text-anchor="middle">' + c + '</text>');
+  });
+
+  function vEdge(a, b) {
+    var x = nx(a) + NW / 2, y1 = ny(a) + NH, y2 = ny(b) - 3;
+    return '<path class="edge" marker-end="url(#arr)" d="M' + x + ',' + y1 + ' L' + x + ',' + y2 + '"/>';
+  }
+  chains.forEach(function (chain) {
+    for (var i = 0; i < chain.length - 1; i++) svgParts.push(vEdge(byId[chain[i]], byId[chain[i + 1]]));
+  });
+  cross.forEach(function (e) {
+    var a = byId[e.from], b = byId[e.to];
+    var cls = "edge" + (e.dashed ? " dashed" : "");
+    if (e.side) {
+      var x1 = nx(a) + NW, ym = ny(a) + NH / 2, xm = nx(a) + NW + 10, y2 = ny(b) + NH / 2;
+      svgParts.push('<path class="' + cls + '" marker-end="url(#arr)" d="M' + x1 + ',' + ym + ' L' + xm + ',' + ym + ' L' + xm + ',' + y2 + ' L' + (nx(b) + NW + 3) + ',' + y2 + '"/>');
+    } else {
+      var sx = nx(a) + NW, sy = ny(a) + NH / 2, mx = nx(b) - 8, ty = ny(b) + NH / 2, tx = nx(b) - 3;
+      svgParts.push('<path class="' + cls + '" marker-end="url(#arr)" d="M' + sx + ',' + sy + ' L' + mx + ',' + sy + ' L' + mx + ',' + ty + ' L' + tx + ',' + ty + '"/>');
+    }
+  });
+
+  var la = byId["a5"], le = byId["e0"];
+  var lx = nx(la) + NW / 2, ly = ny(la) + NH, bottomY = 492, leftX = 120;
+  svgParts.push('<path class="edge dashed loop" marker-end="url(#arrLoop)" d="M' + lx + ',' + ly + ' L' + lx + ',' + bottomY + ' L' + leftX + ',' + bottomY + ' L' + leftX + ',' + (ny(le) + NH / 2) + ' L' + (nx(le) - 3) + ',' + (ny(le) + NH / 2) + '"/>');
+  svgParts.push('<text class="edge-label" x="' + (leftX + 240) + '" y="' + (bottomY - 8) + '">バグと所見が新しい Issue としてインテークに再び入る</text>');
+
+  nodes.forEach(function (n) {
+    var x = nx(n), y = ny(n);
+    var tierBadge = n.tier ? '<text class="n-sub" x="' + (x + NW - 8) + '" y="' + (y + 14) + '" text-anchor="end" font-weight="700" fill="' + STROKE[n.type] + '">' + n.tier + '</text>' : "";
+    svgParts.push(
+      '<g class="node" data-id="' + n.id + '" tabindex="0" role="button" aria-label="' + n.t + '">' +
+      '<rect x="' + x + '" y="' + y + '" width="' + NW + '" height="' + NH + '" rx="7" fill="' + FILL[n.type] + '" stroke="' + STROKE[n.type] + '" stroke-width="1.4"/>' +
+      '<text class="n-title" x="' + (x + 10) + '" y="' + (y + 21) + '">' + n.t + '</text>' +
+      (n.s ? '<text class="n-sub" x="' + (x + 10) + '" y="' + (y + 38) + '">' + n.s + '</text>' : "") +
+      tierBadge +
+      '</g>'
+    );
+  });
+
+  var svg = document.getElementById("wiring");
+  svg.innerHTML = svgParts.join("");
+
+  var dTitle = document.getElementById("d-title");
+  var dChips = document.getElementById("d-chips");
+  var dBody = document.getElementById("d-body");
+  var selected = null;
+
+  function select(id) {
+    var n = byId[id];
+    if (!n) return;
+    if (selected) selected.classList.remove("selected");
+    selected = svg.querySelector('[data-id="' + id + '"]');
+    if (selected) selected.classList.add("selected");
+    dTitle.textContent = n.t + (n.s ? " — " + n.s : "");
+    var chips = '<span class="tag ' + TAGCLASS[n.type] + '">' + TYPENAME[n.type] + '</span>';
+    chips += n.tier ? '<span class="tag agent">' + n.tier + '</span>' : (n.type === "script" || n.type === "event" ? '<span class="tag script">0 トークン</span>' : "");
+    dChips.innerHTML = chips;
+    dBody.className = "";
+    dBody.innerHTML =
+      "<p><strong>何を</strong> " + n.what + "</p>" +
+      "<p><strong>なぜこの段か</strong> " + n.why + "</p>" +
+      "<p><strong>出力</strong> " + n.emits + "</p>";
+  }
+
+  svg.addEventListener("click", function (ev) {
+    var g = ev.target.closest ? ev.target.closest(".node") : null;
+    if (g) select(g.getAttribute("data-id"));
+  });
+  svg.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    var g = ev.target.closest ? ev.target.closest(".node") : null;
+    if (g) { ev.preventDefault(); select(g.getAttribute("data-id")); }
+  });
+})();
+</script>
+</body>
+</html>
