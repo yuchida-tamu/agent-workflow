@@ -369,10 +369,10 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
       <p data-i18n="start.honesty"></p>
     </div>
     <div class="links reveal">
-      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/README.md" data-i18n="links.readme"></a>
-      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/docs/getting-started.md" data-i18n="links.gettingStarted"></a>
-      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.html" data-i18n="links.architecture"></a>
-      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/CHANGELOG.md" data-i18n="links.changelog"></a>
+      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/README.md" data-i18n="links.readme" data-i18n-href="links.readme"></a>
+      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/docs/getting-started.md" data-i18n="links.gettingStarted" data-i18n-href="links.gettingStarted"></a>
+      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.html" data-i18n="links.architecture" data-i18n-href="links.architecture"></a>
+      <a href="https://github.com/yuchida-tamu/agent-workflow/blob/main/CHANGELOG.md" data-i18n="links.changelog" data-i18n-href="links.changelog"></a>
     </div>
   </div>
 </section>
@@ -446,38 +446,38 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
     },
     ja: {
       "a11y.skip": "本文へスキップ",
-      "hero.eyebrow": "GitHub 上で動く、プラットフォーム非依存のエージェント開発ループ",
-      "hero.h1": "アイデアは Issue として入り、テスト済み・リリース済みの機能として出てくる。",
-      "hero.lead": "人が関わるのは、意図的に置かれた承認ゲートだけです。スクリプトで決められることはスクリプトが決め、エージェントは判断が要る場面にだけトークンを使います。",
+      "hero.eyebrow": "プラットフォームを問わない、GitHub 上のエージェント開発ループ",
+      "hero.h1": "入口はアイデアの Issue、出口はテスト済み・リリース済みの機能。",
+      "hero.lead": "人が介在するのは、あらかじめ定められた承認ゲートだけです。スクリプトで決められることはスクリプトが決め、エージェントは判断が必要な場面にだけトークンを使います。",
       "hero.ctaLoop": "ループを見る",
       "hero.ctaStart": "はじめる",
       "legend.event": "イベント", "legend.eventDesc": "GitHub の webhook やスケジュール",
       "legend.script": "スクリプト", "legend.scriptDesc": "決定論的・トークン 0",
-      "legend.agent": "エージェント", "legend.agentDesc": "モデルにルーティングされた推論",
+      "legend.agent": "エージェント", "legend.agentDesc": "モデルを振り分けた推論",
       "legend.gate": "ゲート", "legend.gateDesc": "人の判断",
 
       "loop.eyebrow": "ループ",
-      "loop.h2": "アイデアから出荷まで、ループの一周。",
-      "loop.body": "アイデアは Issue として入り、時計回りに進みます。ブリーフへ整形され、タスクへ計画され、独立したブランチで実装され、独立したエージェントにレビューされ、そしてリリースされます。QA が見つけた問題は新しい Issue として戻り、ループが閉じて再び回り始めます。",
-      "loop.caption": "GitHub がイベントバスです。どの矢印も webhook で、どのステージもステートレス。途中で何を止めても、次のイベントがラベルの示す地点から正確に再開します。",
+      "loop.h2": "最初から最後まで、ループの一周。",
+      "loop.body": "アイデアは Issue として入り、時計回りに進みます。ブリーフへ整形され、タスクへ落とし込まれ、独立したブランチで実装され、独立したエージェントにレビューされ、リリースされます。QA が見つけた問題は新しい Issue として戻り、こうしてループは閉じ、再び回り始めます。",
+      "loop.caption": "イベントバスは GitHub です。どの矢印も webhook、どのステージもステートレス。途中でどれを止めても、次のイベントがラベルの示す地点から正確に再開します。",
       "loop.center": "ループ",
 
       "ladder.eyebrow": "基本原則 1 · 決定論のはしご",
       "ladder.h2": "モデルよりスクリプトを。フロンティアより安価なモデルを。",
-      "ladder.body": "どのステップも、確実にこなせる最も低い段に置かれます。決定論的なチェックは必ずエージェントの起動より先に走ります。無料のチェックで弾けたはずの作業に、トークンを使うことはありません。",
-      "ladder.escalation": "ステップが失敗したときに上がれるのは、ちょうど一段だけです。しかもその昇格は理由とともに記録されます。機械的な作業のためにより上位のティアへ回されることはありません。",
+      "ladder.body": "どのステップも、確実にこなせる最も低い段に置きます。決定論的なチェックは、エージェントを起動する前に必ず走ります。無料のチェックで弾けるはずの作業に、トークンを使うことはありません。",
+      "ladder.escalation": "ステップが上がれるのは、失敗したときにちょうど一段だけです。その昇格も、理由とともに記録されます。機械的な作業のために上位のティアへ回すことはありません。",
 
       "gates.eyebrow": "基本原則 2 · 人が関わる場所",
-      "gates.h2": "4 つのゲート、それ以外は何も尋ねません。",
+      "gates.h2": "ゲートは 4 つ、ほかには何も尋ねません。",
       "gates.tagline": "<b>何を</b>・<b>やるかどうか</b>は人が決め、<b>どうやるか</b>はエージェントが決めます。",
-      "gates.body": "人の判断が生きるのは 4 つのゲートだけです。その間、ループは尋ねずに進みます。作業と判断は作者が異なります。エージェントはブランチ・コミット・PR・レビューを作り、人は承認を作ります。",
-      "gates.authors": "これは約束ではなくコードで強制されています。ゲートの検証器は、承認者リストを参照するより前に、ボットが作成した承認をすべて拒否します。承認者は人間のログインのみとして検証されます。",
+      "gates.body": "人の判断が働くのは 4 つのゲートだけで、その間、ループは尋ねずに進みます。作業と判断は担い手が異なります。ブランチ・コミット・PR・レビューはエージェントが作り、承認は人が与えます。",
+      "gates.authors": "これは取り決めではなく、コードによる強制です。ゲートのバリデータは、承認者リストを参照する前の段階で、ボットが作成した承認をすべて拒否します。承認者として認められるのは人間のアカウントだけであることも、あわせて検証されます。",
 
       "wiring.eyebrow": "配線図",
       "wiring.h2": "7 つのステージ、1 本のイベントバス。",
-      "wiring.body": "各ステージは GitHub イベントで起動し、決定論的なスクリプト、マイクロエージェント、そしてフルエージェントへと流れ、ゲートがある場所では人の判断で終わります。ステージをタップすると、何をするか・なぜその段にいるか・何を発行するかがわかります。",
+      "wiring.body": "各ステージは GitHub イベントで起動し、決定論的なスクリプト、マイクロエージェント、フルエージェントへと流れ、ゲートがある場所では人の判断で終わります。ステージをタップすると、何をするか・なぜその段にいるか・何を発行するかがわかります。",
       "wiring.hint": "ステージをタップ",
-      "wiring.link": "これは、すべてのノードとレーンを詳しく配線した<a href=\"https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.html\">アーキテクチャ図</a>を厳選して抜き出したビューです。",
+      "wiring.link": "これは、すべてのノードとレーンを細部まで配線した<a href=\"https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.ja.html\">アーキテクチャ図</a>から、要点を抜き出したビューです。",
       "wiring.loopback": "受付へ戻る",
       "wiring.triggerLabel": "トリガー", "wiring.roleLabel": "実行者", "wiring.gateLabel": "ゲート",
       "wiring.whatLabel": "内容", "wiring.emitsLabel": "発行", "wiring.noteLabel": "進行中",
@@ -485,10 +485,10 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
 
       "start.eyebrow": "はじめる",
       "start.h2": "入口は 3 つ。",
-      "start.body": "ループは定常状態の仕組みです。その土台（ドメインマップ、規約、CI、起動できるアプリ）を整えるのはループの前に一度だけで、次の 3 つの入口のいずれかから始めます。",
-      "start.quickstartCaption": "@main ではなくリリース済みのバージョンを固定します。adopt が導入するワークフローのスタブは同じタグを参照するため、ループの挙動はあなたがアップグレードを選んだときだけ変わります。",
+      "start.body": "ループは定常状態の仕組みです。その土台となるドメインマップ・規約・CI・起動できるアプリを整えるのは、ループが回り始める前の一度だけ。次の 3 つの入口のいずれかから始めます。",
+      "start.quickstartCaption": "@main ではなく、リリース済みのバージョンを固定します。adopt が導入するワークフローのスタブも同じタグを参照するため、ループの挙動が変わるのはアップグレードを選んだときだけです。",
       "start.honestyLabel": "状況",
-      "start.honesty": "現在のリリースは v0.2.0 です。決定論的なコア、エージェント一式、App アイデンティティ、ヘッドレスレビューは出荷済みで、このリポジトリ自身のバックログを動かしています。pack-expo のプラットフォームアダプタ（run・verify・execute-step・ship）は仕様のみで未実装です。パックがこれらのインターフェースに実装されるまでは、プラットフォーム対応は実験的なものとお考えください。",
+      "start.honesty": "現在のリリースは v0.2.0 です。決定論的なコア、エージェント一式、App アイデンティティ、ヘッドレスレビューはリリース済みで、このリポジトリ自身のバックログを回しています。pack-expo のプラットフォームアダプタ（run・verify・execute-step・ship）は仕様のみで、まだ実装されていません。これらのインターフェースを満たすパックが登場するまでは、プラットフォーム対応は実験的な段階とお考えください。",
 
       "links.readme": "README",
       "links.gettingStarted": "はじめかた",
@@ -496,6 +496,23 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
       "links.changelog": "変更履歴",
 
       "footer.text": "agent-workflow · ループが自らのバックログを回しています"
+    }
+  };
+
+  // Per-locale destinations for the outbound doc links. Same keys as the
+  // labels in T; JA points at the Japanese companions, EN stays canonical.
+  var HREF = {
+    en: {
+      "links.readme": "https://github.com/yuchida-tamu/agent-workflow/blob/main/README.md",
+      "links.gettingStarted": "https://github.com/yuchida-tamu/agent-workflow/blob/main/docs/getting-started.md",
+      "links.architecture": "https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.html",
+      "links.changelog": "https://github.com/yuchida-tamu/agent-workflow/blob/main/CHANGELOG.md"
+    },
+    ja: {
+      "links.readme": "https://github.com/yuchida-tamu/agent-workflow/blob/main/README.ja.md",
+      "links.gettingStarted": "https://github.com/yuchida-tamu/agent-workflow/blob/main/docs/getting-started.ja.md",
+      "links.architecture": "https://github.com/yuchida-tamu/agent-workflow/blob/main/agent-loop-architecture.ja.html",
+      "links.changelog": "https://github.com/yuchida-tamu/agent-workflow/blob/main/CHANGELOG.ja.md"
     }
   };
 
@@ -528,7 +545,7 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
       en: { h: "Frontier model — Opus / Fable", tier: "open-ended judgment",
         p: "Shaping briefs from fuzzy intent, architecture and decomposition, independent code and UX review, adversarial verification of findings, diagnosing why something is stuck. Rare, deliberate, and worth it." },
       ja: { h: "フロンティアモデル — Opus / Fable", tier: "自由度の高い判断",
-        p: "曖昧な意図からのブリーフ整形、アーキテクチャ設計とタスク分解、独立したコード／UX レビュー、指摘の敵対的検証、行き詰まりの診断。まれで、意図的で、その価値がある場面だけです。" } }
+        p: "曖昧な意図からのブリーフ整形、アーキテクチャ設計とタスク分解、独立したコード／UX レビュー、指摘の敵対的検証、行き詰まりの診断。数は少なく、使いどころを選び、それに見合う場面に限ります。" } }
   ];
 
   var GATES = [
@@ -537,10 +554,10 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
       ja: { h: "ブリーフの承認", p: "整形された Issue への /approve コメント。計画もコードもまだ無い、ループ全体で最も安く方向を正せる場所です。" } },
     { id: "G2",
       en: { h: "Plan approval", p: "Required only when the risk engine's obligations say so — driven by the project's own domain map and policy rules. Low-risk plans pass automatically." },
-      ja: { h: "計画の承認", p: "リスクエンジンの義務が求めるときだけ必要です。プロジェクト自身のドメインマップとポリシールールが判断します。低リスクの計画は自動で通ります。" } },
+      ja: { h: "計画の承認", p: "必要になるのは、リスクエンジンが承認を要すると判定したときだけです。判定は、プロジェクト自身のドメインマップとポリシールールに基づきます。低リスクの計画は自動で通過します。" } },
     { id: "G3",
       en: { h: "Merge approval", p: "PR-native, in one of two modes: a real approving review when the App authors agent PRs, or a SHA-naming /approve comment when they are your own. Proven low-risk classes graduate to auto-merge, which leaves an authority record — never a forged approval." },
-      ja: { h: "マージの承認", p: "PR 上で行われ、2 つのモードのいずれかです。App が Agent の PR を作成する場合は本物の承認レビュー、あなた自身の PR の場合は head SHA を明記した /approve コメント。実績のある低リスクのクラスは自動マージへ昇格し、偽装された承認ではなく権限の記録を残します。" } },
+      ja: { h: "マージの承認", p: "PR 上で行い、モードは 2 つです。App が Agent の PR を作成する構成では、正規の承認レビュー。PR が自分のものである構成では、head SHA を明記した /approve コメント。実績を積んだ低リスクのクラスは自動マージへ昇格し、偽装された承認ではなく権限の記録を残します。" } },
     { id: "G4",
       en: { h: "Release approval", p: "A validated /approve G4 authorises the release but deliberately does not move the label. agentflow-release cuts the tag and GitHub Release, then transitions verified → released — so the label always follows the artifact." },
       ja: { h: "リリースの承認", p: "検証済みの /approve G4 はリリースを承認しますが、あえてラベルは動かしません。agentflow-release がタグと GitHub Release を作成し、その後で verified → released へ遷移します。ラベルは常に成果物に従います。" } }
@@ -576,7 +593,7 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
         emits: "Verified findings → fix loop, or a clean summary → G3.",
         note: "UX review drives real pixels through a pack adapter — specified, not yet built." },
       ja: { title: "レビュー（Review）", trig: "pull_request.opened · synchronize", role: "Code + UX レビュアー (Opus)",
-        what: "まず CI が全部走ります。CI が赤ならエージェントのレビューはブロックされ、壊れたコードにトークンは一切使いません。その後、Code と UX のレビュアーが、実装者と文脈を共有しない新しいサブエージェントとして動きます。指摘は誰かが動く前に敵対的に検証されます。ここが最初にヘッドレスで動くステージです。",
+        what: "まず CI 一式が走ります。CI が赤ならエージェントのレビューはブロックされ、壊れたコードにトークンは一切使いません。その後、Code と UX のレビュアーが、実装者と文脈を共有しない新しいサブエージェントとして動きます。指摘は、対応に入る前に敵対的な検証を受けます。最初にヘッドレスで動くのがこのステージです。",
         emits: "検証済みの指摘 → 修正ループ、またはクリーンな要約 → G3。",
         note: "UX レビューが実際のピクセルを操作するのは pack のアダプタ経由です。仕様はありますが、まだ実装されていません。" } },
     { num: "4", gate: "",
@@ -584,7 +601,7 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
         what: "Every merge runs full CI and a fresh build, and rebases queued PRs. The Build Sentinel is invoked only when main goes red — it fixes forward or reverts, then escalates if still red. On the happy path, integration costs zero tokens.",
         emits: "Green main + an installable build, or an escalation." },
       ja: { title: "統合（Integrate）", trig: "push: main · check_suite", role: "Build Sentinel (Sonnet · 赤のときだけ)",
-        what: "マージのたびに CI 一式と新しいビルドが走り、待機中の PR をリベースします。Build Sentinel は main が赤になったときだけ呼ばれ、前進修正するか差し戻し、それでも赤ならエスカレーションします。うまくいっている限り、統合のトークンはゼロです。",
+        what: "マージのたびに CI 一式と新しいビルドが走り、待機中の PR をリベースします。Build Sentinel が呼ばれるのは main が赤になったときだけで、そのまま直すか差し戻し、それでも赤ならエスカレーションします。問題がない限り、統合にトークンはかかりません。",
         emits: "緑の main とインストール可能なビルド、またはエスカレーション。" } },
     { num: "5", gate: "",
       en: { title: "QA", trig: "schedule: nightly · post-merge smoke", role: "E2E replay runner (0 tokens) · QA Explorer (Sonnet)",
@@ -592,7 +609,7 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
         emits: "Structured results, bug issues → back to Intake.",
         note: "Replay and re-derivation drive the app through pack adapters — core-complete, awaiting pack-expo." },
       ja: { title: "QA", trig: "schedule: nightly · post-merge smoke", role: "E2E リプレイランナー (0 トークン) · QA Explorer (Sonnet)",
-        what: "エージェントがコンパイルした E2E トレースを、ループ内にモデルを置かず決定論的にリプレイします。失敗はクラスタリングして Issue にし、QA Explorer が新規・変更されたフローのエッジケースを探ります。見つかった問題は新しい Issue として受付に戻り、これがループを閉じる辺になります。",
+        what: "エージェントがコンパイルした E2E トレースを、ループ内にモデルを置かずに決定論的にリプレイします。失敗はクラスタリングして Issue にまとめ、QA Explorer が新規・変更されたフローのエッジケースを探ります。見つかった問題は新しい Issue として受付へ戻り、この経路がループを閉じます。",
         emits: "構造化された結果とバグ Issue → 受付へ。",
         note: "リプレイと再導出はアプリを pack のアダプタ経由で操作します。コアは完成済みで、pack-expo を待っています。" } },
     { num: "6", gate: "G4",
@@ -610,7 +627,7 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
       ja: { tag: "新規プロジェクト", title: "Genesis", p: "project-genesis エージェント（Opus）を実行します。一度だけインタビューし、リポジトリ・CLAUDE.md・設定を用意し、milestone-1 のバックログを state:idea で投入してから、ループに引き継ぎます。" } },
     { cmd: "node init/cli.js adopt --target <path> --repo owner/name",
       en: { tag: "Existing repo", title: "Adopt", p: "From a clone of this repo, point the installer at yours. It creates the 18-label set, scaffolds config, domains.yml and a business policy pack, and prints the repo settings you apply yourself." },
-      ja: { tag: "既存リポジトリ", title: "Adopt（導入）", p: "このリポジトリのクローンから、インストーラをあなたのリポジトリに向けます。18 個のラベル一式を作り、設定・domains.yml・ビジネスポリシーパックを用意し、あなた自身が適用するリポジトリ設定を出力します。" } },
+      ja: { tag: "既存リポジトリ", title: "Adopt（導入）", p: "このリポジトリのクローンから、インストーラを自分のリポジトリに向けて実行します。18 個のラベル一式を作り、設定・domains.yml・ビジネスポリシーパックを用意し、最後に自分で適用するためのリポジトリ設定を出力します。" } },
     { cmd: "node scripts/next/cli.js --repo owner/name",
       en: { tag: "Already adopted", title: "Keep moving", p: "Ask the crawl-phase dispatcher who acts next, and why. Drive the loop one command at a time, or wire it to events." },
       ja: { tag: "導入済み", title: "進め続ける", p: "クロールフェーズのディスパッチャに、次に誰が動くか・その理由を尋ねます。1 コマンドずつループを進めても、イベントに接続してもかまいません。" } }
@@ -634,6 +651,13 @@ node init/cli.js adopt --target /path/to/your-repo --repo &lt;owner&gt;/&lt;name
     for (var i = 0; i < nodes.length; i++) nodes[i].textContent = tt(nodes[i].getAttribute("data-i18n"));
     var htmlNodes = document.querySelectorAll("[data-i18n-html]");
     for (var j = 0; j < htmlNodes.length; j++) htmlNodes[j].innerHTML = tt(htmlNodes[j].getAttribute("data-i18n-html"));
+
+    var hrefMap = HREF[lang] || HREF.en;
+    var hrefNodes = document.querySelectorAll("[data-i18n-href]");
+    for (var h = 0; h < hrefNodes.length; h++) {
+      var hk = hrefNodes[h].getAttribute("data-i18n-href");
+      hrefNodes[h].setAttribute("href", hrefMap[hk] || HREF.en[hk]);
+    }
 
     document.getElementById("quickCm").textContent =
       lang === "ja" ? "# リリース済みのバージョンを固定します" : "# pin a released version";
