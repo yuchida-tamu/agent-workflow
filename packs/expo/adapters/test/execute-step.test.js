@@ -213,6 +213,28 @@ function failResult(stderr) {
   return { code: 1, stdout: "", stderr, error: null };
 }
 
+// A live `agent-device <cmd> --json` success reply is enveloped
+// `{success:true, data:{...}}` — this is what the *real* runner's stdout
+// looks like at the process boundary (before lib/agent-device.js's `invoke`
+// unwraps it). `okResult(JSON.stringify({text:...}))` used above (pre-#164)
+// mocked the WRONG, unenveloped shape — the same shape `assertText`'s bug
+// accidentally expected, so that mock never caught the real defect. Tests
+// that touch a data-bearing read (`get text`) go through this helper now;
+// tests that only care about exit-code semantics (`is`, `press`, `wait`,
+// `fill`, `screenshot`) can keep using bare `okResult()` since their body is
+// never inspected.
+function envelopeOk(data) {
+  return okResult(JSON.stringify({ success: true, data }));
+}
+
+// The real `{success:false, error:{...}}` failure body agent-device writes
+// even at exit 0 for a daemon-level "the command didn't really work" (see
+// lib/agent-device.js's `unwrap` header) — distinct from `failResult`, which
+// models an ordinary non-zero-exit command failure.
+function envelopeFailAtExit0(code, message) {
+  return okResult(JSON.stringify({ success: false, error: { code, message } }));
+}
+
 function fakeClock(step = 10) {
   let t = 0;
   return { clock: () => t, sleep: async () => { t += step; } };
@@ -320,7 +342,10 @@ test("execute: full passing trace -> status passed, duration_ms, one evidence sc
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async (_cmd, args) => {
-      if (args[1] === "text") return okResult(JSON.stringify({ text: "Order summary" }));
+      // Real envelope shape — `{success:true, data:{selector,text,node}}`
+      // (confirmed live, #164) — not the bare `{text:...}` the pre-fix mock
+      // used, which happened to match assertText's bug rather than reality.
+      if (args[1] === "text") return envelopeOk({ selector: 'id="order-summary"', text: "Order summary", node: {} });
       return okResult();
     });
     const deps = baseDeps({ stateDir, runner });
@@ -407,6 +432,41 @@ test("execute: action failure at index 1 -> status failed, phase action, correct
   });
 });
 
+// #164 family sweep, defense-in-depth: every plain action (tap/type/scroll/
+// press/wait) discards `invoke()`'s return and only reacts to a throw, so
+// like `assertVisible` this was never the #164 bug itself, but it also
+// never called `unwrap`. A `{success:false}` body at exit 0 used to be
+// indistinguishable from success here; since #164, `invoke()`'s default
+// unwrap throws for that shape too, so it now reports as a real action
+// failure instead of silently continuing to the next action/assertion.
+test("execute: an action reporting success:false at exit 0 fails the step, never silently continues", async () => {
+  await withDirs(async ({ stateDir }) => {
+    await saveFixture(stateDir);
+    const runner = makeRunner(async (_cmd, args) => {
+      if (args[0] === "press") {
+        return envelopeFailAtExit0("COMMAND_FAILED", "no visible effect");
+      }
+      return okResult();
+    });
+    const deps = baseDeps({ stateDir, runner });
+    const handlers = createHandlers(deps);
+
+    const response = await handlers.execute({
+      op: "execute",
+      session_id: "sess-fixed",
+      step: {},
+      trace: {
+        actions: [{ kind: "tap", selector: { test_id: "checkout-cta" } }],
+        assertions: [],
+      },
+    });
+
+    assert.equal(response.status, "failed");
+    assert.equal(response.failure.phase, "action");
+    assert.equal(response.failure.index, 0);
+  });
+});
+
 test("execute: assertion failure -> status failed, phase assertion, correct index", async () => {
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
@@ -435,6 +495,42 @@ test("execute: assertion failure -> status failed, phase assertion, correct inde
   });
 });
 
+// #164 family sweep, defense-in-depth: `assertVisible` never reads `is`'s
+// response body (a real agent-device always signals a false predicate via a
+// non-zero exit — confirmed live during this audit), so it was never the
+// #164 bug itself. But it also never called `unwrap`, so a hypothetical
+// `{success:false}` body arriving at exit 0 (the daemon-level failure mode
+// lib/agent-device.js's `unwrap` header describes) would have silently read
+// as "the invoke didn't throw" -> assertion passed. Since #164, `invoke()`
+// applies `unwrap` by default, so this now surfaces as a real assertion
+// failure instead.
+test("execute: `is` reporting success:false at exit 0 fails the assertion, never silently reads as passed", async () => {
+  await withDirs(async ({ stateDir }) => {
+    await saveFixture(stateDir);
+    const runner = makeRunner(async (_cmd, args) => {
+      if (args[0] === "is") {
+        return envelopeFailAtExit0("COMMAND_FAILED", "no visible effect");
+      }
+      return okResult();
+    });
+    const deps = baseDeps({ stateDir, runner });
+    const handlers = createHandlers(deps);
+
+    const response = await handlers.execute({
+      op: "execute",
+      session_id: "sess-fixed",
+      step: {},
+      trace: {
+        actions: [],
+        assertions: [{ kind: "visible", selector: { test_id: "order-summary" }, timeout_ms: 100 }],
+      },
+    });
+
+    assert.equal(response.status, "failed");
+    assert.equal(response.failure.phase, "assertion");
+  });
+});
+
 test("execute: not_visible assertion -> `is hidden <selector>`", async () => {
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
@@ -458,7 +554,8 @@ test("execute: text assertion (equals) fails and reports the last-read text", as
   await withDirs(async ({ stateDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async (_cmd, args) => {
-      if (args[0] === "get") return okResult(JSON.stringify({ text: "Pending" }));
+      // Real envelope shape (#164) — see envelopeOk's own comment.
+      if (args[0] === "get") return envelopeOk({ selector: 'id="status"', text: "Pending", node: {} });
       return okResult();
     });
     const deps = baseDeps({ stateDir, runner });
@@ -478,6 +575,51 @@ test("execute: text assertion (equals) fails and reports the last-read text", as
     assert.equal(response.failure.phase, "assertion");
     assert.match(response.failure.reason, /equal "Confirmed"/);
     assert.match(response.failure.reason, /"Pending"/);
+  });
+});
+
+// #164, pinned to the EXACT payload from the issue's own live repro: a
+// `agent-device get text 'id="acceptance-count"' --json` reply against a
+// real booted simulator —
+//   {"success":true,"data":{"selector":"id=\"acceptance-count\"","text":"Tapped: 2","node":{...}}}
+// — for a `contains: "2"` assertion. Pre-fix, `assertText` read `res.text`
+// off this raw envelope (always `undefined` at the top level — the real
+// value lives at `res.data.text`), so `extractText` fell through to `""`
+// and this assertion failed on every single poll, regardless of the real
+// on-screen state (screenshot-proven correct in the issue). This test fails
+// against the pre-fix code and passes against the fix.
+test("execute: text assertion (contains) reads the real .data.text, not the raw envelope (#164 exact repro payload)", async () => {
+  await withDirs(async ({ stateDir }) => {
+    await saveFixture(stateDir);
+    const runner = makeRunner(async (_cmd, args) => {
+      if (args[0] === "get" && args[1] === "text") {
+        return okResult(
+          JSON.stringify({
+            success: true,
+            data: {
+              selector: 'id="acceptance-count"',
+              text: "Tapped: 2",
+              node: { index: 4, type: "StaticText", label: "Tapped: 2", ref: "e5" },
+            },
+          })
+        );
+      }
+      return okResult();
+    });
+    const deps = baseDeps({ stateDir, runner });
+    const handlers = createHandlers(deps);
+
+    const response = await handlers.execute({
+      op: "execute",
+      session_id: "sess-fixed",
+      step: {},
+      trace: {
+        actions: [],
+        assertions: [{ kind: "text", selector: { test_id: "acceptance-count" }, contains: "2", timeout_ms: 100 }],
+      },
+    });
+
+    assert.equal(response.status, "passed");
   });
 });
 
