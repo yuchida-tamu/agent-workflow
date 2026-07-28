@@ -22,7 +22,7 @@ start at [`README.md`](README.md); for the design, see
 | `policies/baseline.yaml` | core | Platform-neutral baseline pack (locked guards + scoring) |
 | `interfaces/` | core | The four core↔pack contracts: `run` · `verify` · `execute-step` · `ship` |
 | `scenarios/SPEC.md` | core | Gherkin grammar, compiled-trace format, runner semantics |
-| `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, adapters/skills (Phase 2) |
+| `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, `run`/`verify`/`execute-step` adapters ✅, skills ✅, `ship` spec-only (#137) |
 | `agents/` | core | The eleven agent definitions with model tiers (installed into consuming repos' `.claude/agents/`) |
 | `init/` | core | `agentflow-init labels` (18-label set) · `agentflow-init project` (config, domains, business pack, agents, e2e dirs) · `agentflow-init adopt` (scaffold + labels + printed settings commands · `--verify` · `--coverage`) |
 | `actions/` | core | Composite Actions: `gate-check` · `risk-verdict` · `dispatch` · `post-merge` · `auto-merge` (thin YAML over `scripts/actions/*.js`) |
@@ -58,7 +58,29 @@ start at [`README.md`](README.md); for the design, see
 - [x] GitHub remote (`yuchida-tamu/agent-workflow`) + 18 labels applied;
       live smoke test passed: dispatch → gate refusal → `/approve` →
       G1-validated transition → re-dispatch to architect
-- [ ] pack-expo adapters (`run` / `verify` / `execute-step` / `ship`) + skills
+- [x] pack-expo `run` / `verify` / `execute-step` adapters + `expo-dev` /
+      `mobile-verify` skills, merged and unit-tested, **and live-proven**
+      (#132–#136). `packs/expo/scripts/acceptance.sh` — the live, local-only
+      proof against a real booted iOS simulator — passed **all six stages**
+      (describe×3, provision, start, verify, execute-step, stop) on
+      2026-07-29: zero contract violations, zero assertion misses, exit 0.
+      Getting there took four rounds of real, live investigation, each
+      retiring exactly what the previous round's run surfaced: #156 (P0,
+      `run start` could never reach `"running"` — a `spawnBackground` stdio
+      race) and #158 (P1, the reuse fast-path never fired), both fixed in
+      #161; #162 (P0, the dev client opened via the generic Expo Go scheme —
+      either an unclearable OS dialog or an outright failure, common on any
+      real dev machine), fixed in #163 plus this pack's own scaffold gaining
+      a `scheme` and `expo-dev-client`; #164 (P0, `execute-step`'s `text`
+      assertion always read empty — an unwrapped agent-device response
+      envelope), fixed in #165 by unwrapping at `invoke()`'s own chokepoint,
+      closing the whole defect family structurally. Every adapter behaved
+      contract-correctly throughout every round (recoverable exits, proper
+      JSON, or a correct fatal for a genuine step failure) — all four bugs
+      found across the investigation were in a capability, not the
+      contract, and every one was filed and tracked to a live-reconfirmed
+      fix, never silently absorbed. `adapters/ship` (EAS) stays spec-only,
+      deferred to #137 until a release target exists.
 - [x] Composite GitHub Actions: `gate-check` (issue comments → validated
       transitions), `risk-verdict` (PR diff → facts → policy → labels +
       verdict comment), `dispatch` (state label → who-acts-next comment);
