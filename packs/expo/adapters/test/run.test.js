@@ -9,6 +9,8 @@ import {
   generateSessionId,
   agentDeviceSessionName,
   bundleIdFromConfig,
+  schemeFromConfig,
+  buildDevClientUrl,
   decideStartPath,
   waitForMetroReady,
   createHandlers,
@@ -36,6 +38,49 @@ test("bundleIdFromConfig: fatal (20) when the config has no ios.bundleIdentifier
     assert.equal(err.code, EXIT_FATAL);
     return true;
   });
+});
+
+// #162: the dev client's own deep link is scoped by the workspace's declared
+// app.json `scheme` — never the generic exp:// Expo Go scheme, which the
+// target app doesn't even claim (confirmed live: its own CFBundleURLTypes
+// lists only its bundle id, never "exp").
+test("schemeFromConfig: reads a string `scheme` from `expo config --json`", () => {
+  assert.equal(schemeFromConfig({ scheme: "acmeapp" }), "acmeapp");
+});
+
+test("schemeFromConfig: an array `scheme` (Expo allows either shape) uses the first entry", () => {
+  assert.equal(schemeFromConfig({ scheme: ["acmeapp", "acmeapp-legacy"] }), "acmeapp");
+});
+
+test("schemeFromConfig: recoverable (10) when the config has no scheme — never silently falls back to exp://", () => {
+  assert.throws(() => schemeFromConfig({}), (err) => {
+    assert.equal(err.code, EXIT_RECOVERABLE);
+    assert.match(err.message, /scheme/i);
+    return true;
+  });
+});
+
+test("schemeFromConfig: recoverable (10) when `scheme` is an empty array", () => {
+  assert.throws(() => schemeFromConfig({ scheme: [] }), (err) => {
+    assert.equal(err.code, EXIT_RECOVERABLE);
+    return true;
+  });
+});
+
+test("buildDevClientUrl: <scheme>://expo-development-client/?url=<urlencoded metro url>", () => {
+  assert.equal(
+    buildDevClientUrl("acmeapp", "http://127.0.0.1:8081"),
+    "acmeapp://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081"
+  );
+});
+
+test("buildDevClientUrl: the metro URL is fully urlencoded (scheme, host, and port all opaque inside the query value)", () => {
+  const url = buildDevClientUrl("acmeapp", "http://192.168.11.11:8097");
+  assert.equal(url, "acmeapp://expo-development-client/?url=http%3A%2F%2F192.168.11.11%3A8097");
+  // round-trips: parsing the query value (URLSearchParams decodes it for
+  // us) gives back the exact Metro URL.
+  const parsed = new URL(url.replace("acmeapp://", "http://"));
+  assert.equal(parsed.searchParams.get("url"), "http://192.168.11.11:8097");
 });
 
 // #142: the real `agent-device apps --json` payload is enveloped
@@ -229,7 +274,10 @@ async function withTempDirs(fn) {
 // {success, data:{...}} — e.g. apps live at data.apps — not the bare array
 // this fixture used to hand back, which is how the bug on #142 shipped with
 // green tests: a bare-array mock can't catch a broken envelope unwrap).
-function agentDeviceAndExpoRunner({ appsInstalled = [], expoConfig = { ios: { bundleIdentifier: "com.example.app" } } } = {}) {
+function agentDeviceAndExpoRunner({
+  appsInstalled = [],
+  expoConfig = { ios: { bundleIdentifier: "com.example.app" }, scheme: "acmeapp" },
+} = {}) {
   const calls = [];
   return {
     calls,
@@ -281,7 +329,9 @@ test("start (reuse path): dev client already installed -> no build, Metro starts
 
     assert.equal(spawnForegroundCalled, false, "reuse path must not run the full expo run:ios build");
     assert.equal(response.session_id, "sess-fixed");
-    assert.equal(response.entry_point, "exp://127.0.0.1:8081");
+    // #162: the dev client's own bundle-scoped deep link (scheme from
+    // app.json), never the generic exp:// Expo Go scheme.
+    assert.equal(response.entry_point, "acmeapp://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081");
     assert.equal(response.log_stream, join(evidenceDir, "app.log"));
 
     const record = await loadSession("sess-fixed", { stateDir });
@@ -295,6 +345,59 @@ test("start (reuse path): dev client already installed -> no build, Metro starts
       log: join(evidenceDir, "app.log"),
       identity: FAKE_METRO_IDENTITY,
     });
+  });
+});
+
+test("start: agent-device open is called with the bundle id and the exact dev-client deep link (argv)", async () => {
+  await withTempDirs(async ({ workspace, stateDir, evidenceDir }) => {
+    const runner = agentDeviceAndExpoRunner({ appsInstalled: ["com.example.app"] });
+    const deps = baseDeps({ stateDir, runner });
+    const handlers = createHandlers(deps);
+    await handlers.start({ workspace, target: "iPhone 15", evidence_dir: evidenceDir });
+
+    const openCall = runner.calls.find((c) => c.cmd === "agent-device" && c.args[0] === "open");
+    assert.ok(openCall, "agent-device open must have been invoked");
+    assert.deepEqual(openCall.args, [
+      "open",
+      "com.example.app",
+      "acmeapp://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081",
+      "--platform",
+      "ios",
+      "--device",
+      "iPhone 15",
+      "--session",
+      "agentflow-run-sess-fixed",
+      "--json",
+    ]);
+  });
+});
+
+test("start: workspace app config has no scheme -> exit 10, recoverable, naming the missing scheme, before any build or Metro spawn", async () => {
+  await withTempDirs(async ({ workspace, stateDir, evidenceDir }) => {
+    let spawnForegroundCalled = false;
+    let spawnBackgroundCalled = false;
+    const deps = {
+      ...baseDeps({
+        stateDir,
+        appsInstalled: [],
+        expoConfig: { ios: { bundleIdentifier: "com.example.app" } }, // no scheme
+      }),
+      spawnForeground: async () => { spawnForegroundCalled = true; return { code: 0, timedOut: false, error: null }; },
+      spawnBackground: async () => { spawnBackgroundCalled = true; return { pid: 4242, logPath: null }; },
+    };
+    const handlers = createHandlers(deps);
+    await assert.rejects(
+      () => handlers.start({ workspace, evidence_dir: evidenceDir }),
+      (err) => {
+        assert.equal(err.code, EXIT_RECOVERABLE);
+        assert.match(err.message, /scheme/i);
+        return true;
+      }
+    );
+    // never falls back to exp:// — it fails before touching the (possibly
+    // 15-minute) build step or spawning Metro at all.
+    assert.equal(spawnForegroundCalled, false);
+    assert.equal(spawnBackgroundCalled, false);
   });
 });
 
