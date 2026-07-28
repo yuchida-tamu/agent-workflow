@@ -38,6 +38,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { runMain, recoverable, fatal, diagnostic } from "./lib/contract.js";
 import * as agentDevice from "./lib/agent-device.js";
+import { unwrap } from "./lib/agent-device.js";
 import { defaultRunner } from "./lib/proc.js";
 import { loadSession } from "./lib/session.js";
 import { reserveEntry } from "./lib/evidence.js";
@@ -45,36 +46,18 @@ import { reserveEntry } from "./lib/evidence.js";
 const INTERFACE = "verify";
 const PLATFORM = "ios";
 
-// A response from `agent-device <cmd> --json` is enveloped as
-// `{success, data: {...}}` (confirmed against a live 0.19.3 session — e.g.
-// `snapshot -i --json` -> `{success:true, data:{nodes:[...]}}`, `logs path
-// --json` -> `{success:true, data:{path,...}}`). `invoke()` in lib/agent-device.js
-// returns the whole parsed body, not just `data` — this unwraps it, falling
-// back to the raw value for a shape that doesn't carry `data` (defensive,
-// not load-bearing: `invoke()` already throws on a non-zero exit, so a
-// successful call's body should always carry `data` in practice).
-//
-// `invoke()` only inspects the process exit code — it has no opinion on the
-// body. If agent-device ever exits 0 while its own body says
-// `{success:false, error:{...}}` (a daemon-level "the command didn't really
-// work" that doesn't surface as a process failure), silently returning
-// `undefined` data here would look like "nothing observed" rather than the
-// actual failure it is (#134 review). Treat that shape as an error too:
-// throw the same `AgentDeviceError` a non-zero exit would have produced,
-// carrying the body's own error detail, so every caller's existing
-// AgentDeviceError handling (callAgentDevice's dead-session mapping
-// included) applies uniformly regardless of which path detected the failure.
-export function unwrap(result) {
-  if (result && typeof result === "object" && result.success === false) {
-    const error = result.error && typeof result.error === "object" ? result.error : {};
-    const detail = error.message ? `${error.code ? `${error.code}: ` : ""}${error.message}` : "no error detail in body";
-    throw new agentDevice.AgentDeviceError(`agent-device reported success:false despite exit 0: ${detail}`, {
-      code: 0,
-      stdout: JSON.stringify(result),
-    });
-  }
-  return result && typeof result === "object" && "data" in result ? result.data : result;
-}
+// `unwrap` used to be duplicated here byte-for-byte with lib/agent-device.js's
+// copy — exactly the kind of drift risk the #164 family sweep exists to
+// close ("no adapter touches a raw envelope" is a lib-level guarantee now,
+// not a per-file one; see that file's header). Re-exported (not redefined)
+// so this module's own tests, which import `unwrap` from `../verify.js`,
+// keep working unchanged. `agentDevice.invoke()` already applies it by
+// default now — see `callAgentDevice` below — so nothing in this file is
+// *required* to call it directly anymore, but `normalizeElements` and
+// `readOp` still do, defensively: both are also exercised directly in this
+// file's own unit tests against a raw enveloped fixture, and `unwrap` is
+// idempotent on already-unwrapped input, so calling it twice is harmless.
+export { unwrap };
 
 function sessionFlags(record) {
   return ["--session", record.agent_device_session, "--platform", PLATFORM, "--device", record.target];
@@ -103,11 +86,16 @@ function agentDeviceErrorCode(err) {
 // start`), unlike a permanently wrong session_id.
 const DEAD_SESSION_CODES = new Set(["SESSION_NOT_FOUND", "DEVICE_NOT_FOUND", "APP_NOT_RUNNING"]);
 
+// Every agent-device invocation `verify` makes funnels through here so the
+// dead-session error mapping (below) is applied exactly once.
+// `agentDevice.invoke()` already unwraps the `{success,data}` envelope and
+// throws `AgentDeviceError` even for a `success:false` body at exit 0 (see
+// lib/agent-device.js's header) — this used to re-do that check locally via
+// its own duplicated `unwrap`; now it just reacts to whatever `invoke()`
+// already decided.
 async function callAgentDevice(args, { runner, sessionId }) {
   try {
-    const result = await agentDevice.invoke(args, { runner });
-    unwrap(result); // throws AgentDeviceError if the body says success:false despite exit 0
-    return result;
+    return await agentDevice.invoke(args, { runner });
   } catch (err) {
     if (err instanceof agentDevice.AgentDeviceError) {
       const code = agentDeviceErrorCode(err);

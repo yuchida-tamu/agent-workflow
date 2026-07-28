@@ -4,15 +4,16 @@
 // against the `agent-device` CLI. No model in the loop — see #132's plan and
 // ../scenarios/SPEC.md for the compile-once-replay-forever model this serves.
 //
-// Reuses `lib/` from #133 as-is (no lib change): `invoke`/`translateSelector`
-// from lib/agent-device.js drive every agent-device call, `loadSession` from
-// lib/session.js resolves the `run`-started session, `isAlive` from
-// lib/proc.js re-checks Metro's pid+identity the same way run.js's own
-// `status` op does, and `appendManifest`/`readManifest` from lib/evidence.js
-// own the evidence bundle. Nothing here is a shared primitive #134 (verify)
-// would also need to change — each action/assertion is compiled to a plain
-// agent-device argv array inline, so there is no seam for the two adapters to
-// collide on.
+// Reuses `lib/`: `invoke`/`translateSelector` from lib/agent-device.js drive
+// every agent-device call, `loadSession` from lib/session.js resolves the
+// `run`-started session, `isAlive` from lib/proc.js re-checks Metro's
+// pid+identity the same way run.js's own `status` op does, and
+// `appendManifest`/`readManifest` from lib/evidence.js own the evidence
+// bundle. Each action/assertion is compiled to a plain agent-device argv
+// array inline, so there is no seam for this file and verify.js to collide
+// on. `invoke()` itself gained a lib-level behavior change in #164 (unwraps
+// the `{success,data}` envelope by default) — see lib/agent-device.js's file
+// header for why that's a structural fix, not a per-caller one.
 //
 // ---- The failure-vs-infrastructure line (the whole point of this contract) -
 //
@@ -234,6 +235,18 @@ function guard(fn) {
 // `agent-device help is`; a false predicate is a command failure (non-zero
 // exit), so success of the invoke IS the assertion passing. Polled ourselves
 // (agent-device's own `is` has no timeout flag) up to timeout_ms.
+//
+// Confirmed live against a real 0.19.3 session (#164's audit): every `is`
+// outcome — predicate false, selector not found, even a malformed predicate
+// name — comes back as a non-zero exit with a `{success:false, error:{...}}`
+// body; a passing predicate is the only case that exits 0
+// (`{success:true, data:{predicate,pass:true,selector}}`). There is no data
+// this assertion needs to read — `invoke()`'s return is discarded on
+// purpose — so unlike `assertText` there was never a raw-envelope read to
+// get wrong here. It does still benefit from `invoke()`'s default unwrap:
+// a hypothetical `success:false` body at exit 0 (agent-device's own stated
+// failure mode for a daemon-level non-process error — see lib/agent-device.js's
+// `unwrap()`) now throws instead of silently reading as "passed".
 async function assertVisible(assertion, ctx, { hidden }) {
   const predicate = hidden ? "hidden" : "visible";
   const timeoutMs = assertion.timeout_ms ?? DEFAULT_ASSERT_TIMEOUT_MS;
@@ -248,6 +261,18 @@ async function assertVisible(assertion, ctx, { hidden }) {
   }
 }
 
+// `res` here is `invoke()`'s return, which is already the unwrapped `data`
+// payload (see lib/agent-device.js's "no adapter touches a raw envelope"
+// header) — a live `agent-device get text <selector> --json` reply is
+// `{success:true, data:{selector, text, node}}` (confirmed live, #164), so
+// `res.text` is correct. #164 was exactly this function reading `res.text`
+// off the *raw* envelope (where the real value lives at `res.data.text`),
+// which was always `undefined` — every poll read fell through to `return ""`
+// regardless of the real on-screen text. Fixed structurally, not locally:
+// `invoke()` unwraps by default now, so there is no raw envelope left for
+// this function to mis-read even if it never thought about `.data` at all.
+// `res.value`/bare-string fallbacks are kept for tolerance of a future/older
+// agent-device shape, not because the live 0.19.3 response ever takes them.
 function extractText(res) {
   if (typeof res === "string") return res;
   if (res && typeof res.text === "string") return res.text;

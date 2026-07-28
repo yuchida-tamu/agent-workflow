@@ -7,6 +7,49 @@
 // Every process-spawning call goes through an injected `runner` so tests can
 // drive this module without a real agent-device / simulator (none is
 // available in CI — see interfaces/README.md and #132's capability probe).
+//
+// ---- No adapter touches a raw envelope (structural decision, #164) -------
+//
+// Three separate bugs, three separate adapters, one root cause: a live
+// `agent-device <cmd> --json` reply is enveloped `{success, data: {...}}`
+// (or `{success:false, error:{...}}`), and three different call sites each
+// independently forgot to unwrap it — #142 (`decideStartPath` reading
+// `apps?.apps` off the raw envelope), #158 (the *shape inside* `data.apps`,
+// a display string not a bare bundle id), and #164 (`execute-step.js`'s
+// `assertText` reading `res.text` off the raw envelope's top level instead
+// of `res.data.text`). Pushing "remember to unwrap" onto every caller is
+// exactly the defect class that keeps recurring — the fix that actually
+// closes the family is moving the unwrap into the one chokepoint every
+// caller already goes through:
+//
+// `invoke()` below now unwraps by default. Every adapter that calls
+// `invoke()` for a JSON response gets back the bare `data` payload already
+// (or an already-thrown `AgentDeviceError` if the body said
+// `success:false`, even at exit 0) — there is no raw-envelope value for a
+// forgetful caller to mis-read in the first place. `rawInvoke()` is the
+// explicit, named escape hatch for a caller that genuinely needs the whole
+// envelope (e.g. to inspect `.success` itself rather than just react to a
+// thrown error) — as of this writing nothing in this pack needs it, but it
+// exists so "I need the raw shape" has a sanctioned door instead of a
+// reason to skip `invoke()` altogether. `json:false` calls (raw stdout
+// capture, e.g. `screenshot --out`) never touch JSON at all and are
+// unaffected either way.
+//
+// Blast radius considered: `openSession`/`closeSession`/`listDevices`/
+// `listSessions` all return `invoke()`'s value directly and every existing
+// caller (run.js, execute-step.js's `navigate` action) already discards or
+// only reacts to the throw, so unwrapping their return changes nothing
+// observable. `listApps` already unwrapped explicitly; unwrapping twice is
+// idempotent (`unwrap` passes through a shape with no `.data` untouched),
+// so it keeps working unchanged. execute-step.js's infrastructure-vs-
+// step-failure classification (`isInfrastructureError`) inspects
+// `err.stderr`/`err.stdout` on a thrown `AgentDeviceError` — unaffected,
+// since a non-zero-exit throw and an unwrap-triggered success:false throw
+// differ in shape: a non-zero-exit throw carries BOTH stderr and stdout,
+// while the success:false-at-exit-0 throw carries ONLY stdout (the JSON body) —
+// stderr stays undefined. The spawn-infra classifier in execute-step relies on
+// stdout being defined here; do not simplify its both-undefined check to
+// stderr alone.
 
 import { defaultRunner } from "./proc.js";
 
@@ -89,8 +132,14 @@ export function unwrap(result) {
   return result && typeof result === "object" && "data" in result ? result.data : result;
 }
 
-// Runs `agent-device <...args> --json` (unless json:false) and parses stdout.
-export async function invoke(args, { runner = defaultRunner, json = true, cwd, env, bin = "agent-device" } = {}) {
+// Runs `agent-device <...args> --json` (unless json:false), parses stdout,
+// and returns the FULL body exactly as agent-device wrote it — the raw
+// `{success, data: {...}}` / `{success:false, error:{...}}` envelope,
+// unexamined. Still throws `AgentDeviceError` for a spawn failure, a
+// non-zero exit, or unparseable JSON; it just never looks inside a body
+// that came back with exit 0. Most callers want `invoke()` below, not this
+// — see the file header's "no adapter touches a raw envelope" note.
+export async function rawInvoke(args, { runner = defaultRunner, json = true, cwd, env, bin = "agent-device" } = {}) {
   const fullArgs = json ? [...args, "--json"] : [...args];
   const result = await runner.exec(bin, fullArgs, { cwd, env });
   const command = [bin, ...fullArgs].join(" ");
@@ -115,6 +164,17 @@ export async function invoke(args, { runner = defaultRunner, json = true, cwd, e
       stdout: result.stdout,
     });
   }
+}
+
+// Runs `agent-device <...args> --json` (unless json:false) and returns the
+// UNWRAPPED `data` payload — the default every adapter should use. Built on
+// `rawInvoke()` plus `unwrap()`: a JSON call that comes back `success:false`
+// at exit 0 throws `AgentDeviceError` here too, exactly like a non-zero
+// exit would (see `unwrap()`'s own header). `json:false` calls pass through
+// untouched (`{raw: stdout}` was never an envelope to unwrap).
+export async function invoke(args, opts = {}) {
+  const result = await rawInvoke(args, opts);
+  return opts.json === false ? result : unwrap(result);
 }
 
 // `agent-device open [app] [url] --platform <p> --device <d> --session <s>
