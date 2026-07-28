@@ -45,7 +45,11 @@
 // step-failure classification (`isInfrastructureError`) inspects
 // `err.stderr`/`err.stdout` on a thrown `AgentDeviceError` — unaffected,
 // since a non-zero-exit throw and an unwrap-triggered success:false throw
-// both already populate those fields the same way `invoke()` always has.
+// differ in shape: a non-zero-exit throw carries BOTH stderr and stdout,
+// while the success:false-at-exit-0 throw carries ONLY stdout (the JSON body) —
+// stderr stays undefined. The spawn-infra classifier in execute-step relies on
+// stdout being defined here; do not simplify its both-undefined check to
+// stderr alone.
 
 import { defaultRunner } from "./proc.js";
 
