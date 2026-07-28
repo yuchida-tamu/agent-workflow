@@ -59,29 +59,28 @@ start at [`README.md`](README.md); for the design, see
       live smoke test passed: dispatch → gate refusal → `/approve` →
       G1-validated transition → re-dispatch to architect
 - [x] pack-expo `run` / `verify` / `execute-step` adapters + `expo-dev` /
-      `mobile-verify` skills, merged and unit-tested (#132–#136).
-      `packs/expo/scripts/acceptance.sh` — the live, local-only proof against
-      a real booted iOS simulator — ran three rounds for real on 2026-07-28,
-      each retiring exactly what the previous one found: #156 (P0, `run
-      start` could never reach `"running"` — a `spawnBackground` stdio race)
-      and #158 (P1, the reuse fast-path never fired) fixed in #161 and
-      re-confirmed live (`start` reaches `"running"` via reuse in ~7s, `stop`
-      tears down cleanly); #162 (P0, the dev client opened via the generic
-      Expo Go scheme — either an unclearable OS dialog or an outright
-      failure, common on any real dev machine) fixed in #163 plus this
-      pack's own scaffold gaining a `scheme` and `expo-dev-client`, and
-      re-confirmed live — **the entire `verify` stage (`snapshot`/`act`/
-      `read`) now passes reliably against a real running app**. Round 3
-      found #164 (P0, `execute-step`'s `text` assertion always reads empty —
-      `assertText` never unwraps agent-device's response envelope, same
-      defect class as #156/#158 in a different function), filed, not fixed
-      (outside this pack's own declared surface). Every adapter behaved
+      `mobile-verify` skills, merged and unit-tested, **and live-proven**
+      (#132–#136). `packs/expo/scripts/acceptance.sh` — the live, local-only
+      proof against a real booted iOS simulator — passed **all six stages**
+      (describe×3, provision, start, verify, execute-step, stop) on
+      2026-07-29: zero contract violations, zero assertion misses, exit 0.
+      Getting there took four rounds of real, live investigation, each
+      retiring exactly what the previous round's run surfaced: #156 (P0,
+      `run start` could never reach `"running"` — a `spawnBackground` stdio
+      race) and #158 (P1, the reuse fast-path never fired), both fixed in
+      #161; #162 (P0, the dev client opened via the generic Expo Go scheme —
+      either an unclearable OS dialog or an outright failure, common on any
+      real dev machine), fixed in #163 plus this pack's own scaffold gaining
+      a `scheme` and `expo-dev-client`; #164 (P0, `execute-step`'s `text`
+      assertion always read empty — an unwrapped agent-device response
+      envelope), fixed in #165 by unwrapping at `invoke()`'s own chokepoint,
+      closing the whole defect family structurally. Every adapter behaved
       contract-correctly throughout every round (recoverable exits, proper
       JSON, or a correct fatal for a genuine step failure) — all four bugs
-      found across the three rounds are in a capability, not the contract,
-      and each was filed and tracked to closure or is still open, never
-      silently absorbed. `adapters/ship` (EAS) stays spec-only, deferred to
-      #137 until a release target exists.
+      found across the investigation were in a capability, not the
+      contract, and every one was filed and tracked to a live-reconfirmed
+      fix, never silently absorbed. `adapters/ship` (EAS) stays spec-only,
+      deferred to #137 until a release target exists.
 - [x] Composite GitHub Actions: `gate-check` (issue comments → validated
       transitions), `risk-verdict` (PR diff → facts → policy → labels +
       verdict comment), `dispatch` (state label → who-acts-next comment);

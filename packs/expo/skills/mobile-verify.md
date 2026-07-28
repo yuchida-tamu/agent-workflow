@@ -13,15 +13,13 @@ answers `{"op":"describe"}` with `{"interface": "<name>", "interface_version":
 "1"}` regardless of what else it implements — use that to sanity-check an
 adapter is reachable before anything else.
 
-> **Known blocker (as of #136's live acceptance, latest re-run 2026-07-28):**
-> `start`, `snapshot`, `act`, and `read` are all confirmed working reliably
-> live end to end (#156/#158/#162 all fixed and re-verified — see
-> `expo-dev.md`'s "Fixed since first found"). The one remaining gap is
-> `execute-step`'s `text` assertion, which always reads back an empty string
-> regardless of the real on-screen value (`expo-dev.md`'s "Known open bug",
-> #164) — don't trust a `text` assertion's verdict either way until it lands;
-> confirm a state change via a screenshot or a `visible`/`not_visible`
-> assertion instead (both confirmed correct).
+> **Live-proven end to end (#136's live acceptance, 2026-07-29):** `start`,
+> `snapshot`, `act`, `read`, and `execute-step` (actions, `visible`
+> assertions, and `text` assertions) all confirmed working reliably against
+> a real booted simulator — the four bugs this recipe list originally
+> surfaced (#156, #158, #162, #164) are all fixed and re-verified live, not
+> just merged. See `expo-dev.md`'s "Fixed since first found" for what each
+> one was.
 
 ## 1. Start a session
 

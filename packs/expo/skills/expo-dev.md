@@ -93,10 +93,11 @@ point the adapter at it — there's no attach-to-existing-Metro path.
   may have already lost track of the session) and always kills Metro by
   identity-checked pid, then marks the session record `stopped` regardless.
 
-## Fixed since first found (#156, #158, #162 — all confirmed live, 2026-07-28)
+## Fixed since first found (#156, #158, #162, #164 — all confirmed live, 2026-07-28/29)
 
-Three real bugs #136's live acceptance run found and tracked here have all
-landed and been **re-verified live** (not just merged — actually re-run):
+Every real bug #136's live acceptance run found has landed and been
+**re-verified live** (not just merged — actually re-run against a real
+booted simulator, end to end):
 
 - **#156** — `run start` couldn't reach a `"running"` session at all
   (`spawnBackground` in `lib/proc.js` raced an unopened `createWriteStream()`
@@ -104,44 +105,32 @@ landed and been **re-verified live** (not just merged — actually re-run):
 - **#158** — the `reuse` fast-start path never fired (`decideStartPath`
   compared a bare bundle id against `agent-device`'s `"DisplayName
   (bundle.id)"` app-list strings). Fixed in #161. Re-confirmed: a start
-  against an already-installed dev client now reaches `"running"` via reuse
-  in ~7 seconds, no rebuild.
+  against an already-installed dev client reaches `"running"` via reuse in
+  ~6–7 seconds, no rebuild.
 - **#162** — `run.js` opened the dev client via the generic Expo Go scheme
   (`exp://host:port`), which either hit an unclearable OS disambiguation
   dialog (when Expo Go was also on the simulator) or failed outright
   otherwise. Fixed in #163: `start` now builds the bundle-scoped
   `<scheme>://expo-development-client/?url=<encoded-metro-url>` deep link
   Expo's own CLI uses, reading `scheme` from the workspace's own
-  `app.json`/`app.config.js` (`schemeFromConfig`) — no scheme configured is
-  now a clear `recoverable(10)` naming the gap, not a silent wrong-app open.
-  Re-confirmed live: `verify snapshot` now finds every `acceptance-*` testID
-  on the first try, `act`/`read` both pass — the **entire `verify` stage
-  passes reliably** as of this fix.
+  `app.json`/`app.config.js` (`schemeFromConfig`).
+- **#164** — `execute-step`'s `text` assertion always read back an empty
+  string regardless of the real on-screen value (`assertText` read
+  `res.text` off the raw, un-enveloped `invoke()` response). Fixed in #165:
+  `invoke()` itself now unwraps agent-device's `{success, data}` envelope at
+  the one chokepoint every adapter call goes through, closing the whole
+  defect family structurally rather than patching each call site — with a
+  regression test pinned to this investigation's own `"Tapped: 2"` payload.
 
-If you hit any of these three symptoms again on a current checkout, it's a
+**Live-reconfirmed full chain, 2026-07-29:** `describe` → `start` (reuse,
+~6s) → `verify` (`snapshot` finds every `acceptance-*` testID, `act`,
+`read`) → `execute-step` (2 actions, a `visible` assertion, and — the one
+that used to fail — a `text` assertion, all passing) → `stop`. Every stage
+green, zero contract violations. See `packs/expo/README.md`'s "Live
+acceptance" section for the full transcript.
+
+If you hit any of these four symptoms again on a current checkout, it's a
 regression, not a known gap — file fresh.
-
-## Known open bug (confirmed live, not yet fixed — check before you file a duplicate)
-
-- **`execute-step`'s `text` assertion always reads empty.** `assertText`
-  (`execute-step.js`) reads `res.text`/`res.value` off the *raw* `invoke()`
-  response, but a live `agent-device get text --json` reply is enveloped
-  (`{success, data: {text, ...}}`) same as every other agent-device command —
-  the real value is at `.data.text`, never the top level, so the extraction
-  always falls through to `""`. Confirmed live: a trace that taps a counter
-  twice then asserts its text contains `"2"` fails every time
-  (`"did not contain \"2\"... last read: \"\""`) — while a screenshot taken
-  at that exact failure moment shows the counter correctly reading
-  `"Tapped: 2"` on screen. Not a timing issue (confirmed via an isolated
-  `press`/`press`/`get text` sequence outside the polling loop entirely — the
-  raw CLI call itself returns the right value immediately; only
-  `execute-step.js`'s own parsing of it is wrong). Same defect class as
-  #142/#158 (an agent-device envelope the adapter didn't unwrap), different
-  function — `verify.js` already imports and uses `unwrap` everywhere;
-  `execute-step.js`'s `assertText` never adopted it. Tracked in #164 (P0).
-  Until it lands, don't trust a `text` assertion's verdict either way —
-  confirm state changes via a screenshot or a `visible`/`not_visible`
-  assertion instead (both of those are confirmed correct live).
 
 ## Common failure modes (real, hit during this milestone)
 

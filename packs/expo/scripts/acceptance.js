@@ -68,6 +68,10 @@ function record(kind, stage, message) {
   log(`${kind === "contract" ? "CONTRACT VIOLATION" : "ASSERTION MISS"} [${stage}]: ${message}`);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function sh(cmd, args, opts = {}) {
   return new Promise((resolve) => {
     execFile(cmd, args, { maxBuffer: 32 * 1024 * 1024, ...opts }, (error, stdout, stderr) => {
@@ -431,16 +435,38 @@ async function main() {
     // verify's two halves.
     const verifyCountBeforeSnapshot = results.violations.length;
 
-    const snapRes = await callAdapter("verify.js", { op: "snapshot", session_id: sessionId, evidence_dir: EVIDENCE_DIR });
-    log(`verify snapshot -> exit ${snapRes.code}`);
+    // The app can still be mid-first-render (Metro just finished serving the
+    // bundle, but React hasn't committed every element yet) at the exact
+    // moment `start` returns — `start`'s own readiness check only confirms
+    // Metro can serve bundles, not that the JS tree has finished mounting.
+    // Observed live: an occasional first snapshot finds 2 of 3 expected
+    // testIDs, with the third appearing on an immediate retry. A short,
+    // bounded settle retry here is the same "snapshot before you act, don't
+    // assume instant readiness" advice mobile-verify.md already gives —
+    // applied to this script's own first snapshot, not a workaround for an
+    // adapter defect.
+    const WANT_IDS = ["acceptance-title", "acceptance-button", "acceptance-input"];
+    let snapRes;
     let discoveredIds = [];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      snapRes = await callAdapter("verify.js", { op: "snapshot", session_id: sessionId, evidence_dir: EVIDENCE_DIR });
+      log(`verify snapshot (attempt ${attempt}) -> exit ${snapRes.code}`);
+      if (snapRes.code !== 0 || snapRes.parseError || !Array.isArray(snapRes.parsed?.elements) || !snapRes.parsed?.screenshot) {
+        break; // a genuine contract problem — retrying won't fix a bad shape
+      }
+      discoveredIds = snapRes.parsed.elements.map((e) => e.test_id).filter(Boolean);
+      log(`snapshot elements test_ids: ${JSON.stringify(discoveredIds)}`);
+      if (WANT_IDS.every((want) => discoveredIds.includes(want))) break;
+      if (attempt < 3) {
+        log(`Missing ${JSON.stringify(WANT_IDS.filter((w) => !discoveredIds.includes(w)))} — settling and retrying (app may still be mid-first-render).`);
+        await sleep(1000);
+      }
+    }
     if (snapRes.code !== 0 || snapRes.parseError || !Array.isArray(snapRes.parsed?.elements) || !snapRes.parsed?.screenshot) {
       record("contract", "verify:snapshot", `unexpected response: exit=${snapRes.code} parseError=${snapRes.parseError ?? "none"} body=${snapRes.stdout.slice(0, 1000)}`);
     } else {
-      discoveredIds = snapRes.parsed.elements.map((e) => e.test_id).filter(Boolean);
-      log(`snapshot elements test_ids: ${JSON.stringify(discoveredIds)}`);
-      for (const want of ["acceptance-title", "acceptance-button", "acceptance-input"]) {
-        if (!discoveredIds.includes(want)) record("assertion", "verify:snapshot", `expected testID "${want}" in snapshot elements, got ${JSON.stringify(discoveredIds)}`);
+      for (const want of WANT_IDS) {
+        if (!discoveredIds.includes(want)) record("assertion", "verify:snapshot", `expected testID "${want}" in snapshot elements after 3 attempts, got ${JSON.stringify(discoveredIds)}`);
       }
     }
     const verifyIssuesFromSnapshot = results.violations.length - verifyCountBeforeSnapshot;
