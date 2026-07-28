@@ -420,7 +420,7 @@ async function main() {
     // empty during this investigation — ruled out live: an isolated
     // tap-tap-read with no `type` involved at all still read empty. The
     // real cause is #164, in execute-step.js itself, not this script's
-    // ordering — see expo-dev.md's "known open bugs"). Keeping this
+    // ordering — see expo-dev.md's "Fixed since first found"). Keeping this
     // ordering anyway: it's a harmless, honest separation of concerns
     // between the two stages regardless, and this app's plain TextInput has
     // no submit/return control for agent-device's `keyboard dismiss` to

@@ -29,7 +29,7 @@ echo '{"op":"start","workspace":"/path/to/checkout","target":"iPhone 15",
   | node packs/expo/adapters/run.js
 ```
 
-→ `{"session_id":"sess-…","entry_point":"exp://127.0.0.1:8081","log_stream":"…/app.log"}`
+→ `{"session_id":"sess-…","entry_point":"agentflowacceptance://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081","log_stream":"…/app.log"}`
 
 Keep `session_id` — every later call (`verify`, `execute-step`, `stop`)
 needs it. `workspace` falls back to `AGENTFLOW_EXPO_WORKSPACE` then `cwd`;
