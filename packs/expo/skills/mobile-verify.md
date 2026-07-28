@@ -13,14 +13,14 @@ answers `{"op":"describe"}` with `{"interface": "<name>", "interface_version":
 "1"}` regardless of what else it implements — use that to sanity-check an
 adapter is reachable before anything else.
 
-> **Known blocker (as of #136's live acceptance):** `run start` currently
-> cannot reach a `"running"` session on any app — see `expo-dev.md`'s "Known
-> open bugs" (#156) before assuming a `recoverable(10)` from `start` means
-> your workspace or app is broken. Everything below documents the intended
-> contract and will be exercisable live once #156 lands; the request/response
-> shapes themselves are already correct (confirmed by the unit tests and by
-> `verify`/`execute-step`/`run stop`'s own fatal/20 "unknown session_id" path,
-> which all three already answer correctly today).
+> **Known blocker (as of #136's live acceptance, re-run 2026-07-28):** `start`
+> itself now reaches `"running"` reliably (#156/#158 fixed and confirmed
+> live), but the app it opens is often not actually interactable — see
+> `expo-dev.md`'s "Known open bug" (#162). A `"running"` session's app can be
+> stuck behind an OS-level "Open in…" dialog that blocks every `act`/
+> `execute-step` selector. **Screenshot before you act** if a selector you
+> expect to resolve doesn't — don't assume your workspace or testID is wrong
+> before ruling this out.
 
 ## 1. Start a session
 

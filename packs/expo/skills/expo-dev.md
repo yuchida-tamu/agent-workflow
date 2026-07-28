@@ -93,29 +93,40 @@ point the adapter at it — there's no attach-to-existing-Metro path.
   may have already lost track of the session) and always kills Metro by
   identity-checked pid, then marks the session record `stopped` regardless.
 
-## Known open bugs (confirmed live, not yet fixed — check before you file a duplicate)
+## Fixed since first found (#156, #158 — confirmed live, 2026-07-28)
 
-- **`run start` cannot currently reach a `"running"` session at all.**
-  #136's live acceptance run found `spawnBackground` (`lib/proc.js`) passes a
-  freshly created `createWriteStream()` straight into `child_process.spawn`'s
-  `stdio` array with no await in between — the stream's fd is always still
-  `null` at that point, so Node throws `"The argument 'stdio' is invalid"`
-  synchronously, every time, on every Node version tested (18/22/24). `run.js`
-  catches it and reports a correct `recoverable(10)`, so the *adapter's own
-  contract* holds — but the underlying capability does not: **no real session
-  currently reaches `"running"`, on any app, any machine.** Tracked in #156
-  (P0). Until it's fixed, `verify`/`execute-step` cannot be exercised against
-  a live session at all — this is not something a workaround at the call site
-  can route around.
-- **The `reuse` start path never fires.** `decideStartPath` compares
-  `agent-device apps`' entries against a bare bundle id, but a live 0.19.3
-  daemon returns `"DisplayName (bundle.id)"` strings — the equality check
-  never matches, so every `start` takes the slow `expo run:ios` build path
-  even when the dev client is already installed on the target simulator.
-  Tracked in #158 (P1) — same defect class as #142/#147 (an agent-device
-  payload shape the adapter didn't anticipate), different manifestation.
-  Budget for the full build every time until this lands, not just the first
-  time per simulator.
+`run start` used to be unable to reach a `"running"` session at all
+(`spawnBackground` in `lib/proc.js` raced an unopened `createWriteStream()`
+against `spawn()`'s stdio validation — #156), and the `reuse` fast-start path
+never fired because `decideStartPath` compared a bare bundle id against
+`agent-device`'s `"DisplayName (bundle.id)"` app-list strings (#158). Both
+landed in #161 and were **re-verified live**: a second acceptance run against
+the same cached scaffold reached `"running"` via the reuse path in ~7 seconds
+(no rebuild), and `stop` cleanly tore it down. If you hit either symptom
+again on a current checkout, it's a regression, not a known gap — file fresh.
+
+## Known open bug (confirmed live, not yet fixed — check before you file a duplicate)
+
+- **The dev-client open URL is wrong, so the app is unusable even once
+  `start` succeeds.** `run.js` hardcodes `entry_point` as the generic Expo Go
+  scheme (`exp://127.0.0.1:<port>`). On a simulator that has Expo Go
+  installed (the common case for any real dev machine — and Expo Go
+  registers that exact scheme too), opening it triggers an **OS-level "Open
+  in '<app>'?" disambiguation dialog** that nothing clears — not a coordinate
+  tap on "Open", not `agent-device alert accept`, not `agent-device alert
+  dismiss` (which itself reports the tap registered but the alert is still
+  there). The app is confirmed rendering correctly *underneath* the dialog
+  (screenshot evidence) but is fully blocked from interaction — every
+  `verify:act`/`execute-step` action fails with a selector-not-found, because
+  the front-most responder is the system alert, not the app. On a simulator
+  with **no** other `exp://` claimant, `open` fails outright instead
+  (`"Simulator device failed to open exp://…"`). Expo's own CLI opens a
+  custom dev client via a **bundle-id-scoped** scheme instead
+  (`<bundleId>://expo-development-client/?url=<encoded-metro-url>` — observed
+  directly in a real `expo run:ios` log during this investigation), which
+  `run.js` doesn't currently build. Tracked in #162 (P0). Until it lands,
+  don't assume a `"running"` session's app is actually interactable —
+  screenshot it first if something you expect to `act` on isn't resolving.
 
 ## Common failure modes (real, hit during this milestone)
 

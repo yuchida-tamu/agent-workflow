@@ -61,16 +61,21 @@ start at [`README.md`](README.md); for the design, see
 - [x] pack-expo `run` / `verify` / `execute-step` adapters + `expo-dev` /
       `mobile-verify` skills, merged and unit-tested (#132–#136).
       `packs/expo/scripts/acceptance.sh` — the live, local-only proof against
-      a real booted iOS simulator — is built and ran for real on 2026-07-28;
-      it surfaced a confirmed, deterministic P0 bug (#156) in `run start`'s
-      Metro-spawn path that blocks any real session from reaching
-      `"running"`, on any app or machine, plus a P1 reuse-path miss (#158).
-      Both adapters behaved contract-correctly while failing (recoverable
-      exits, proper JSON) — the bugs are in a capability, not the contract —
-      so this is filed and open, not silently absorbed. Full live proof of
-      `verify`/`execute-step` against a running session is pending #156.
-      `adapters/ship` (EAS) stays spec-only, deferred to #137 until a release
-      target exists.
+      a real booted iOS simulator — ran twice for real on 2026-07-28. Pass 1
+      found and filed two bugs (#156 P0: `run start` could never reach
+      `"running"` — a `spawnBackground` stdio race; #158 P1: the reuse
+      fast-path never fired); both landed the same day (#161) and pass 2
+      **re-confirmed live**: `start` now reaches `"running"` via reuse in ~7s,
+      `stop` tears down cleanly. Pass 2 also found a third bug (#162, P0):
+      `run.js` opens the dev client via the generic Expo Go URL scheme, which
+      either hits an unclearable OS disambiguation dialog (Expo Go also on
+      the simulator — the common case) or fails outright otherwise; the app
+      renders correctly underneath but `verify`/`execute-step` can't reach
+      it. Every adapter behaved contract-correctly throughout (recoverable
+      exits, proper JSON, or a correct fatal for a genuine step failure) —
+      all three bugs are in a capability, not the contract — so each is
+      filed and open, not silently absorbed. `adapters/ship` (EAS) stays
+      spec-only, deferred to #137 until a release target exists.
 - [x] Composite GitHub Actions: `gate-check` (issue comments → validated
       transitions), `risk-verdict` (PR diff → facts → policy → labels +
       verdict comment), `dispatch` (state label → who-acts-next comment);
