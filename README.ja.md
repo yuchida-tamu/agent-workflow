@@ -8,9 +8,9 @@ GitHub 上で動作する、プラットフォーム非依存のエージェン�
 
 > この文書は英語版 `README.md`（`6bbc019` 時点）の内容に基づいています。
 
-📐 **アーキテクチャ:** [`agent-loop-architecture.html`](agent-loop-architecture.html)
+📐 **アーキテクチャ:** [`agent-loop-architecture.html`](docs/agent-loop-architecture.html)
 （対話的な配線グラフを備えた、正典としての設計文書。日本語版:
-[`agent-loop-architecture.ja.html`](agent-loop-architecture.ja.html)）。🚧 **ビルド
+[`agent-loop-architecture.ja.html`](docs/agent-loop-architecture.ja.html)）。🚧 **ビルド
 状況:** [`STATUS.md`](STATUS.md)。リポジトリ: `yuchida-tamu/agent-workflow`。
 
 ## 基本原則（Ground rules）

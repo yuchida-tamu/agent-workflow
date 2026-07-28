@@ -1,3 +1,7 @@
+---
+title: Getting started: bringing the loop to an existing repo
+---
+
 # Getting started: bringing the loop to an existing repo
 
 This walks a repo that already exists to a first issue that goes all the way

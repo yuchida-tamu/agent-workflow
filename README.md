@@ -5,7 +5,7 @@ arrive as issues and leave as shipped, tested, released features, with
 humans present only at deliberate approval gates. Everything a script can
 decide, a script decides — agents spend tokens only on judgment.
 
-📐 **Architecture:** [`agent-loop-architecture.html`](agent-loop-architecture.html)
+📐 **Architecture:** [`agent-loop-architecture.html`](docs/agent-loop-architecture.html)
 (the authoritative design, with an interactive wiring graph). 🚧 **Build
 status:** [`STATUS.md`](STATUS.md). Repo: `yuchida-tamu/agent-workflow`.
 

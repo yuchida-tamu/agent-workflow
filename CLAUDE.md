@@ -3,7 +3,7 @@
 Platform-agnostic agentic development loop on GitHub. This repo is the
 toolkit **and its own first consumer** — the loop manages this backlog.
 
-Architecture: `agent-loop-architecture.html` (the authoritative design).
+Architecture: `docs/agent-loop-architecture.html` (the authoritative design).
 Build status: `README.md`. Repo: `yuchida-tamu/agent-workflow`.
 
 ## Ground rules (non-negotiable)
