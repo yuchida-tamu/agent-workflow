@@ -143,6 +143,30 @@ export function closeSession({ app, platform = "ios", device, session, shutdown 
   return invoke(args, { runner });
 }
 
+// A live `agent-device apps --json` (0.19.3) entry is a display string, not
+// a bare bundle id — e.g. `"app (dev.agentflow.acceptance)"` (confirmed
+// against a real session, see #158):
+//
+//   {"success":true,"data":{"apps":[
+//     "gymtomo (org.reactjs.native.example.gymtomo)",
+//     "app (dev.agentflow.acceptance)",
+//     "Expo Go (host.exp.Exponent)"
+//   ]}}
+//
+// `decideStartPath` compares this array against a bare bundleId, so a raw
+// `"Name (bundle.id)"` string can never match — the reuse fast-path silently
+// never fires (#158). Extract the parenthesized bundle id here, once, at the
+// source of the array, rather than pushing that parsing onto every caller.
+// Tolerates entries that are already bare ids (no trailing `(...)` — the
+// legacy/synthetic shape this module's own tests and #142's fix used) and
+// object entries ({id,...}/{bundleId,...}), both left untouched since
+// `decideStartPath`'s own matching already understands those shapes.
+export function normalizeAppEntry(entry) {
+  if (typeof entry !== "string") return entry;
+  const match = entry.match(/\(([^()]+)\)\s*$/);
+  return match ? match[1] : entry;
+}
+
 // `agent-device apps [--all] --platform <p> --device <d>` — used by `run`'s
 // start-path decision: is the dev client already installed on the target sim?
 // Returns the bare apps array: the real payload is enveloped
@@ -159,7 +183,8 @@ export async function listApps({ platform = "ios", device, session, all = false,
   if (session) args.push("--session", session);
   const result = await invoke(args, { runner });
   const data = unwrap(result);
-  return Array.isArray(data) ? data : (data?.apps ?? []);
+  const apps = Array.isArray(data) ? data : (data?.apps ?? []);
+  return apps.map(normalizeAppEntry);
 }
 
 export function listDevices({ runner } = {}) {
