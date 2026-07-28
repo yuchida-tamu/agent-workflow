@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: __TOOLKIT_REPO__/actions/auto-merge@v0.2.0
+      - uses: __TOOLKIT_REPO__/actions/auto-merge@v0.3.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           app-id: ${{ secrets.AGENTFLOW_APP_ID }}

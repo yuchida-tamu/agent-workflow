@@ -51,13 +51,13 @@ GitHub 上で動作する、プラットフォーム非依存のエージェン�
 そのため、ループの挙動が変わるのは、あなたがアップグレードを選んだときだけです。
 
 ```sh
-git clone --branch v0.2.0 https://github.com/yuchida-tamu/agent-workflow
+git clone --branch v0.3.0 https://github.com/yuchida-tamu/agent-workflow
 cd agent-workflow && npm install
 node init/cli.js adopt --target /path/to/your-repo --repo <owner>/<name>
 # 18 個のラベル一式（状態・優先度・リスク・ドリフト）を作成し、
 # config・domains.yml・ビジネスポリシーパックの雛形を生成し、
 # 自動では適用できないリポジトリ設定を出力します。設置されるワークフローの
-# スタブは @v0.2.0 をピン留めします
+# スタブは @v0.3.0 をピン留めします
 node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name>
 # 実際に何が反映されたかを再読込します。G3 モード（native-review | solo-comment）
 # も含めて確認できます
