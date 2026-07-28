@@ -8,6 +8,86 @@ build-status ledger this summarizes.
 
 日本語版: [`CHANGELOG.ja.md`](CHANGELOG.ja.md)
 
+## v0.3.0 — the platform pillar
+
+(Everything below is new since v0.2.0; see that section for what was already
+shipped.)
+
+The repo is now public under MIT, has a docs site, and — the headline —
+`pack-expo`'s `run`/`verify`/`execute-step` adapters are live-proven against
+a real booted iOS simulator, not just merged and unit-tested. A consumer
+pinning `@v0.2.0` was missing all three of those plus a real-world bug in
+headless dispatch; this is the tag that gives them back.
+
+### pack-expo adapters — live-proven, not just merged
+
+`run`, `verify`, and `execute-step` were implemented (#138, #140, #141) and
+then put through a four-round live acceptance campaign (#159) against a
+self-provisioned, real Expo app on a real booted iOS simulator — provision →
+start → verify → execute-step → stop, no mocks. Each round retired exactly
+what the previous one found, and the campaign is why this pack can be called
+proven rather than merged:
+
+- **#156** (P0) — `spawnBackground` handed an unopened `WriteStream` to
+  `spawn()`; every real `run start` threw immediately, deterministically, on
+  every Node version tested. Fixed by opening the log fd synchronously.
+- **#158** (P1) — the reuse fast-path never matched agent-device's real
+  `"DisplayName (bundle.id)"` app-list format, so every `run start` paid a
+  multi-minute rebuild even with the dev client already installed.
+- **#162** (P0) — `run start` opened the dev client via the generic Expo Go
+  scheme (`exp://…`), which either hit an OS disambiguation dialog or opened
+  the wrong app entirely when Expo Go was also installed. Now builds the
+  bundle-scoped `expo-development-client` deep link Expo's own CLI uses.
+- **#164** (P0) — `execute-step`'s `text` assertion read the raw, un-enveloped
+  agent-device response, so it always read empty. Fixed structurally: the
+  unwrap now lives in `invoke()` itself, the one chokepoint every adapter
+  call goes through, so no future caller can reintroduce the same class of
+  bug.
+
+All four are closed and re-verified live; the campaign's final round passed
+clean end to end. The `ship` adapter (EAS build/distribute/submit) remains
+spec-only (#137) — treat platform support as "run and verify a build,"
+not "build and ship one," until it lands.
+
+### Headless dispatch — artifacts survive a successful run
+
+`headless.dispatch.<state>` had a consumer-facing bug (#157, filed by
+hsk-habit): a completed run posted only its ledger row and silently
+discarded the artifact it had already produced — success looked identical to
+a run that made no output. Fixed in #160: successful runs now post their
+artifact under a durable, per-state marker, the same append-in-place pattern
+the ledger and risk verdict already use. `headless.dispatch` still ships off
+in every state by default (this repo included); this closes the gap for any
+consumer that turns it on.
+
+### Repo public, MIT-licensed, with a docs site
+
+The repo is now public and MIT-licensed (#146). A bilingual (EN/JA)
+interactive docs site is live at
+[yuchida-tamu.github.io/agent-workflow](https://yuchida-tamu.github.io/agent-workflow/)
+(#145), including a native Japanese rewrite of the site itself rather than a
+machine translation (#151). `README.ja.md`, `docs/getting-started.ja.md`,
+`CHANGELOG.ja.md`, and `agent-loop-architecture.ja.html` — full Japanese
+versions of the four core documents, each written as a native technical
+document (#150) — join the English originals, cross-linked both ways.
+Outbound doc links now resolve to their rendered Pages destinations instead
+of raw source blobs (#154, with a front-matter quoting fix from that
+review's own follow-up, #155).
+
+### Known gaps at v0.3.0
+
+- **`pack-expo`'s `ship` adapter is specified, not shipped.** `run`,
+  `verify`, and `execute-step` are live-proven (above); `ship` (EAS
+  build/distribute/submit) is still interface-only in `interfaces/`. This is
+  the next milestone.
+- `headless.dispatch.<state>` is built, tested, and now artifact-durable, but
+  still ships off in every state by default, including this repo's own.
+- Nightly QA (scheduled headless exploration) is deferred on cost — it needs
+  a self-hosted macOS runner.
+
+[Unreleased]: https://github.com/yuchida-tamu/agent-workflow/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/yuchida-tamu/agent-workflow/releases/tag/v0.3.0
+
 ## v0.2.0 — first complete release
 
 (Everything below describes the toolkit as of this tag.)
@@ -142,7 +222,6 @@ so the loop's tail completes on a toolkit or library, not only an app.
 - No consuming-app has yet run the full loop end to end; this repo is its
   own only production user so far.
 
-[Unreleased]: https://github.com/yuchida-tamu/agent-workflow/compare/v0.2.0...HEAD
 [v0.2.0]: https://github.com/yuchida-tamu/agent-workflow/releases/tag/v0.2.0
 
 ## v0.1.0 — historical
