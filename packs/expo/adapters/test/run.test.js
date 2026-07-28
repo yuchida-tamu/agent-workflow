@@ -101,6 +101,35 @@ test("decideStartPath: tolerates a legacy unenveloped array response -> reuse", 
   assert.equal(path, "reuse");
 });
 
+// #158: a real `agent-device apps --json` (0.19.3) response has display
+// strings, not bare bundle ids — this is the EXACT payload quoted in #158
+// against a real session. decideStartPath used to compare the whole display
+// string against the bare bundleId ("app (dev.agentflow.acceptance)" ===
+// "dev.agentflow.acceptance" -> always false), so the reuse fast-path never
+// fired against a real device even when the dev client genuinely was
+// installed. Fixed at listApps (see agent-device.test.js), verified here
+// end to end through decideStartPath.
+test("decideStartPath: real 'Name (bundle.id)' apps format (#158, exact observed payload) -> reuse", async () => {
+  const runner = {
+    exec: async () => ({
+      code: 0,
+      stdout: JSON.stringify({
+        success: true,
+        data: {
+          apps: [
+            "gymtomo (org.reactjs.native.example.gymtomo)",
+            "app (dev.agentflow.acceptance)",
+            "Expo Go (host.exp.Exponent)",
+          ],
+        },
+      }),
+      stderr: "",
+    }),
+  };
+  const path = await decideStartPath({ bundleId: "dev.agentflow.acceptance", target: "iPhone 15 Pro", runner });
+  assert.equal(path, "reuse");
+});
+
 // ---- waitForMetroReady: real readiness (HTTP /status probe), not a log grep
 
 test("waitForMetroReady: resolves true once the HTTP /status probe reports ready", async () => {

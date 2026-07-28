@@ -196,6 +196,44 @@ test("spawnBackground: a listener stays attached after spawn — a later async e
   });
 });
 
+// #156: every mock above swaps in a fake spawnFn, so none of them ever
+// exercised the real seam that actually broke — spawnBackground handing a
+// `createWriteStream()` (async-opening, `.fd: null` until its own 'open'
+// event) straight into `spawn()`'s `stdio`, with no await/tick in between.
+// Node's synchronous stdio validation always saw `fd: null` and threw
+// immediately, on every Node version, on every real invocation — 100%
+// reproduction, and no mock-based test could ever have caught it, since a
+// fake spawnFn never runs Node's real stdio validation at all. This is the
+// missing test class: no `spawnFn` override, a real `node:child_process`
+// spawn, a real log file on disk.
+test("spawnBackground: a REAL child process (no mocks) actually spawns and its output lands in a real log file", async () => {
+  await withTempDir(async (dir) => {
+    const logPath = join(dir, "app.log");
+    const { pid, logPath: returnedPath } = await spawnBackground(
+      process.execPath,
+      ["-e", "console.log('hello from a real spawnBackground child')"],
+      { logPath }
+    );
+    assert.ok(Number.isInteger(pid) && pid > 0, "a real spawn must yield a real OS pid");
+    assert.equal(returnedPath, logPath);
+
+    // The child writes and exits asynchronously; poll briefly for its
+    // output to land rather than assuming it's already flushed.
+    const deadline = Date.now() + 5000;
+    let contents = "";
+    while (Date.now() < deadline) {
+      contents = await readFile(logPath, "utf8").catch(() => "");
+      if (contents.includes("hello from a real spawnBackground child")) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.match(
+      contents,
+      /hello from a real spawnBackground child/,
+      "the real child's stdout should land in the real log file spawnBackground wired up"
+    );
+  });
+});
+
 // ---- pid identity: a bare pid is not a safe long-lived handle ----------
 // (see #138 review: the OS recycles pids, so isAlive/kill must verify a
 // start-time identity token, via `ps`, before ever treating a pid as ours.)

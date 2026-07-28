@@ -29,7 +29,7 @@
 // "signal a stranger's pid".
 
 import { execFile, spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { openSync, closeSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -112,30 +112,51 @@ export function spawnForeground(cmd, args, { cwd, env, timeoutMs, onOutput, spaw
 // caller can map to a normal JSON error response, instead of an
 // uncaughtException with nothing on stdout. The child is unref'd once
 // spawned so it outlives this invocation.
+//
+// #156: this used to pass a bare `createWriteStream(logPath)` straight into
+// `stdio` — but a WriteStream opens its fd *asynchronously* (`.fd` stays
+// `null` until its own 'open' event), and there is no await/tick between
+// creating the stream and calling `spawnFn`, so Node's synchronous stdio
+// validation always saw `fd: null` and threw immediately, every time, on
+// every supported Node version. `fs.openSync` gets a real fd synchronously,
+// so it's already a valid number by the time spawn validates `stdio` —
+// no race, no await-the-stream's-'open'-event dance needed.
 export async function spawnBackground(cmd, args, { cwd, env, logPath, spawnFn = spawn } = {}) {
-  let out = "ignore";
+  let stdio = ["ignore", "ignore", "ignore"];
+  let fd = null;
   if (logPath) {
     await mkdir(dirname(logPath), { recursive: true });
-    out = createWriteStream(logPath, { flags: "a" });
+    fd = openSync(logPath, "a");
+    stdio = ["ignore", fd, fd];
   }
-  const child = spawnFn(cmd, args, { cwd, env, detached: true, stdio: ["ignore", out, out] });
+  const child = spawnFn(cmd, args, { cwd, env, detached: true, stdio });
 
-  await new Promise((resolve, reject) => {
-    const onError = (error) => {
-      cleanup();
-      reject(error);
-    };
-    const onSpawn = () => {
-      cleanup();
-      resolve();
-    };
-    function cleanup() {
-      child.off("error", onError);
-      child.off("spawn", onSpawn);
-    }
-    child.once("error", onError);
-    child.once("spawn", onSpawn);
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      const onError = (error) => {
+        cleanup();
+        reject(error);
+      };
+      const onSpawn = () => {
+        cleanup();
+        resolve();
+      };
+      function cleanup() {
+        child.off("error", onError);
+        child.off("spawn", onSpawn);
+      }
+      child.once("error", onError);
+      child.once("spawn", onSpawn);
+    });
+  } finally {
+    // By the time spawnFn(...) returns, the underlying fork/exec has
+    // already happened (or failed) — the OS has already duplicated `fd`
+    // into the child's own stdio slots if the spawn succeeded, so closing
+    // our copy here (success or failure) never touches the child's output;
+    // it just stops this long-lived adapter process from leaking fds across
+    // repeated `run start` calls.
+    if (fd !== null) closeSync(fd);
+  }
 
   // The caller has already moved on with the pid by the time any later
   // async error fires (EPIPE on the log stream, etc) — keep a listener

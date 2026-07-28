@@ -7,6 +7,7 @@ import {
   openSession,
   closeSession,
   listApps,
+  normalizeAppEntry,
   unwrap,
   AgentDeviceError,
 } from "../lib/agent-device.js";
@@ -154,6 +155,50 @@ test("listApps: tolerates a legacy unenveloped array response", async () => {
   const runner = fakeRunner(() => ({ code: 0, stdout: '["com.example.app"]', stderr: "" }));
   const apps = await listApps({ platform: "ios", device: "iPhone 15", runner });
   assert.deepEqual(apps, ["com.example.app"]);
+});
+
+// #158: a live `agent-device apps --json` (0.19.3) entry is a display
+// string, not a bare bundle id — this is the EXACT payload quoted in #158
+// against a real session (`agent-device apps --platform ios --device
+// "iPhone 15 Pro" --json`). decideStartPath compares list entries against a
+// bare bundleId, so `"app (dev.agentflow.acceptance)" === "dev.agentflow.acceptance"`
+// was always false — the reuse fast-path could never fire against a real
+// device. Fixed by normalizing at listApps, once, at the source.
+test("listApps: normalizes real 'Name (bundle.id)' entries to bare bundle ids (#158, exact observed payload)", async () => {
+  const runner = fakeRunner(() => ({
+    code: 0,
+    stdout: JSON.stringify({
+      success: true,
+      data: {
+        apps: [
+          "gymtomo (org.reactjs.native.example.gymtomo)",
+          "app (dev.agentflow.acceptance)",
+          "Expo Go (host.exp.Exponent)",
+        ],
+      },
+    }),
+    stderr: "",
+  }));
+  const apps = await listApps({ platform: "ios", device: "iPhone 15 Pro", runner });
+  assert.deepEqual(apps, [
+    "org.reactjs.native.example.gymtomo",
+    "dev.agentflow.acceptance",
+    "host.exp.Exponent",
+  ]);
+});
+
+test("normalizeAppEntry: extracts the parenthesized bundle id from a display string", () => {
+  assert.equal(normalizeAppEntry("app (dev.agentflow.acceptance)"), "dev.agentflow.acceptance");
+  assert.equal(normalizeAppEntry("Expo Go (host.exp.Exponent)"), "host.exp.Exponent");
+});
+
+test("normalizeAppEntry: tolerates a plain-string id with no parenthesized tail (legacy/synthetic shape)", () => {
+  assert.equal(normalizeAppEntry("com.example.app"), "com.example.app");
+});
+
+test("normalizeAppEntry: leaves object entries ({id,...}/{bundleId,...}) untouched", () => {
+  assert.deepEqual(normalizeAppEntry({ id: "com.example.app" }), { id: "com.example.app" });
+  assert.deepEqual(normalizeAppEntry({ bundleId: "com.example.app" }), { bundleId: "com.example.app" });
 });
 
 test("unwrap: pulls .data out of the {success,data} envelope", () => {
