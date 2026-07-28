@@ -82,6 +82,43 @@ export function bundleIdFromConfig(config) {
   return id;
 }
 
+// Resolves the URL scheme the dev client itself is registered to open under.
+// This is the workspace's own declared app.json/app.config.js `scheme` (a
+// string, or the first entry of an array — Expo allows either shape) — never
+// re-derived or guessed here, for the same reason bundleIdFromConfig defers
+// to "expo config --json" rather than re-implementing Expo's config merge.
+//
+// #162: the generic `exp://` scheme (Expo Go's own) is not a substitute. A
+// custom dev client and Expo Go both register schemes independently; opening
+// `exp://` targets whichever one of them actually claims it — Expo Go, once
+// it's installed — never this workspace's own app, so "falling back" to it
+// isn't a degraded-but-working path, it's opening the wrong app entirely
+// (confirmed live: the target app's own `CFBundleURLTypes` does not list
+// `exp` at all). Recoverable(10) here, naming the missing scheme, so a
+// misconfigured workspace fails loudly at `start` instead of quietly opening
+// nothing useful.
+export function schemeFromConfig(config) {
+  const raw = config?.scheme;
+  const scheme = Array.isArray(raw) ? raw[0] : raw;
+  if (!scheme || typeof scheme !== "string") {
+    throw recoverable(
+      'workspace app config has no "scheme" ("expo config --json" -> scheme) — cannot build the dev client\'s own expo-development-client deep link, and opening the generic exp:// scheme instead would target Expo Go, not this app (see #162); add a "scheme" to the workspace\'s app.json'
+    );
+  }
+  return scheme;
+}
+
+// Builds the bundle-scoped deep link a custom Expo dev client actually opens
+// under — the same shape Expo's own CLI constructs for `expo run:ios`
+// (`UrlCreator#constructDevClientUrl`, confirmed by reading it directly out
+// of a live workspace's node_modules): `<scheme>://expo-development-client/
+// ?url=<urlencoded manifest url>`. `metroUrl` is the Metro server's own
+// address, url-encoded whole (not just its query-unsafe characters) since
+// it's carried as a single opaque query value.
+export function buildDevClientUrl(scheme, metroUrl) {
+  return `${scheme}://expo-development-client/?url=${encodeURIComponent(metroUrl)}`;
+}
+
 // The start-path decision: is the dev client already installed on the target
 // simulator? If so, skip the (minutes-long) `expo run:ios` build and just
 // reuse it. Any failure to confirm (device not booted yet, agent-device
@@ -203,6 +240,11 @@ export function createHandlers(overrides = {}) {
 
     const config = await readExpoConfig(workspace, expoBin, { runner: deps.runner });
     const bundleId = bundleIdFromConfig(config);
+    // Resolved now, before the (possibly 15-minute) build step or Metro even
+    // spawns — a missing scheme is a workspace misconfiguration, not
+    // something a build/Metro run can fix, so there is no reason to spend
+    // either before failing on it (see schemeFromConfig).
+    const scheme = schemeFromConfig(config);
 
     const sessionId = deps.generateSessionId();
     const adSession = agentDeviceSessionName(sessionId);
@@ -253,7 +295,11 @@ export function createHandlers(overrides = {}) {
         throw recoverable(`Metro did not report ready within ${METRO_READY_TIMEOUT_MS}ms (port ${port} may be in use)`);
       }
 
-      entryPoint = `exp://127.0.0.1:${port}`;
+      // 127.0.0.1, not a LAN/gateway address: this adapter only targets the
+      // iOS *simulator* (see the file header), which shares the host's
+      // loopback interface — unlike a physical device, it needs no LAN IP to
+      // reach Metro here.
+      entryPoint = buildDevClientUrl(scheme, `http://127.0.0.1:${port}`);
 
       await agentDevice.openSession({
         app: bundleId,
