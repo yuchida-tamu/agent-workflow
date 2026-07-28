@@ -22,7 +22,7 @@ start at [`README.md`](README.md); for the design, see
 | `policies/baseline.yaml` | core | Platform-neutral baseline pack (locked guards + scoring) |
 | `interfaces/` | core | The four core↔pack contracts: `run` · `verify` · `execute-step` · `ship` |
 | `scenarios/SPEC.md` | core | Gherkin grammar, compiled-trace format, runner semantics |
-| `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, adapters/skills (Phase 2) |
+| `packs/expo/` | pack | RN Expo: platform policies ✅, runners ✅, `run`/`verify`/`execute-step` adapters ✅, skills ✅, `ship` spec-only (#137) |
 | `agents/` | core | The eleven agent definitions with model tiers (installed into consuming repos' `.claude/agents/`) |
 | `init/` | core | `agentflow-init labels` (18-label set) · `agentflow-init project` (config, domains, business pack, agents, e2e dirs) · `agentflow-init adopt` (scaffold + labels + printed settings commands · `--verify` · `--coverage`) |
 | `actions/` | core | Composite Actions: `gate-check` · `risk-verdict` · `dispatch` · `post-merge` · `auto-merge` (thin YAML over `scripts/actions/*.js`) |
@@ -58,7 +58,19 @@ start at [`README.md`](README.md); for the design, see
 - [x] GitHub remote (`yuchida-tamu/agent-workflow`) + 18 labels applied;
       live smoke test passed: dispatch → gate refusal → `/approve` →
       G1-validated transition → re-dispatch to architect
-- [ ] pack-expo adapters (`run` / `verify` / `execute-step` / `ship`) + skills
+- [x] pack-expo `run` / `verify` / `execute-step` adapters + `expo-dev` /
+      `mobile-verify` skills, merged and unit-tested (#132–#136).
+      `packs/expo/scripts/acceptance.sh` — the live, local-only proof against
+      a real booted iOS simulator — is built and ran for real on 2026-07-28;
+      it surfaced a confirmed, deterministic P0 bug (#156) in `run start`'s
+      Metro-spawn path that blocks any real session from reaching
+      `"running"`, on any app or machine, plus a P1 reuse-path miss (#158).
+      Both adapters behaved contract-correctly while failing (recoverable
+      exits, proper JSON) — the bugs are in a capability, not the contract —
+      so this is filed and open, not silently absorbed. Full live proof of
+      `verify`/`execute-step` against a running session is pending #156.
+      `adapters/ship` (EAS) stays spec-only, deferred to #137 until a release
+      target exists.
 - [x] Composite GitHub Actions: `gate-check` (issue comments → validated
       transitions), `risk-verdict` (PR diff → facts → policy → labels +
       verdict comment), `dispatch` (state label → who-acts-next comment);
