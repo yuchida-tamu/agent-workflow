@@ -1,5 +1,5 @@
 ---
-title: Getting started: bringing the loop to an existing repo
+title: "Getting started: bringing the loop to an existing repo"
 ---
 
 # Getting started: bringing the loop to an existing repo
