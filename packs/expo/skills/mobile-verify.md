@@ -13,14 +13,15 @@ answers `{"op":"describe"}` with `{"interface": "<name>", "interface_version":
 "1"}` regardless of what else it implements — use that to sanity-check an
 adapter is reachable before anything else.
 
-> **Known blocker (as of #136's live acceptance, re-run 2026-07-28):** `start`
-> itself now reaches `"running"` reliably (#156/#158 fixed and confirmed
-> live), but the app it opens is often not actually interactable — see
-> `expo-dev.md`'s "Known open bug" (#162). A `"running"` session's app can be
-> stuck behind an OS-level "Open in…" dialog that blocks every `act`/
-> `execute-step` selector. **Screenshot before you act** if a selector you
-> expect to resolve doesn't — don't assume your workspace or testID is wrong
-> before ruling this out.
+> **Known blocker (as of #136's live acceptance, latest re-run 2026-07-28):**
+> `start`, `snapshot`, `act`, and `read` are all confirmed working reliably
+> live end to end (#156/#158/#162 all fixed and re-verified — see
+> `expo-dev.md`'s "Fixed since first found"). The one remaining gap is
+> `execute-step`'s `text` assertion, which always reads back an empty string
+> regardless of the real on-screen value (`expo-dev.md`'s "Known open bug",
+> #164) — don't trust a `text` assertion's verdict either way until it lands;
+> confirm a state change via a screenshot or a `visible`/`not_visible`
+> assertion instead (both confirmed correct).
 
 ## 1. Start a session
 

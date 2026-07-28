@@ -93,40 +93,55 @@ point the adapter at it — there's no attach-to-existing-Metro path.
   may have already lost track of the session) and always kills Metro by
   identity-checked pid, then marks the session record `stopped` regardless.
 
-## Fixed since first found (#156, #158 — confirmed live, 2026-07-28)
+## Fixed since first found (#156, #158, #162 — all confirmed live, 2026-07-28)
 
-`run start` used to be unable to reach a `"running"` session at all
-(`spawnBackground` in `lib/proc.js` raced an unopened `createWriteStream()`
-against `spawn()`'s stdio validation — #156), and the `reuse` fast-start path
-never fired because `decideStartPath` compared a bare bundle id against
-`agent-device`'s `"DisplayName (bundle.id)"` app-list strings (#158). Both
-landed in #161 and were **re-verified live**: a second acceptance run against
-the same cached scaffold reached `"running"` via the reuse path in ~7 seconds
-(no rebuild), and `stop` cleanly tore it down. If you hit either symptom
-again on a current checkout, it's a regression, not a known gap — file fresh.
+Three real bugs #136's live acceptance run found and tracked here have all
+landed and been **re-verified live** (not just merged — actually re-run):
+
+- **#156** — `run start` couldn't reach a `"running"` session at all
+  (`spawnBackground` in `lib/proc.js` raced an unopened `createWriteStream()`
+  against `spawn()`'s stdio validation). Fixed in #161.
+- **#158** — the `reuse` fast-start path never fired (`decideStartPath`
+  compared a bare bundle id against `agent-device`'s `"DisplayName
+  (bundle.id)"` app-list strings). Fixed in #161. Re-confirmed: a start
+  against an already-installed dev client now reaches `"running"` via reuse
+  in ~7 seconds, no rebuild.
+- **#162** — `run.js` opened the dev client via the generic Expo Go scheme
+  (`exp://host:port`), which either hit an unclearable OS disambiguation
+  dialog (when Expo Go was also on the simulator) or failed outright
+  otherwise. Fixed in #163: `start` now builds the bundle-scoped
+  `<scheme>://expo-development-client/?url=<encoded-metro-url>` deep link
+  Expo's own CLI uses, reading `scheme` from the workspace's own
+  `app.json`/`app.config.js` (`schemeFromConfig`) — no scheme configured is
+  now a clear `recoverable(10)` naming the gap, not a silent wrong-app open.
+  Re-confirmed live: `verify snapshot` now finds every `acceptance-*` testID
+  on the first try, `act`/`read` both pass — the **entire `verify` stage
+  passes reliably** as of this fix.
+
+If you hit any of these three symptoms again on a current checkout, it's a
+regression, not a known gap — file fresh.
 
 ## Known open bug (confirmed live, not yet fixed — check before you file a duplicate)
 
-- **The dev-client open URL is wrong, so the app is unusable even once
-  `start` succeeds.** `run.js` hardcodes `entry_point` as the generic Expo Go
-  scheme (`exp://127.0.0.1:<port>`). On a simulator that has Expo Go
-  installed (the common case for any real dev machine — and Expo Go
-  registers that exact scheme too), opening it triggers an **OS-level "Open
-  in '<app>'?" disambiguation dialog** that nothing clears — not a coordinate
-  tap on "Open", not `agent-device alert accept`, not `agent-device alert
-  dismiss` (which itself reports the tap registered but the alert is still
-  there). The app is confirmed rendering correctly *underneath* the dialog
-  (screenshot evidence) but is fully blocked from interaction — every
-  `verify:act`/`execute-step` action fails with a selector-not-found, because
-  the front-most responder is the system alert, not the app. On a simulator
-  with **no** other `exp://` claimant, `open` fails outright instead
-  (`"Simulator device failed to open exp://…"`). Expo's own CLI opens a
-  custom dev client via a **bundle-id-scoped** scheme instead
-  (`<bundleId>://expo-development-client/?url=<encoded-metro-url>` — observed
-  directly in a real `expo run:ios` log during this investigation), which
-  `run.js` doesn't currently build. Tracked in #162 (P0). Until it lands,
-  don't assume a `"running"` session's app is actually interactable —
-  screenshot it first if something you expect to `act` on isn't resolving.
+- **`execute-step`'s `text` assertion always reads empty.** `assertText`
+  (`execute-step.js`) reads `res.text`/`res.value` off the *raw* `invoke()`
+  response, but a live `agent-device get text --json` reply is enveloped
+  (`{success, data: {text, ...}}`) same as every other agent-device command —
+  the real value is at `.data.text`, never the top level, so the extraction
+  always falls through to `""`. Confirmed live: a trace that taps a counter
+  twice then asserts its text contains `"2"` fails every time
+  (`"did not contain \"2\"... last read: \"\""`) — while a screenshot taken
+  at that exact failure moment shows the counter correctly reading
+  `"Tapped: 2"` on screen. Not a timing issue (confirmed via an isolated
+  `press`/`press`/`get text` sequence outside the polling loop entirely — the
+  raw CLI call itself returns the right value immediately; only
+  `execute-step.js`'s own parsing of it is wrong). Same defect class as
+  #142/#158 (an agent-device envelope the adapter didn't unwrap), different
+  function — `verify.js` already imports and uses `unwrap` everywhere;
+  `execute-step.js`'s `assertText` never adopted it. Tracked in #164 (P0).
+  Until it lands, don't trust a `text` assertion's verdict either way —
+  confirm state changes via a screenshot or a `visible`/`not_visible`
+  assertion instead (both of those are confirmed correct live).
 
 ## Common failure modes (real, hit during this milestone)
 

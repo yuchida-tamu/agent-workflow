@@ -39,6 +39,7 @@ const EVIDENCE_DIR =
   join(tmpdir(), "agentflow-expo-acceptance", "evidence", new Date().toISOString().replace(/[:.]/g, "-"));
 const APP_OVERRIDE = process.env.AGENTFLOW_ACCEPTANCE_APP || null;
 const APP_CACHE = process.env.AGENTFLOW_ACCEPTANCE_APP_CACHE || join(tmpdir(), "agentflow-expo-acceptance", "app");
+const BUNDLE_ID = "dev.agentflow.acceptance";
 
 class SkipError extends Error {}
 
@@ -170,16 +171,97 @@ const styles = StyleSheet.create({
 `;
 
 // create-expo-app's blank-typescript template ships app.json with no
-// ios.bundleIdentifier — run.js's bundleIdFromConfig requires one (see
-// packs/expo/adapters/run.js), so the scaffold is not runnable through this
-// pack's `run` adapter until this is patched in.
+// ios.bundleIdentifier and no scheme — run.js's bundleIdFromConfig requires
+// the former (see packs/expo/adapters/run.js); schemeFromConfig requires the
+// latter as of #163 (`run start` now opens the dev client via its own
+// `<scheme>://expo-development-client/?url=…` deep link, matching @expo/cli
+// byte-for-byte, rather than the generic exp:// scheme Expo Go itself claims
+// — see #162). Without a scheme, `start` now fails fast with a clear
+// recoverable(10) naming the gap, before any build or Metro spawn — by
+// design, not a bug, but the scaffold has to actually set one.
 async function injectScreen(appDir) {
   await writeFile(join(appDir, "App.tsx"), APP_TSX);
   const appJsonPath = join(appDir, "app.json");
   const appJson = JSON.parse(await readFile(appJsonPath, "utf8"));
-  appJson.expo.ios = { ...appJson.expo.ios, bundleIdentifier: "dev.agentflow.acceptance" };
+  appJson.expo.ios = { ...appJson.expo.ios, bundleIdentifier: BUNDLE_ID };
+  appJson.expo.scheme = "agentflowacceptance";
   await writeFile(appJsonPath, `${JSON.stringify(appJson, null, 2)}\n`);
-  log(`Injected acceptance screen (App.tsx) + ios.bundleIdentifier into ${appDir}`);
+  log(`Injected acceptance screen (App.tsx) + ios.bundleIdentifier + scheme into ${appDir}`);
+}
+
+// #162's fix (#163) only gets the *deep link* right — it still needs
+// something in the built binary actually listening for
+// `<scheme>://expo-development-client/…` and connecting to Metro. That
+// listener is the `expo-dev-client` package's own native module (the
+// "dev-launcher"): live inspection during #163's investigation confirmed the
+// vanilla blank-typescript scaffold's build has no dev-launcher pod and no
+// `expo-development-client` string anywhere in it at all — opening a
+// well-formed deep link against that build reproduces "No script URL
+// provided… unsanitizedScriptURLString = (null)" regardless of URL
+// correctness. `expo install expo-dev-client` (never bare `npm install` —
+// this resolves the SDK-compatible version the same way every other
+// dependency in this workspace was resolved) adds it; removing the stale
+// `ios/` directory forces `expo run:ios`'s next build to regenerate the
+// native project from scratch (via `expo prebuild`), so the new package
+// actually gets autolinked into the Podfile — an existing `ios/` dir is
+// otherwise never resynced from package.json/app.json on subsequent builds.
+// Returns true when it actually changed the workspace (freshly installed
+// expo-dev-client) — false when it was already present (idempotent re-run
+// against a cache that already has it).
+async function ensureDevClient(appDir) {
+  const pkgPath = join(appDir, "package.json");
+  const pkg = JSON.parse(await readFile(pkgPath, "utf8"));
+  if (pkg.dependencies?.["expo-dev-client"]) {
+    log(`expo-dev-client already present in ${pkgPath} — skipping install.`);
+    return false;
+  }
+  log(`Installing expo-dev-client into ${appDir} (expo install, not npm install — SDK-resolved version)...`);
+  const expoBin = join(appDir, "node_modules", ".bin", "expo");
+  const res = await sh(expoBin, ["install", "expo-dev-client"], { cwd: appDir, timeout: 5 * 60 * 1000 });
+  if (res.code !== 0 || res.error) {
+    throw new SkipError(`expo install expo-dev-client failed: ${res.error?.message ?? res.stderr.slice(0, 1000)}`);
+  }
+  log("expo-dev-client installed. Removing the stale ios/ directory so the next build regenerates it via expo prebuild (autolinking the new native module).");
+  await rm(join(appDir, "ios"), { recursive: true, force: true });
+  return true;
+}
+
+// decideStartPath (run.js) picks "reuse" vs "build" purely by asking the
+// TARGET SIMULATOR whether the bundle id is already installed there — it has
+// no idea the local ios/ directory just got invalidated above. Left alone,
+// a simulator that already has the OLD (pre-dev-client) binary installed
+// would report "installed" and `start` would reuse a build with no
+// dev-launcher in it — silently defeating the whole point of
+// ensureDevClient. Uninstalling the stale binary from the exact target this
+// run will use forces a correct "not installed" -> build decision. Best
+// effort: `simctl uninstall` on a bundle id that was never installed there
+// exits non-zero, which is exactly the common/expected case and not an
+// error worth failing the run over.
+async function evictStaleInstall(target, bundleId) {
+  const listRes = await sh("xcrun", ["simctl", "list", "devices", "--json"]);
+  let udid = null;
+  try {
+    const parsed = JSON.parse(listRes.stdout);
+    for (const devices of Object.values(parsed.devices ?? {})) {
+      const match = devices.find((d) => d.name === target && d.isAvailable);
+      if (match) {
+        udid = match.udid;
+        break;
+      }
+    }
+  } catch {
+    // fall through — best effort only
+  }
+  if (!udid) {
+    log(`Could not resolve a UDID for simulator "${target}" to evict a stale install — proceeding anyway (decideStartPath will fall back to "build" if agent-device can't confirm an install either).`);
+    return;
+  }
+  const res = await sh("xcrun", ["simctl", "uninstall", udid, bundleId]);
+  if (res.code === 0) {
+    log(`Evicted stale ${bundleId} install from "${target}" (${udid}) so this run rebuilds with the new native dependency.`);
+  } else {
+    log(`Nothing to evict for ${bundleId} on "${target}" (${udid}) — not previously installed there.`);
+  }
 }
 
 // ---- known-issue workaround ------------------------------------------
@@ -256,6 +338,8 @@ async function resolveAppDir() {
   }
 
   await injectScreen(APP_CACHE);
+  const devClientJustInstalled = await ensureDevClient(APP_CACHE);
+  if (devClientJustInstalled) await evictStaleInstall(TARGET, BUNDLE_ID);
   await patchKnownCompilerIssues(APP_CACHE);
   return APP_CACHE;
 }
@@ -325,38 +409,41 @@ async function main() {
     }
     recordStage("start", "pass", `session_id=${sessionId} entry_point=${startRes.parsed.entry_point}`);
 
-    // ---- verify: snapshot, act, read ----
-    const verifyViolationsBefore = results.violations.length;
+    // ---- verify: snapshot (discovery), then act/read AFTER execute-step ----
+    // execute-step's trace runs before verify's own `act(type)` so the two
+    // stages can never interfere with each other (a keyboard left up by
+    // `type` was an early hypothesis for a `get text` read coming back
+    // empty during this investigation — ruled out live: an isolated
+    // tap-tap-read with no `type` involved at all still read empty. The
+    // real cause is #164, in execute-step.js itself, not this script's
+    // ordering — see expo-dev.md's "known open bugs"). Keeping this
+    // ordering anyway: it's a harmless, honest separation of concerns
+    // between the two stages regardless, and this app's plain TextInput has
+    // no submit/return control for agent-device's `keyboard dismiss` to
+    // press if a dismiss were ever needed (confirmed live:
+    // UNSUPPORTED_OPERATION, "Unable to dismiss the iOS keyboard without a
+    // safe native dismiss control").
+    // Tracked as two separate before/after deltas (snapshot now, act/read
+    // later, after execute-step runs in between) rather than one span, so
+    // execute-step's own violations — recorded on the very same shared
+    // `results.violations` array — are never miscounted as "verify" stage
+    // issues just because they happened to occur chronologically between
+    // verify's two halves.
+    const verifyCountBeforeSnapshot = results.violations.length;
 
     const snapRes = await callAdapter("verify.js", { op: "snapshot", session_id: sessionId, evidence_dir: EVIDENCE_DIR });
     log(`verify snapshot -> exit ${snapRes.code}`);
+    let discoveredIds = [];
     if (snapRes.code !== 0 || snapRes.parseError || !Array.isArray(snapRes.parsed?.elements) || !snapRes.parsed?.screenshot) {
       record("contract", "verify:snapshot", `unexpected response: exit=${snapRes.code} parseError=${snapRes.parseError ?? "none"} body=${snapRes.stdout.slice(0, 1000)}`);
     } else {
-      const ids = snapRes.parsed.elements.map((e) => e.test_id).filter(Boolean);
-      log(`snapshot elements test_ids: ${JSON.stringify(ids)}`);
+      discoveredIds = snapRes.parsed.elements.map((e) => e.test_id).filter(Boolean);
+      log(`snapshot elements test_ids: ${JSON.stringify(discoveredIds)}`);
       for (const want of ["acceptance-title", "acceptance-button", "acceptance-input"]) {
-        if (!ids.includes(want)) record("assertion", "verify:snapshot", `expected testID "${want}" in snapshot elements, got ${JSON.stringify(ids)}`);
-      }
-
-      const actRes = await callAdapter("verify.js", {
-        op: "act",
-        session_id: sessionId,
-        evidence_dir: EVIDENCE_DIR,
-        action: { kind: "type", selector: { test_id: "acceptance-input" }, text: "hello" },
-      });
-      log(`verify act(type) -> exit ${actRes.code}`);
-      if (actRes.code !== 0 || actRes.parseError || actRes.parsed?.ok !== true || !actRes.parsed?.screenshot) {
-        record("contract", "verify:act", `unexpected response: exit=${actRes.code} body=${actRes.stdout.slice(0, 1000)}`);
-      }
-
-      const readRes = await callAdapter("verify.js", { op: "read", session_id: sessionId, source: "app", tail: 50 });
-      log(`verify read -> exit ${readRes.code}, ${Array.isArray(readRes.parsed?.lines) ? readRes.parsed.lines.length : "?"} lines`);
-      if (readRes.code !== 0 || readRes.parseError || !Array.isArray(readRes.parsed?.lines)) {
-        record("contract", "verify:read", `unexpected response: exit=${readRes.code} body=${readRes.stdout.slice(0, 1000)}`);
+        if (!discoveredIds.includes(want)) record("assertion", "verify:snapshot", `expected testID "${want}" in snapshot elements, got ${JSON.stringify(discoveredIds)}`);
       }
     }
-    recordStage("verify", results.violations.length === verifyViolationsBefore ? "pass" : "fail");
+    const verifyIssuesFromSnapshot = results.violations.length - verifyCountBeforeSnapshot;
 
     // ---- execute-step: a hand-compiled 2-action / 2-assertion trace ----
     const trace = {
@@ -401,6 +488,34 @@ async function main() {
       record("contract", "execute-step", `response has neither status:"passed" nor status:"failed": ${JSON.stringify(execRes.parsed)}`);
       recordStage("execute-step", "fail");
     }
+
+    // ---- verify: act(type) + read — after execute-step, see the ordering
+    // note above for why. Only attempted if the input testID was actually
+    // discovered by the snapshot above (no point typing into a selector
+    // that isn't there — that's already recorded as an assertion miss).
+    const verifyCountBeforeActRead = results.violations.length;
+    if (discoveredIds.includes("acceptance-input")) {
+      const actRes = await callAdapter("verify.js", {
+        op: "act",
+        session_id: sessionId,
+        evidence_dir: EVIDENCE_DIR,
+        action: { kind: "type", selector: { test_id: "acceptance-input" }, text: "hello" },
+      });
+      log(`verify act(type) -> exit ${actRes.code}`);
+      if (actRes.code !== 0 || actRes.parseError || actRes.parsed?.ok !== true || !actRes.parsed?.screenshot) {
+        record("contract", "verify:act", `unexpected response: exit=${actRes.code} body=${actRes.stdout.slice(0, 1000)}`);
+      }
+    } else {
+      log("Skipping verify act(type) — acceptance-input was not in the discovered snapshot elements.");
+    }
+
+    const readRes = await callAdapter("verify.js", { op: "read", session_id: sessionId, source: "app", tail: 50 });
+    log(`verify read -> exit ${readRes.code}, ${Array.isArray(readRes.parsed?.lines) ? readRes.parsed.lines.length : "?"} lines`);
+    if (readRes.code !== 0 || readRes.parseError || !Array.isArray(readRes.parsed?.lines)) {
+      record("contract", "verify:read", `unexpected response: exit=${readRes.code} body=${readRes.stdout.slice(0, 1000)}`);
+    }
+    const verifyIssuesFromActRead = results.violations.length - verifyCountBeforeActRead;
+    recordStage("verify", verifyIssuesFromSnapshot + verifyIssuesFromActRead === 0 ? "pass" : "fail");
   } finally {
     // Always stop what we started, pass or fail, so a bad run doesn't leak
     // Metro holding a port for the next one (see skills/expo-dev.md).
