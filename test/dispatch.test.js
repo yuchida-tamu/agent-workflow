@@ -2,10 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  MAX_ARTIFACT_CHARS,
+  artifactCommentBody,
+  artifactMarker,
   artifactNote,
   commentBody,
   dispatchAction,
   launchPrompt,
+  matchingComment,
   runId,
   truncateArtifact,
 } from "../scripts/actions/dispatch-comment.js";
@@ -134,7 +138,7 @@ test("the prompt asks for the artifact back, not for the agent to post it — #1
 // one: it asserts the ok path reaches `upsertComment` with the artifact text,
 // mirroring how headless-review.js's `reviewBody` was already tested.
 
-test("a successful launch's comment carries the artifact and the summary footer", () => {
+test("the artifact comment carries the artifact text and the summary footer", () => {
   const note = artifactNote({
     agent: "architect",
     model: "opus",
@@ -146,8 +150,8 @@ test("a successful launch's comment carries the artifact and the summary footer"
   assert.match(note, /architect \(opus\) → ok/);
   assert.match(note, /subscription-billed/);
 
-  const body = commentBody(DISPATCH.spec, note);
-  assert.match(body, /agentflow next:/);
+  const body = artifactCommentBody("spec", "architect", note);
+  assert.match(body, /^<!-- agentflow-artifact:spec -->/);
   assert.match(body, /## Plan\n\nDo the thing\./);
 });
 
@@ -163,17 +167,83 @@ test("an artifact under the cap is left completely alone", () => {
   assert.equal(truncateArtifact(short), short);
 });
 
-test("main() posts the artifact on the ok path — the regression itself", () => {
+test("truncation never splits a UTF-16 surrogate pair — #160", () => {
+  // Build text whose cut point lands exactly between the two halves of an
+  // emoji (a 2-code-unit surrogate pair): MAX_ARTIFACT_CHARS - 1 filler
+  // characters, then the emoji, so its high surrogate is the very last unit
+  // a naive slice(0, MAX_ARTIFACT_CHARS) would keep and its low surrogate is
+  // the first unit it would drop.
+  const filler = "x".repeat(MAX_ARTIFACT_CHARS - 1);
+  const emoji = "\u{1F600}"; // 😀 — high surrogate 0xD83D, low surrogate 0xDE00
+  const text = `${filler}${emoji}${"y".repeat(100)}`;
+
+  const truncated = truncateArtifact(text);
+  const kept = truncated.split("\n\n> …truncated")[0];
+  const lastUnit = kept.charCodeAt(kept.length - 1);
+
+  assert.equal(lastUnit >= 0xd800 && lastUnit <= 0xdbff, false, "must not end on a lone high surrogate");
+  assert.equal(kept, filler, "the whole emoji is dropped rather than half of it kept");
+});
+
+test("main() posts the artifact under its own state-scoped marker, not the dispatch line's — #160", () => {
   // Line-level check of the wiring `dispatchAction`/`artifactNote` alone can't
   // reach without mocking `gh` (same seam headless-review.test.js uses for its
   // own main()-level assertions): the ok branch must call `upsertComment` with
-  // the unwrapped, possibly-truncated artifact — not just close the ledger row.
+  // the unwrapped, possibly-truncated artifact, posted under `artifactMarker`
+  // rather than the transient dispatch marker — the fix for the #160 review
+  // finding (the artifact used to share the dispatch line's marker and got
+  // overwritten by the very next state's plain dispatch-line upsert).
   const source = read("scripts/actions/dispatch-comment.js");
   const okGuard = source.slice(source.indexOf('if (result.outcome === "ok")'));
   const untilEscalation = okGuard.slice(0, okGuard.indexOf('if (result.outcome !== "ok")'));
   assert.match(untilEscalation, /upsertComment\(/, "the ok path must post");
-  assert.match(untilEscalation, /artifactNote\(/, "posted with the artifact + summary footer");
+  assert.match(untilEscalation, /artifactCommentBody\(/, "posted with the artifact + summary footer");
+  assert.match(untilEscalation, /artifactMarker\(state\)/, "under its own state-scoped marker");
+  assert.equal(/commentBody\(/.test(untilEscalation), false, "must not reuse the transient dispatch-line marker");
   assert.match(untilEscalation, /reviewText\(result\.stdout/, "the artifact is unwrapped from the CLI's JSON envelope");
+});
+
+// --- the artifact survives the next state's dispatch-line upsert (#160) ------
+//
+// The reviewer's trace: state:spec launches architect, which succeeds and (in
+// the buggy version) posted its plan under the SAME marker the dispatch line
+// uses. G2 later approves and the item moves to state:planned — a human
+// actor, so `dispatchAction` returns "comment" and posts the plain dispatch
+// line via `commentBody`/`MARKER`. Before this fix that second upsert matched
+// the first comment and overwrote the plan with the bare "agentflow next"
+// line — the #157 symptom, one step later. `matchingComment` is the pure seam
+// both `upsertComment` calls go through, so the lifecycle is testable without
+// mocking `gh`.
+
+test("an artifact comment survives the next state's dispatch-line upsert", () => {
+  const DISPATCH_MARKER = "<!-- agentflow-dispatch -->";
+  const artifact = {
+    id: 1,
+    body: artifactCommentBody(
+      "spec",
+      "architect",
+      artifactNote({ agent: "architect", model: "opus", outcome: "ok", usage: null, text: "## Plan" }),
+    ),
+  };
+  const comments = [artifact];
+
+  // The dispatch-line upsert for the NEXT state (`planned`, a human actor)
+  // must not find the artifact comment at all.
+  assert.equal(matchingComment(comments, DISPATCH_MARKER), undefined, "the dispatch marker must not match the artifact");
+  assert.equal(matchingComment(comments, artifactMarker("spec")), artifact, "the artifact marker must match its own comment");
+
+  // Simulate that dispatch-line upsert creating its own, separate comment —
+  // neither upsert may ever touch the other's comment afterwards.
+  const dispatchLine = { id: 2, body: commentBody(DISPATCH.planned) };
+  comments.push(dispatchLine);
+
+  assert.equal(matchingComment(comments, DISPATCH_MARKER), dispatchLine);
+  assert.equal(matchingComment(comments, artifactMarker("spec")), artifact, "still finds the original artifact, untouched");
+
+  // And a later re-run of the SAME state (spec) upserts only its own
+  // artifact — idempotent per state, never colliding with the state after it.
+  const rerun = matchingComment(comments, artifactMarker("spec"));
+  assert.equal(rerun.id, artifact.id);
 });
 
 // --- what actually ships ------------------------------------------------------
