@@ -4,7 +4,6 @@ import { readFileSync, readdirSync } from "node:fs";
 import {
   reviewBody,
   reviewPrompt,
-  reviewText,
   findingsFromText,
   verdictFromFindings,
   reviewVerdict,
@@ -244,13 +243,9 @@ test("main() picks --approve for mergeable and --request-changes for not-mergeab
   assert.match(source, /verdict === MERGEABLE \? "--approve" : "--request-changes"/);
 });
 
-test("a shape change in the CLI output degrades to posting what we got", () => {
-  // A review is already paid for by the time it is parsed; losing it to a
-  // JSON.parse is the one outcome worse than an ugly comment.
-  assert.equal(reviewText('{"result":"findings here"}'), "findings here");
-  assert.equal(reviewText("not json at all"), "not json at all");
-  assert.equal(reviewText('{"unexpected":1}'), '{"unexpected":1}');
-});
+// `reviewText` itself now lives in scripts/headless/core.js (#157 lifted it so
+// dispatch-comment.js could share the same unwrap instead of growing a second
+// copy) — its unwrap cases are tested once, at test/headless-core.test.js.
 
 // --- the stub is optional to install -----------------------------------------
 

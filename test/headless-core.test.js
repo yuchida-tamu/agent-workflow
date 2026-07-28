@@ -11,6 +11,7 @@ import {
   classify,
   launchPlan,
   parseUsage,
+  reviewText,
   stageEnabled,
   summaryLine,
 } from "../scripts/headless/core.js";
@@ -205,6 +206,33 @@ test("the summary line states subscription-billed, not API-metered", () => {
   assert.match(line, /subscription-billed/);
   assert.match(line, /not API-metered/);
   assert.match(line, /sonnet/);
+});
+
+// --- unwrapping the agent's artifact from `--output-format json` -------------
+//
+// Shared by both headless entry points (#157): headless-review.js used to
+// carry its own copy of this function, and dispatch-comment.js needed the same
+// unwrap to post a successful run's artifact instead of just closing its
+// ledger row. Lifted here so there is one implementation instead of two that
+// can drift, and its cases are tested once, here, rather than per caller.
+
+test("the result field is preferred when the CLI's JSON envelope carries one", () => {
+  assert.equal(reviewText('{"result":"findings here"}'), "findings here");
+});
+
+test("the text field is used when there is no result field", () => {
+  assert.equal(reviewText('{"text":"the artifact, from the text field"}'), "the artifact, from the text field");
+});
+
+test("output that isn't JSON at all passes through untouched", () => {
+  // A review or a dispatch artifact is already paid for by the time it is
+  // parsed; losing it to a JSON.parse is the one outcome worse than an ugly
+  // comment.
+  assert.equal(reviewText("not json at all"), "not json at all");
+});
+
+test("valid JSON with neither field falls back to the raw stdout", () => {
+  assert.equal(reviewText('{"unexpected":1}'), '{"unexpected":1}');
 });
 
 // --- the shell, with an injected spawn ---------------------------------------

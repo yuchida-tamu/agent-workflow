@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 // seams #91 already exports. (`launch()` growing a stdout passthrough would let
 // this collapse back to one call — worth doing, but not by widening this PR.)
 import { runProcess } from "../headless/run.js";
-import { METERED_VAR, TOKEN_VAR, classify, launchPlan, summaryLine } from "../headless/core.js";
+import { METERED_VAR, TOKEN_VAR, classify, launchPlan, reviewText, summaryLine } from "../headless/core.js";
 import { reviewEnabled } from "../headless/config.js";
 import { loadTiers } from "../log/cli.js";
 import { runId } from "./dispatch-comment.js";
@@ -238,18 +238,6 @@ function summarise(line) {
     appendFileSync(path, `${line}\n`);
   } catch {
     // A summary is a courtesy; failing to write one must not fail the run.
-  }
-}
-
-// Extract the agent's text from `--output-format json`. The CLI wraps it, and a
-// shape change upstream must degrade to "post what we got" rather than to a
-// crash that loses a review already paid for.
-export function reviewText(stdout) {
-  try {
-    const parsed = JSON.parse(stdout);
-    return parsed?.result ?? parsed?.text ?? stdout;
-  } catch {
-    return stdout;
   }
 }
 
