@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { commentBody, dispatchAction, launchPrompt, runId } from "../scripts/actions/dispatch-comment.js";
+import {
+  artifactNote,
+  commentBody,
+  dispatchAction,
+  launchPrompt,
+  runId,
+  truncateArtifact,
+} from "../scripts/actions/dispatch-comment.js";
 import { DISPATCH } from "../scripts/next/core.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
 import { TOKEN_VAR } from "../scripts/headless/core.js";
@@ -106,6 +113,67 @@ test("the prompt defers to the agent definition and forbids gate actions", () =>
   assert.match(prompt, /state `spec`/);
   assert.match(prompt, /Follow your definition/);
   assert.match(prompt, /may not transition state labels or approve any gate/);
+});
+
+test("the prompt asks for the artifact back, not for the agent to post it — #157", () => {
+  // The read-only allowlist (DEFAULT_ALLOWED_TOOLS in scripts/headless/core.js)
+  // gives the agent no write tool at all, so "post your artifact to the issue"
+  // was an instruction the sandbox made unfollowable. The prompt now asks for
+  // what the agent can actually do: return the artifact, and let the workflow
+  // post it.
+  const prompt = launchPrompt({ repo: "o/r", issue: "42", state: "spec", who: "architect" });
+  assert.match(prompt, /Return your artifact as your final message; the workflow posts it/);
+  assert.equal(/Post your artifact to the issue/.test(prompt), false);
+});
+
+// --- the artifact, on a successful launch (#157) ------------------------------
+//
+// Before this, `outcome === "ok"` had no branch that called `upsertComment` at
+// all — a successful run posted only a ledger row, and the artifact the agent
+// produced was discarded. This is the test that would have failed from day
+// one: it asserts the ok path reaches `upsertComment` with the artifact text,
+// mirroring how headless-review.js's `reviewBody` was already tested.
+
+test("a successful launch's comment carries the artifact and the summary footer", () => {
+  const note = artifactNote({
+    agent: "architect",
+    model: "opus",
+    outcome: "ok",
+    usage: { inputTokens: 10, outputTokens: 2, costUsd: 0 },
+    text: "## Plan\n\nDo the thing.",
+  });
+  assert.match(note, /## Plan\n\nDo the thing\./);
+  assert.match(note, /architect \(opus\) → ok/);
+  assert.match(note, /subscription-billed/);
+
+  const body = commentBody(DISPATCH.spec, note);
+  assert.match(body, /agentflow next:/);
+  assert.match(body, /## Plan\n\nDo the thing\./);
+});
+
+test("an oversized artifact is truncated with an honest marker, not silently cut", () => {
+  const huge = "x".repeat(70000);
+  const truncated = truncateArtifact(huge);
+  assert.ok(truncated.length < huge.length, "truncation must actually shrink the text");
+  assert.match(truncated, /truncated — the artifact was 70000 characters/);
+});
+
+test("an artifact under the cap is left completely alone", () => {
+  const short = "the whole artifact, untouched";
+  assert.equal(truncateArtifact(short), short);
+});
+
+test("main() posts the artifact on the ok path — the regression itself", () => {
+  // Line-level check of the wiring `dispatchAction`/`artifactNote` alone can't
+  // reach without mocking `gh` (same seam headless-review.test.js uses for its
+  // own main()-level assertions): the ok branch must call `upsertComment` with
+  // the unwrapped, possibly-truncated artifact — not just close the ledger row.
+  const source = read("scripts/actions/dispatch-comment.js");
+  const okGuard = source.slice(source.indexOf('if (result.outcome === "ok")'));
+  const untilEscalation = okGuard.slice(0, okGuard.indexOf('if (result.outcome !== "ok")'));
+  assert.match(untilEscalation, /upsertComment\(/, "the ok path must post");
+  assert.match(untilEscalation, /artifactNote\(/, "posted with the artifact + summary footer");
+  assert.match(untilEscalation, /reviewText\(result\.stdout/, "the artifact is unwrapped from the CLI's JSON envelope");
 });
 
 // --- what actually ships ------------------------------------------------------

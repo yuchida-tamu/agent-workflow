@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { DISPATCH } from "../next/core.js";
 import { LABEL_PREFIX } from "../state/machine.js";
 import { dispatchEnabled } from "../headless/config.js";
-import { TOKEN_VAR, classify, launchPlan, summaryLine } from "../headless/core.js";
+import { TOKEN_VAR, classify, launchPlan, reviewText, summaryLine } from "../headless/core.js";
 import { runProcess } from "../headless/run.js";
 import { loadTiers } from "../log/cli.js";
 
@@ -74,7 +74,7 @@ export function commentBody(dispatch, note = null) {
 export function launchPrompt({ repo, issue, state, who }) {
   return [
     `You are the ${who}. Act on issue #${issue} in ${repo}, which has just entered state \`${state}\`.`,
-    "Follow your definition. Post your artifact to the issue.",
+    "Follow your definition. Return your artifact as your final message; the workflow posts it.",
     "You may not transition state labels or approve any gate — the gate workflow owns both.",
   ].join("\n");
 }
@@ -92,6 +92,30 @@ export function launchPrompt({ repo, issue, state, who }) {
 export function runId(prefix, env = process.env) {
   const parts = [prefix, env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT].filter(Boolean);
   return parts.join("-");
+}
+
+// GitHub caps an issue comment body at ~65536 characters (undocumented but
+// observed in practice). The rest of the comment — marker, dispatch line,
+// summary footer — costs a few hundred more, so the artifact itself is capped
+// well under that, with an honest marker at the cut point rather than a
+// silent truncation, for the rare run whose artifact is enormous.
+const MAX_ARTIFACT_CHARS = 60000;
+
+export function truncateArtifact(text) {
+  if (text.length <= MAX_ARTIFACT_CHARS) return text;
+  return (
+    `${text.slice(0, MAX_ARTIFACT_CHARS)}\n\n` +
+    `> …truncated — the artifact was ${text.length} characters; showing the first ${MAX_ARTIFACT_CHARS}.`
+  );
+}
+
+// The note appended to the dispatch line when a launch actually produced
+// something — the `ok` counterpart to the escalation note below, in parity
+// with headless-review.js's `reviewBody`: the artifact text, a `---` divider,
+// then the same `summaryLine` footer the workflow's own step summary carries.
+// This is the fix for #157: a successful run used to post only a ledger row.
+export function artifactNote({ agent, model, outcome, usage, text }) {
+  return `${truncateArtifact(text)}\n\n---\n\`${summaryLine({ agent, model, outcome, usage })}\``;
 }
 
 const sh = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
@@ -168,15 +192,40 @@ async function main() {
       tiers,
       prompt: launchPrompt({ repo, issue, state, who: agent }),
     });
-    result = plan.launch
-      ? { ...classify(await runProcess(plan)), model: plan.model }
-      : { outcome: plan.outcome, reason: plan.reason, usage: null, model: null };
+    if (plan.launch) {
+      const finished = await runProcess(plan);
+      result = { ...classify(finished), model: plan.model, stdout: finished.stdout };
+    } else {
+      result = { outcome: plan.outcome, reason: plan.reason, usage: null, model: null, stdout: "" };
+    }
   } catch (err) {
-    result = { outcome: "failed", reason: err.message, usage: null, model: null };
+    result = { outcome: "failed", reason: err.message, usage: null, model: null, stdout: "" };
   }
 
   const ledgerOutcome = result.outcome === "ok" ? "ok" : result.outcome === "disabled" ? "abandoned" : "failed";
   log(["end", "--issue", issue, "--run", run, "--outcome", ledgerOutcome, "--repo", repo]);
+
+  // The point of this whole stage (#157): a run that succeeded produced an
+  // artifact, and the artifact is what the agent was launched for — not the
+  // ledger row. Posted with the same dispatch line and summary footer as the
+  // escalation path below, so the two outcomes read as one contract rather
+  // than a happy path that looks different from its failure mode.
+  if (result.outcome === "ok") {
+    upsertComment(
+      repo,
+      issue,
+      commentBody(
+        dispatch,
+        artifactNote({
+          agent,
+          model: result.model,
+          outcome: result.outcome,
+          usage: result.usage,
+          text: reviewText(result.stdout ?? ""),
+        }),
+      ),
+    );
+  }
 
   // Escalate exactly once, by comment, and never retry. For a spent rate-limit
   // window a retry is a spin; for an expired token it is a spin that also looks

@@ -250,6 +250,20 @@ export function parseUsage(stdout) {
   }
 }
 
+// Extract the agent's text from `--output-format json`. The CLI wraps it, and
+// a shape change upstream must degrade to "post what we got" rather than to a
+// crash that loses an artifact already paid for. Shared by both headless
+// entry points (review and dispatch, #157) — one implementation rather than
+// two copies that can drift.
+export function reviewText(stdout) {
+  try {
+    const parsed = JSON.parse(stdout);
+    return parsed?.result ?? parsed?.text ?? stdout;
+  } catch {
+    return stdout;
+  }
+}
+
 // One line for the workflow summary. Says subscription-billed explicitly,
 // because the whole reason this path exists is that the metered one was refused.
 export function summaryLine({ agent, model, outcome, usage = null }) {
