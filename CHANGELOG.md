@@ -3,7 +3,7 @@
 All notable changes to `agent-workflow` are recorded here, by capability
 area rather than by commit — this is written for a consumer deciding
 whether to adopt, not for a contributor replaying history. See
-`agent-loop-architecture.html` for the design and `STATUS.md` for the
+`docs/agent-loop-architecture.html` for the design and `STATUS.md` for the
 build-status ledger this summarizes.
 
 日本語版: [`CHANGELOG.ja.md`](CHANGELOG.ja.md)

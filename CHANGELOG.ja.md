@@ -2,8 +2,8 @@
 
 `agent-workflow` の注目すべき変更点を、コミット単位ではなく能力（capability）
 領域ごとに記録します。これは履歴を追体験したい貢献者ではなく、導入するかどうかを
-判断する利用者に向けて書かれています。設計については `agent-loop-architecture.html`
-（日本語版: `agent-loop-architecture.ja.html`）を、この文書が要約している
+判断する利用者に向けて書かれています。設計については `docs/agent-loop-architecture.html`
+（日本語版: `docs/agent-loop-architecture.ja.html`）を、この文書が要約している
 ビルド状況の台帳については `STATUS.md` を参照してください。
 
 > この文書は英語版 `CHANGELOG.md`（`6bbc019` 時点）の内容に基づいています。

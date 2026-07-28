@@ -2,7 +2,7 @@
 
 What's actually built, phase by phase. For what this is and how to use it,
 start at [`README.md`](README.md); for the design, see
-[`agent-loop-architecture.html`](agent-loop-architecture.html).
+[`agent-loop-architecture.html`](docs/agent-loop-architecture.html).
 
 `npm test` — 518 tests, all passing.
 
