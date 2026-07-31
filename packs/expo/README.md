@@ -10,7 +10,7 @@ RN Expo apps, and contributes platform policy rules and runner requirements.
 | `adapters/run` | ✅ live-proven end to end (2026-07-29) | Expo dev server + iOS simulator boot → `session_id` (#133) |
 | `adapters/verify` | ✅ live-proven end to end (2026-07-29) | agent-device primitives (`snapshot` / `act` / `read`) → evidence bundle (#134) |
 | `adapters/execute-step` | ✅ live-proven end to end (2026-07-29) | Deterministic replay of one compiled step trace via agent-device (#135) |
-| `adapters/ship` | ⬜ Phase 2, spec-only | EAS build / submit, TestFlight distribution — deferred, see #137 |
+| `adapters/ship` | ⬜ spec-only, implementation deferred | EAS build / distribute / submit — see [`adapters/SHIP-SPEC.md`](adapters/SHIP-SPEC.md), #137 |
 | `skills/expo-dev.md` | ✅ | Running an Expo app via the `run` adapter: dev-client reality, Metro lifecycle, real failure modes |
 | `skills/mobile-verify.md` | ✅ | Recipes for driving `verify`/`execute-step` from an agent: exact adapter invocations |
 | `scripts/acceptance.sh` | ✅ | Live end-to-end acceptance — **local only**, not cloud CI (see below) |
