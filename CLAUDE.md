@@ -64,6 +64,16 @@ human can take: `docs/github-app-runbook.md`. #18 completes the solo path
 (SHA-stamped validation + merge-event transition). Manual fallback:
 `node scripts/state/cli.js apply --issue N --to <state> --approved-gate G1..G4`.
 
+**One driver per gate.** Either post `/approve` and let the `agentflow · gate`
+workflow apply the transition, **or** apply it manually with
+`state/cli.js apply --approved-gate`, never both for the same gate. Both
+drivers now re-read labels immediately before writing and refuse to stack a
+second state label onto one the other driver already wrote (`resolveApply`,
+#126) — so double-driving no longer corrupts the labels, but it still races
+which driver's artifact (an approval comment vs. an autopass comment) ends up
+being the record of why the transition happened, and that ambiguity is worth
+avoiding on its own.
+
 **Agents may not approve gates, and this is now enforced in code** rather than
 by this sentence. `validateApproval` refuses any bot-authored `/approve` before
 it consults `approvers`, and `approvers` is validated as human logins only. The
