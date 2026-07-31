@@ -557,7 +557,7 @@ rules:
       <dl>
         <dt class="t-trigger">トリガー</dt><dd><code>pull_request.opened</code> / <code>synchronize</code>。</dd>
         <dt class="t-script">スクリプト</dt><dd>フル CI — リント、型チェック、単体テスト、ビルド。赤い CI はあらゆるエージェントレビューをブロックする。壊れたコードにトークンゼロ。</dd>
-        <dt>エージェント</dt><dd>diff 要約（Haiku）。<strong>Code Reviewer</strong> + <strong>UX Reviewer</strong>（Opus）。各々、実装者と共有コンテキストを持たない新しいサブエージェントとして立ち上がる。指摘は、誰かが動く前に敵対的に検証される（Opus）。これはヘッドレスに走る最初のステージ。<code>headless.review</code> がオンなら、code-reviewer はセッションのないランナー上で、読み取り専用かつ計画モードで起動し、課金は Claude のサブスクリプションに対して行われる（<code>ANTHROPIC_API_KEY</code> はその環境から取り除かれる）。</dd>
+        <dt>エージェント</dt><dd>diff 要約（Haiku）。<strong>Code Reviewer</strong> + <strong>UX Reviewer</strong>（Opus）。各々、実装者と共有コンテキストを持たない新しいサブエージェントとして立ち上がる。指摘は、誰かが動く前に敵対的に検証される（Opus）。これはヘッドレスに走る最初のステージ。<code>headless.review</code> がオンなら、code-reviewer はセッションのないランナー上で、読み取り専用かつプランモード（plan mode）で起動し、課金は Claude のサブスクリプションに対して行われる（<code>ANTHROPIC_API_KEY</code> はその環境から取り除かれる）。</dd>
         <dt class="t-gate">ゲート</dt><dd><strong>G3 — PR 承認</strong>（native-review または solo-comment）。記録済みの判定が人間を要さないクラスは、偽の承認ではなく権限レコードを残す自動マージへと卒業する。</dd>
       </dl>
     </div>
