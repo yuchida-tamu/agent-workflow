@@ -6,6 +6,7 @@ import {
   selectArtifact,
   renderItem,
 } from "../scripts/gates/core.js";
+import { USAGE, parseArgs, listInbox, approve, reject, main } from "../scripts/gates/cli.js";
 
 const issue = (number, labels, over = {}) => ({
   number,
@@ -143,4 +144,210 @@ test("long artifacts truncate explicitly, never silently", () => {
 test("a short artifact is not marked as truncated", () => {
   const out = renderItem({ item, artifact: { body: "## Brief\nshort" }, maxLines: 10 });
   assert.doesNotMatch(out, /more lines/);
+});
+
+// --- the CLI: argv -----------------------------------------------------------
+
+test("parseArgs: the legitimate surface", () => {
+  assert.deepEqual(parseArgs([]), { limit: 100 });
+  assert.deepEqual(parseArgs(["--repo", "o/r"]), { limit: 100, repo: "o/r" });
+  assert.equal(parseArgs(["--limit", "5"]).limit, 5);
+  assert.equal(parseArgs(["--approve", "12"]).approve, "12");
+  assert.deepEqual(parseArgs(["--reject", "12", "--reason", "not ready"]), {
+    limit: 100,
+    reject: "12",
+    reason: "not ready",
+  });
+  assert.equal(parseArgs(["--help"]).help, true);
+  assert.equal(parseArgs(["-h"]).help, true);
+});
+
+test("parseArgs: unrecognised options are rejected, not ignored", () => {
+  assert.throws(() => parseArgs(["--wat"]), /unknown option "--wat"/);
+  assert.throws(() => parseArgs(["bare-word"]), /unknown option "bare-word"/);
+});
+
+test("main: usage error on a bad flag exits 20 and prints usage", () => {
+  const logs = [];
+  const errs = [];
+  const code = main(["--nope"], { sh: () => assert.fail("must not touch gh"), log: (m) => logs.push(m), err: (m) => errs.push(m) });
+  assert.equal(code, 20);
+  assert.match(errs[0], /unknown option/);
+});
+
+test("main: --approve and --reject together is a usage error", () => {
+  const errs = [];
+  const code = main(["--approve", "1", "--reject", "2"], { sh: () => assert.fail("must not touch gh"), err: (m) => errs.push(m) });
+  assert.equal(code, 20);
+  assert.match(errs[0], /one of --approve or --reject/);
+});
+
+test("--help documents the G3 exclusion and never mentions a bulk-approve verb", () => {
+  assert.match(USAGE, /G3/);
+  assert.match(USAGE, /PR-native/);
+  const logs = [];
+  const code = main(["--help"], { sh: () => assert.fail("must not touch gh"), log: (m) => logs.push(m) });
+  assert.equal(code, 0);
+  assert.match(logs.join("\n"), /G3/);
+});
+
+// --- the CLI: a mocked `gh` seam ---------------------------------------------
+
+function ghIssue(number, labels, comments = []) {
+  return {
+    number,
+    title: `issue ${number}`,
+    labels: labels.map((name) => ({ name })),
+    createdAt: "2026-07-01T00:00:00Z",
+    comments,
+  };
+}
+
+// A stand-in for `execFileSync("gh", args)`: matches on the gh subcommand
+// rather than the full argv, so tests read as "what gh call, what does it
+// answer" instead of brittle argv equality.
+function fakeGh(fixtures) {
+  const posted = [];
+  const sh = (args) => {
+    const [group, verb] = args;
+    if (group === "issue" && verb === "list") {
+      return JSON.stringify(fixtures.list.map(({ number, title, labels, createdAt }) => ({ number, title, labels, createdAt })));
+    }
+    if (group === "issue" && verb === "view") {
+      const number = Number(args[2]);
+      const found = fixtures.list.find((i) => i.number === number);
+      if (!found) throw new Error(`no such issue #${number} in fixture`);
+      const { comments, ...rest } = found;
+      return JSON.stringify({ ...rest, comments: comments.map((body) => ({ author: { login: "someone" }, body })) });
+    }
+    if (group === "issue" && verb === "comment") {
+      posted.push({ number: Number(args[2]), body: args[args.indexOf("--body") + 1] });
+      return "";
+    }
+    throw new Error(`fakeGh: unhandled call ${args.join(" ")}`);
+  };
+  sh.posted = posted;
+  return sh;
+}
+
+const g1 = ghIssue(1, ["state:idea", "priority:p1"], ["## Brief\nWhy this exists.\nMore detail."]);
+const g2 = ghIssue(2, ["state:planned", "priority:p1"], ["## Plan\nThe plan headline.\nSteps follow."]);
+const g4 = ghIssue(3, ["state:verified", "priority:p1"], ["## Release\nv1.2.3 release notes."]);
+const noArtifact = ghIssue(4, ["state:idea", "priority:p1"], []);
+
+test("listInbox: pending items across G1/G2/G4, each with an artifact excerpt", () => {
+  const sh = fakeGh({ list: [g1, g2, g4] });
+  const rows = listInbox({ sh, releaseKind: "tag" });
+  assert.deepEqual(rows.map((r) => r.item.gate), ["G1", "G2", "G4"]);
+  assert.match(rows[0].excerpt, /Why this exists/);
+  assert.match(rows[1].excerpt, /The plan headline/);
+  assert.match(rows[2].excerpt, /release notes/);
+});
+
+test("listInbox: G3 items never appear even if present in the fixture", () => {
+  const inReview = ghIssue(9, ["state:in-review", "priority:p1"], ["## Review\nlgtm"]);
+  const sh = fakeGh({ list: [g1, inReview] });
+  const rows = listInbox({ sh, releaseKind: "tag" });
+  assert.deepEqual(rows.map((r) => r.item.number), [1]);
+});
+
+test("listInbox: an item with no artifact still lists, marked unapprovable", () => {
+  const sh = fakeGh({ list: [noArtifact] });
+  const rows = listInbox({ sh, releaseKind: "tag" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].artifact, null);
+  assert.match(rows[0].excerpt, /nothing to approve against/i);
+});
+
+test("main: empty inbox says so and touches gh only for the list", () => {
+  const sh = fakeGh({ list: [] });
+  const logs = [];
+  const code = main([], { sh, log: (m) => logs.push(m) });
+  assert.equal(code, 0);
+  assert.match(logs.join("\n"), /nothing waiting at a gate/);
+});
+
+test("main: a populated inbox lists every item and prints how to act on it", () => {
+  const sh = fakeGh({ list: [g1, g2] });
+  const logs = [];
+  const code = main(["--repo", "o/r"], { sh, log: (m) => logs.push(m) });
+  assert.equal(code, 0);
+  const out = logs.join("\n");
+  assert.match(out, /2 item\(s\) waiting/);
+  assert.match(out, /G3 is PR-native/);
+  assert.match(out, /--approve <issue> --repo o\/r/);
+  assert.match(out, /--reject <issue> --reason "\.\.\." --repo o\/r/);
+});
+
+// --- approve / reject: post only, never transition --------------------------
+
+test("approve posts the standard /approve comment naming the pending gate", () => {
+  const sh = fakeGh({ list: [g1] });
+  const { gate } = approve({ sh, issue: "1", releaseKind: "tag" });
+  assert.equal(gate, "G1");
+  assert.deepEqual(sh.posted, [{ number: 1, body: "/approve G1" }]);
+});
+
+test("approve refuses an item that is not pending, without posting", () => {
+  const merged = ghIssue(5, ["state:merged"], []);
+  const sh = fakeGh({ list: [merged] });
+  assert.throws(() => approve({ sh, issue: "5", releaseKind: "tag" }), /not waiting at an inbox gate/);
+  assert.deepEqual(sh.posted, []);
+});
+
+test("approve refuses an item with no artifact, without posting", () => {
+  const sh = fakeGh({ list: [noArtifact] });
+  assert.throws(() => approve({ sh, issue: "4", releaseKind: "tag" }), /no G1 artifact comment/);
+  assert.deepEqual(sh.posted, []);
+});
+
+test("reject posts the standard /reject comment with the given reason", () => {
+  const sh = fakeGh({ list: [g2] });
+  const { gate } = reject({ sh, issue: "2", reason: "needs another pass", releaseKind: "tag" });
+  assert.equal(gate, "G2");
+  assert.deepEqual(sh.posted, [{ number: 2, body: "/reject needs another pass" }]);
+});
+
+test("reject without a reason refuses before ever calling gh", () => {
+  const sh = fakeGh({ list: [g2] });
+  assert.throws(() => reject({ sh, issue: "2", reason: "", releaseKind: "tag" }), /requires --reason/);
+  assert.throws(() => reject({ sh, issue: "2", releaseKind: "tag" }), /requires --reason/);
+  assert.deepEqual(sh.posted, []);
+});
+
+test("main: --approve argv path prints confirmation and posts once", () => {
+  const sh = fakeGh({ list: [g1] });
+  const logs = [];
+  const code = main(["--approve", "1"], { sh, log: (m) => logs.push(m) });
+  assert.equal(code, 0);
+  assert.match(logs.join("\n"), /approved G1 on #1/);
+  assert.deepEqual(sh.posted, [{ number: 1, body: "/approve G1" }]);
+});
+
+test("main: --reject argv path requires --reason and refuses with exit 10 otherwise", () => {
+  const sh = fakeGh({ list: [g2] });
+  const errs = [];
+  const code = main(["--reject", "2"], { sh, err: (m) => errs.push(m) });
+  assert.equal(code, 10);
+  assert.match(errs[0], /requires --reason/);
+  assert.deepEqual(sh.posted, []);
+});
+
+test("main: --reject argv path with a reason posts and reports the gate", () => {
+  const sh = fakeGh({ list: [g2] });
+  const logs = [];
+  const code = main(["--reject", "2", "--reason", "scope too big"], { sh, log: (m) => logs.push(m) });
+  assert.equal(code, 0);
+  assert.match(logs.join("\n"), /rejected #2 \(was waiting at G2\)/);
+  assert.deepEqual(sh.posted, [{ number: 2, body: "/reject scope too big" }]);
+});
+
+test("main: --approve on an issue nobody is waiting on exits 10 without posting", () => {
+  const merged = ghIssue(5, ["state:merged"], []);
+  const sh = fakeGh({ list: [merged] });
+  const errs = [];
+  const code = main(["--approve", "5"], { sh, err: (m) => errs.push(m) });
+  assert.equal(code, 10);
+  assert.match(errs[0], /not waiting at an inbox gate/);
+  assert.deepEqual(sh.posted, []);
 });

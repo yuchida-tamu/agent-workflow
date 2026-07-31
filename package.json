@@ -23,7 +23,8 @@
     "agentflow-log": "scripts/log/cli.js",
     "agentflow-release": "scripts/release/cli.js",
     "agentflow-verdict": "scripts/verdict/cli.js",
-    "agentflow-review": "scripts/review/cli.js"
+    "agentflow-review": "scripts/review/cli.js",
+    "agentflow-gates": "scripts/gates/cli.js"
   },
   "dependencies": {
     "yaml": "^2.4.0"
