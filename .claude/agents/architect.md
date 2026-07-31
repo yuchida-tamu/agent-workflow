@@ -71,14 +71,22 @@ headless.
    above (`scripts/hierarchy/gh.js`'s `issueId()`/`linkSubIssue()`). Re-running
    `state:spec` will not create a second set: the workflow skips creation
    outright once the parent has any child at all.
-4. **Declare the plan surface** in a `plan.json` comment block. The schema:
+4. **Declare the plan surface** in a `plan.json` comment block. The schema
+   (shown here as `jsonc` — illustrative only; DO NOT reproduce this fence
+   verbatim in your own message, and never give an illustrative block a
+   ` ```json ` fence: the workflow's extractor scans every ` ```json ` fence
+   for a top-level `"files"` key, so an echoed example would compete with
+   your real plan.json for last-wins. Your real plan.json is the ONE
+   ` ```json ` fence in your message, with your actual children — not the
+   placeholder `"..."` titles shown below, which the extractor also rejects
+   outright):
 
-   ```json
+   ```jsonc
    {
      "files": ["globs..."],
      "children": [
        {
-         "title": "...",
+         "title": "a real, specific title — never a placeholder like \"...\"",
          "body": "...",
          "labels": ["state:ready", "priority:p2"],
          "blockedBy": [0]
@@ -94,6 +102,15 @@ headless.
    ARRAY **by index**, never by issue number — numbers don't exist until
    `gh issue create` returns them, indices are stable in what you write right
    now.
+
+   `labels` is validated against an allowlist before anything is created: a
+   `state:*` label is legal **only** as exactly `state:ready` — the single
+   entry state a fresh, un-worked child may declare. Any other `state:*`
+   value (or a label outside the loop's known families — see
+   `init/labels.yml`) rejects the WHOLE plan, not just that child; you have no
+   business setting a state other than `state:ready` on a child you're
+   declaring, so if you find yourself wanting to, that's a sign the
+   decomposition itself needs rethinking, not the label.
 
    Populate `children[]` in a **headless run**, where it is how the
    decomposition reaches the workflow at all. In an **interactive session**

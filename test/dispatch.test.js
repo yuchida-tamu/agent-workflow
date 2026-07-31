@@ -15,21 +15,34 @@ import {
   dispatchAction,
   extractPlan,
   factsArgv,
+  isLegalChildLabel,
+  isValidPlanCandidate,
   launchPrompt,
+  loadKnownLabels,
   matchingComment,
   parseCreatedIssueNumber,
   planChildrenDecision,
   planVerdictCommentBody,
   planVerdictPacks,
   policyEvaluateArgv,
+  reconcileChildren,
   runId,
   specEffectsCommentBody,
   specTransitionPlan,
   truncateArtifact,
+  validateChildLabels,
 } from "../scripts/actions/dispatch-comment.js";
 import { DISPATCH } from "../scripts/next/core.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
 import { TOKEN_VAR } from "../scripts/headless/core.js";
+
+// A representative slice of the real registry (`init/labels.yml`), for tests
+// that need SOME known set without coupling to the file's exact contents.
+const KNOWN_LABELS = new Set([
+  "priority:p0", "priority:p1", "priority:p2", "blocked",
+  "risk:low", "risk:medium", "risk:high",
+  "drift:scope", "drift:brief",
+]);
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 const TOKEN = { [TOKEN_VAR]: "sk-ant-oat01-example" };
@@ -365,13 +378,13 @@ test("extractPlan skips a malformed fence rather than throwing — degrades, nev
   assert.equal(extractPlan(text), null);
 });
 
-test("extractPlan: the LAST matching fence wins", () => {
+test("extractPlan: the LAST matching fence wins, among fences that qualify", () => {
   const text = [
     '```json\n{"files": ["first/**"]}\n```',
     "some prose in between",
-    '```json\n{"files": ["second/**"], "children": [{"title": "x"}]}\n```',
+    '```json\n{"files": ["second/**"], "children": [{"title": "a real child"}]}\n```',
   ].join("\n\n");
-  assert.deepEqual(extractPlan(text), { files: ["second/**"], children: [{ title: "x" }] });
+  assert.deepEqual(extractPlan(text), { files: ["second/**"], children: [{ title: "a real child" }] });
 });
 
 test("extractPlan skips a malformed fence but still finds a later valid one", () => {
@@ -390,13 +403,129 @@ test("extractPlan ignores a non-plan json fence (no files key) even if it appear
   assert.deepEqual(extractPlan(text), { files: ["real/**"] });
 });
 
+// --- extraction: schema-strictness against a hijacking example (#168 review, finding 3) --
+
+test("isValidPlanCandidate accepts files-only (no children key at all)", () => {
+  assert.equal(isValidPlanCandidate({ files: ["a/**"] }), true);
+});
+
+test("isValidPlanCandidate accepts an empty children array", () => {
+  assert.equal(isValidPlanCandidate({ files: [], children: [] }), true);
+});
+
+test("isValidPlanCandidate rejects a placeholder title — the literal architect.md example shape", () => {
+  assert.equal(isValidPlanCandidate({ files: [], children: [{ title: "..." }] }), false);
+  assert.equal(isValidPlanCandidate({ files: [], children: [{ title: "…" }] }), false);
+  assert.equal(isValidPlanCandidate({ files: [], children: [{ title: "   " }] }), false, "blank title");
+  assert.equal(isValidPlanCandidate({ files: [], children: [{}] }), false, "missing title");
+});
+
+test("isValidPlanCandidate rejects children that isn't an array, and a non-object entry", () => {
+  assert.equal(isValidPlanCandidate({ files: [], children: "nope" }), false);
+  assert.equal(isValidPlanCandidate({ files: [], children: [null] }), false);
+});
+
+test("isValidPlanCandidate accepts a real, specific title", () => {
+  assert.equal(isValidPlanCandidate({ files: [], children: [{ title: "Add the checkout retry path" }] }), true);
+});
+
+test("extractPlan: a trailing schema-example fence (placeholder title) cannot hijack a real, earlier plan", () => {
+  // This is exactly the #168 review's finding 3 scenario: the architect
+  // reproduces (or an assistant echoes) the architect.md schema example
+  // AFTER its authoritative plan.json. last-wins alone would select the
+  // example; schema-strictness disqualifies it, so the real plan (first)
+  // still wins.
+  const realPlan = '```json\n{"files": ["real/**"], "children": [{"title": "Build the retry queue"}]}\n```';
+  const hijackExample =
+    '```json\n{"files": ["globs..."], "children": [{"title": "...", "body": "...", ' +
+    '"labels": ["state:ready"], "blockedBy": [0]}]}\n```';
+  const text = [realPlan, "some trailing prose reproducing the schema:", hijackExample].join("\n\n");
+  assert.deepEqual(extractPlan(text), { files: ["real/**"], children: [{ title: "Build the retry queue" }] });
+});
+
+test("extractPlan: a genuine plan AFTER a disqualified example still wins (disqualified, not extraction-failure)", () => {
+  const hijackExample = '```json\n{"files": [], "children": [{"title": "..."}]}\n```';
+  const realPlan = '```json\n{"files": ["real/**"], "children": [{"title": "Build the retry queue"}]}\n```';
+  const text = [hijackExample, realPlan].join("\n\n");
+  assert.deepEqual(extractPlan(text), { files: ["real/**"], children: [{ title: "Build the retry queue" }] });
+});
+
+// --- label allowlist: the control-plane boundary (#168 review, finding 1) ----
+
+test("isLegalChildLabel: a state:* label is legal only as exactly state:ready", () => {
+  assert.equal(isLegalChildLabel("state:ready", KNOWN_LABELS), true);
+  assert.equal(isLegalChildLabel("state:released", KNOWN_LABELS), false);
+  assert.equal(isLegalChildLabel("state:planned", KNOWN_LABELS), false);
+  assert.equal(isLegalChildLabel("state:spec", KNOWN_LABELS), false);
+});
+
+test("isLegalChildLabel: a non-state label must be in the known registry", () => {
+  assert.equal(isLegalChildLabel("priority:p2", KNOWN_LABELS), true);
+  assert.equal(isLegalChildLabel("risk:high", KNOWN_LABELS), true);
+  assert.equal(isLegalChildLabel("bug", KNOWN_LABELS), false, "not a loop-known family");
+  assert.equal(isLegalChildLabel("totally-made-up", KNOWN_LABELS), false);
+});
+
+test("isLegalChildLabel fails closed on an empty registry, except state:ready", () => {
+  assert.equal(isLegalChildLabel("state:ready", new Set()), true);
+  assert.equal(isLegalChildLabel("priority:p2", new Set()), false);
+});
+
+test("validateChildLabels returns null when every declared label across every child is legal", () => {
+  const specs = [
+    { title: "a", labels: ["state:ready", "priority:p1"] },
+    { title: "b", labels: ["state:ready"] },
+  ];
+  assert.equal(validateChildLabels(specs, KNOWN_LABELS), null);
+});
+
+test("validateChildLabels names the offending child index, title, and label — the exact review scenario", () => {
+  // architect returns children[0].labels=["state:released", ...] — a
+  // hallucination, or copied from a "done" example.
+  const specs = [
+    { title: "Ship the thing", labels: ["state:released", "priority:p2"] },
+    { title: "second, otherwise fine", labels: ["state:ready"] },
+  ];
+  const violation = validateChildLabels(specs, KNOWN_LABELS);
+  assert.deepEqual(violation, { index: 0, title: "Ship the thing", label: "state:released" });
+});
+
+test("validateChildLabels tolerates a missing or malformed labels field rather than throwing", () => {
+  assert.equal(validateChildLabels([{ title: "a" }], KNOWN_LABELS), null);
+  assert.equal(validateChildLabels([{ title: "a", labels: "not-an-array" }], KNOWN_LABELS), null);
+});
+
+test("loadKnownLabels reads the real init/labels.yml and includes every state:* and priority:* label", () => {
+  const known = loadKnownLabels(process.cwd());
+  for (const state of ["idea", "spec", "planned", "ready", "in-progress", "in-review", "merged", "verified", "released"]) {
+    assert.ok(known.has(`state:${state}`), `state:${state}`);
+  }
+  assert.ok(known.has("priority:p2"));
+});
+
+test("loadKnownLabels fails closed (empty set) when the registry can't be read", () => {
+  const known = loadKnownLabels("/definitely/not/a/real/toolkit/path");
+  assert.equal(known.size, 0);
+});
+
 // --- children: body rendering, argv, and number parsing ----------------------
 
-test("childBody appends one Blocked-by line per resolved blocker", () => {
-  assert.equal(childBody("do the thing"), "do the thing");
-  assert.equal(childBody("do the thing", []), "do the thing");
-  assert.equal(childBody("do the thing", [12]), "do the thing\n\nBlocked by #12");
-  assert.equal(childBody("do the thing", [12, 13]), "do the thing\n\nBlocked by #12\nBlocked by #13");
+test("childBody opens with the Child of #N text line — the hierarchy fallback convention (#168 review, finding 4)", () => {
+  const body = childBody({ parentIssue: 14, body: "do the thing" });
+  assert.match(body, /^Child of #14\n\n/);
+  assert.match(body, /do the thing/);
+});
+
+test("childBody appends one Blocked-by line per resolved blocker, after the body", () => {
+  assert.equal(childBody({ parentIssue: 14, body: "do the thing" }), "Child of #14\n\ndo the thing");
+  assert.equal(
+    childBody({ parentIssue: 14, body: "do the thing", blockedByNumbers: [12] }),
+    "Child of #14\n\ndo the thing\n\nBlocked by #12",
+  );
+  assert.equal(
+    childBody({ parentIssue: 14, body: "do the thing", blockedByNumbers: [12, 13] }),
+    "Child of #14\n\ndo the thing\n\nBlocked by #12\nBlocked by #13",
+  );
 });
 
 test("createChildArgv builds gh issue create with one --label per label", () => {
@@ -421,40 +550,110 @@ test("parseCreatedIssueNumber throws (not silently returns NaN) on unexpected ou
   assert.throws(() => parseCreatedIssueNumber("not a url"), /could not read a created issue number/);
 });
 
-// --- the idempotency guard ----------------------------------------------------
+// --- reconciliation: the retry fix (#168 review, finding 2) ------------------
 
-test("planChildrenDecision skips creation when the parent already has any child — idempotent", () => {
-  const decision = planChildrenDecision({ existingCount: 3, plan: { files: [], children: [{ title: "x" }] } });
+test("reconcileChildren: nothing existing means everything is missing", () => {
+  const specs = [{ title: "a" }, { title: "b" }];
+  const { existingByIndex, missingIndices } = reconcileChildren({ existingChildren: [], specs });
+  assert.deepEqual(existingByIndex, {});
+  assert.deepEqual(missingIndices, [0, 1]);
+});
+
+test("reconcileChildren matches by title and reports only the missing indices", () => {
+  // The exact review scenario: 3 declared, #A (title "first") already
+  // created from a prior partial run, #B and #C missing.
+  const specs = [{ title: "first" }, { title: "second" }, { title: "third" }];
+  const existingChildren = [{ number: 201, title: "first", closed: false }];
+  const { existingByIndex, missingIndices } = reconcileChildren({ existingChildren, specs });
+  assert.deepEqual(existingByIndex, { 0: 201 });
+  assert.deepEqual(missingIndices, [1, 2]);
+});
+
+test("reconcileChildren: every declared title already existing means nothing is missing", () => {
+  const specs = [{ title: "first" }, { title: "second" }];
+  const existingChildren = [
+    { number: 201, title: "first", closed: false },
+    { number: 202, title: "second", closed: true },
+  ];
+  const { missingIndices } = reconcileChildren({ existingChildren, specs });
+  assert.deepEqual(missingIndices, []);
+});
+
+test("reconcileChildren: a duplicate declared title matches the first same-titled existing child", () => {
+  const specs = [{ title: "dup" }, { title: "dup" }];
+  const existingChildren = [{ number: 301, title: "dup", closed: false }];
+  const { existingByIndex, missingIndices } = reconcileChildren({ existingChildren, specs });
+  assert.deepEqual(existingByIndex, { 0: 301, 1: 301 });
+  assert.deepEqual(missingIndices, []);
+});
+
+// --- the idempotency + validation + reconciliation decision ------------------
+
+test("planChildrenDecision rejects the whole plan on an illegal label — zero creation, names the offender", () => {
+  const specs = [{ title: "Ship it", labels: ["state:released"] }];
+  const decision = planChildrenDecision({ existingChildren: [], plan: { files: [], children: specs }, knownLabels: KNOWN_LABELS });
+  assert.equal(decision.act, "rejected");
+  assert.match(decision.detail, /child 0 \("Ship it"\)/);
+  assert.match(decision.detail, /state:released/);
+  assert.match(decision.detail, /zero children created/);
+});
+
+test("planChildrenDecision validates BEFORE reconciling — an illegal label rejects even with existing children", () => {
+  const specs = [{ title: "first" }, { title: "second", labels: ["state:released"] }];
+  const existingChildren = [{ number: 1, title: "first", closed: false }];
+  const decision = planChildrenDecision({ existingChildren, plan: { files: [], children: specs }, knownLabels: KNOWN_LABELS });
+  assert.equal(decision.act, "rejected");
+});
+
+test("planChildrenDecision reconciles: only the missing children are handed back for creation", () => {
+  // The #168 review's finding-2 retry scenario, one level up: a decision
+  // that would previously have been "skip" (any child exists) is now
+  // "create" with just the missing subset.
+  const specs = [{ title: "first" }, { title: "second" }, { title: "third" }];
+  const existingChildren = [{ number: 201, title: "first", closed: false }];
+  const decision = planChildrenDecision({
+    existingChildren,
+    plan: { files: [], children: specs },
+    knownLabels: KNOWN_LABELS,
+  });
+  assert.equal(decision.act, "create");
+  assert.equal(decision.specs, specs);
+  assert.deepEqual(decision.existingByIndex, { 0: 201 });
+  assert.equal(decision.missingCount, 2);
+});
+
+test("planChildrenDecision skips only when EVERY declared title already exists — not merely any", () => {
+  const specs = [{ title: "first" }, { title: "second" }];
+  const existingChildren = [
+    { number: 201, title: "first", closed: false },
+    { number: 202, title: "second", closed: false },
+  ];
+  const decision = planChildrenDecision({ existingChildren, plan: { files: [], children: specs }, knownLabels: KNOWN_LABELS });
   assert.equal(decision.act, "skip");
-  assert.match(decision.detail, /3 child issue\(s\) already linked/);
+  assert.match(decision.detail, /all 2 declared child\(ren\) already exist/);
 });
 
 test("planChildrenDecision reports extraction failure when there is no plan and no existing children", () => {
-  const decision = planChildrenDecision({ existingCount: 0, plan: null });
+  const decision = planChildrenDecision({ existingChildren: [], plan: null, knownLabels: KNOWN_LABELS });
   assert.equal(decision.act, "extraction-failed");
   assert.match(decision.detail, /no plan\.json extracted/);
 });
 
-test("planChildrenDecision is a legitimate no-op when the plan declares no children", () => {
-  const decision = planChildrenDecision({ existingCount: 0, plan: { files: ["a/**"] } });
-  assert.equal(decision.act, "none");
-});
-
-test("planChildrenDecision hands back the specs to create when there is a fresh plan with children", () => {
-  const specs = [{ title: "a" }, { title: "b" }];
-  const decision = planChildrenDecision({ existingCount: 0, plan: { files: [], children: specs } });
-  assert.equal(decision.act, "create");
-  assert.equal(decision.specs, specs);
-});
-
-test("an existing child from a prior partial run counts as \"created\" — decide-and-document (#168)", () => {
-  // Explicitly the issue's own instruction: idempotency is not "safer to
-  // recreate", it's "a prior run already did this part".
-  const decision = planChildrenDecision({ existingCount: 1, plan: { files: [], children: [{ title: "x" }, { title: "y" }] } });
+test("planChildrenDecision: existing children with no fresh plan to reconcile against is left as-is, not rejected", () => {
+  const decision = planChildrenDecision({
+    existingChildren: [{ number: 1, title: "first", closed: false }],
+    plan: null,
+    knownLabels: KNOWN_LABELS,
+  });
   assert.equal(decision.act, "skip");
 });
 
-// --- creation + blockedBy resolution + sub-issue linking (mocked gh seam) ----
+test("planChildrenDecision is a legitimate no-op when the plan declares no children", () => {
+  const decision = planChildrenDecision({ existingChildren: [], plan: { files: ["a/**"] }, knownLabels: KNOWN_LABELS });
+  assert.equal(decision.act, "none");
+});
+
+// --- creation + blockedBy resolution + reconciliation + sub-issue linking (mocked gh seam) ----
 
 test("createChildren creates in array order, resolves blockedBy to real numbers, and links each as a sub-issue", () => {
   const calls = { sh: [], link: [] };
@@ -470,26 +669,34 @@ test("createChildren creates in array order, resolves blockedBy to real numbers,
     { title: "second", body: "do second", labels: ["state:ready"], blockedBy: [0] },
     { title: "third", body: "do third", blockedBy: [0, 1] },
   ];
-  const created = createChildren({ repo: "o/r", parentIssue: "14", specs, sh, link });
+  const created = createChildren({ repo: "o/r", parentIssue: 14, specs, sh, link });
 
   assert.deepEqual(created, [
-    { number: 101, title: "first" },
-    { number: 102, title: "second" },
-    { number: 103, title: "third" },
+    { number: 101, title: "first", index: 0 },
+    { number: 102, title: "second", index: 1 },
+    { number: 103, title: "third", index: 2 },
   ]);
 
-  // argv shape for each `gh issue create` call.
-  assert.deepEqual(calls.sh[0].args, ["issue", "create", "--repo", "o/r", "--title", "first", "--body", "do first", "--label", "state:ready"]);
+  // argv shape for each `gh issue create` call — bodies open with "Child of #14".
+  assert.deepEqual(calls.sh[0].args, [
+    "issue", "create", "--repo", "o/r", "--title", "first", "--body", "Child of #14\n\ndo first", "--label", "state:ready",
+  ]);
   // blockedBy [0] on the second child resolves to #101 (the first child's real number).
-  assert.deepEqual(calls.sh[1].args, ["issue", "create", "--repo", "o/r", "--title", "second", "--body", "do second\n\nBlocked by #101", "--label", "state:ready"]);
+  assert.deepEqual(calls.sh[1].args, [
+    "issue", "create", "--repo", "o/r", "--title", "second",
+    "--body", "Child of #14\n\ndo second\n\nBlocked by #101", "--label", "state:ready",
+  ]);
   // blockedBy [0, 1] on the third resolves to both prior real numbers.
-  assert.deepEqual(calls.sh[2].args, ["issue", "create", "--repo", "o/r", "--title", "third", "--body", "do third\n\nBlocked by #101\nBlocked by #102"]);
+  assert.deepEqual(calls.sh[2].args, [
+    "issue", "create", "--repo", "o/r", "--title", "third",
+    "--body", "Child of #14\n\ndo third\n\nBlocked by #101\nBlocked by #102",
+  ]);
 
   // Every created child is linked as a native sub-issue of the parent.
   assert.deepEqual(calls.link, [
-    { repo: "o/r", parent: "14", child: 101 },
-    { repo: "o/r", parent: "14", child: 102 },
-    { repo: "o/r", parent: "14", child: 103 },
+    { repo: "o/r", parent: 14, child: 101 },
+    { repo: "o/r", parent: 14, child: 102 },
+    { repo: "o/r", parent: 14, child: 103 },
   ]);
 });
 
@@ -499,8 +706,36 @@ test("createChildren silently drops a forward or out-of-range blockedBy index ra
   // Index 1 does not exist yet when child 0 is created (forward reference);
   // index 99 never exists at all. Neither should throw or block creation.
   const specs = [{ title: "a", body: "b", blockedBy: [1, 99] }];
-  const created = createChildren({ repo: "o/r", parentIssue: "1", specs, sh, link });
+  const created = createChildren({ repo: "o/r", parentIssue: 1, specs, sh, link });
   assert.equal(created.length, 1);
+});
+
+test("createChildren, given existingByIndex, creates ONLY the missing entries and never re-creates the reconciled ones", () => {
+  // The heart of finding 2's fix: index 0 ("first") is seeded as already
+  // existing at #201 (from a prior partial run); only "second" and "third"
+  // should hit `gh`.
+  const calls = { sh: [], link: [] };
+  const sh = (cmd, args) => {
+    calls.sh.push({ cmd, args });
+    return `https://github.com/o/r/issues/${300 + calls.sh.length}\n`;
+  };
+  const link = (repo, parent, child) => calls.link.push({ repo, parent, child });
+
+  const specs = [
+    { title: "first", body: "already exists" },
+    { title: "second", body: "do second", blockedBy: [0] }, // blocked by the RECONCILED (not re-created) first
+    { title: "third", body: "do third", blockedBy: [1] },
+  ];
+  const created = createChildren({ repo: "o/r", parentIssue: 14, specs, existingByIndex: { 0: 201 }, sh, link });
+
+  // Only 2 gh calls — "first" is never re-created.
+  assert.equal(calls.sh.length, 2);
+  assert.deepEqual(created.map((c) => c.index), [1, 2]);
+  // "second"'s blockedBy [0] resolves to the RECONCILED number, 201 — not a freshly minted one.
+  assert.match(calls.sh[0].args[calls.sh[0].args.indexOf("--body") + 1], /Blocked by #201/);
+  // Nothing links a sub-issue for the reconciled "first" — only the 2 created.
+  assert.equal(calls.link.length, 2);
+  assert.deepEqual(calls.link.map((l) => l.child), [301, 302]);
 });
 
 // --- plan-stage verdict: argv builders and pack selection ---------------------
@@ -610,14 +845,63 @@ test("specEffectsCommentBody is posted under its own marker and names exactly wh
   assert.equal(/A human should:[\s\S]*plan-stage verdict/.test(body), false, "guidance must not mention a step that succeeded");
 });
 
-test("specEffectsCommentBody reports full success plainly", () => {
+test("specEffectsCommentBody: the children guidance is truthful about the reconcile-retry path (#168 review, finding 2)", () => {
+  const childrenOutcome = { ok: false, detail: 'child 1 ("second") declares illegal label "state:released" — the whole plan was rejected, zero children created' };
+  const verdictOutcome = { ok: true, detail: "`low` (score 0) posted" };
+  const gate = { ok: false, failed: ["children"] };
+  const body = specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate });
+  assert.match(body, /children already created \(matched by title\) are left alone/);
+  assert.match(body, /only what's missing will be created/);
+});
+
+test("specEffectsCommentBody reports a plain apply when the CAS resolution is (or is absent, meaning) 'apply'", () => {
   const childrenOutcome = { ok: true, detail: "created 2 child issue(s): #101, #102" };
   const verdictOutcome = { ok: true, detail: "`low` (score 0) posted" };
-  const gate = { ok: true, plan: { from: "spec", to: "planned" } };
+  const plan = { from: "spec", to: "planned" };
+  for (const gate of [{ ok: true, plan }, { ok: true, plan, resolution: { action: "apply", add: ["state:planned"], remove: ["state:spec"] } }]) {
+    const body = specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate });
+    assert.match(body, /✅ children/);
+    assert.match(body, /✅ plan-stage verdict/);
+    assert.match(body, /`state:spec` → `state:planned`/);
+  }
+});
+
+test("specEffectsCommentBody reports a heal distinctly from a plain apply", () => {
+  const childrenOutcome = { ok: true, detail: "ok" };
+  const verdictOutcome = { ok: true, detail: "ok" };
+  const gate = {
+    ok: true,
+    plan: { from: "spec", to: "planned" },
+    resolution: { action: "heal", remove: ["state:spec"], note: "two drivers raced this transition" },
+  };
   const body = specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate });
-  assert.match(body, /✅ children/);
-  assert.match(body, /✅ plan-stage verdict/);
   assert.match(body, /`state:spec` → `state:planned`/);
+  assert.match(body, /healed a race/);
+});
+
+test("specEffectsCommentBody reports a noop (another driver already applied it) without claiming success or failure", () => {
+  const childrenOutcome = { ok: true, detail: "ok" };
+  const verdictOutcome = { ok: true, detail: "ok" };
+  const gate = {
+    ok: true,
+    plan: { from: "spec", to: "planned" },
+    resolution: { action: "noop", note: "already applied by another driver — state:spec is gone and state:planned is already present" },
+  };
+  const body = specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate });
+  assert.match(body, /already applied by another driver/);
+});
+
+test("specEffectsCommentBody reports a refused CAS and tells a human what to check", () => {
+  const childrenOutcome = { ok: true, detail: "ok" };
+  const verdictOutcome = { ok: true, detail: "ok" };
+  const gate = {
+    ok: true,
+    plan: { from: "spec", to: "planned" },
+    resolution: { action: "refused", note: "cannot apply spec → planned: neither state:spec nor state:planned is present" },
+  };
+  const body = specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate });
+  assert.match(body, /❌ transition — cannot apply/);
+  assert.match(body, /A human should:/);
 });
 
 // --- main()'s wiring (source-slice, same style as the #160 test above) -------
@@ -629,6 +913,7 @@ test("main() runs the spec side-effects only inside the ok branch, scoped to sta
   assert.notEqual(okBlock.indexOf('if (state === "spec")'), -1, "the spec branch must live inside the ok branch");
   assert.match(specBlock, /extractPlan\(fullText\)/);
   assert.match(specBlock, /childrenOf\(/);
+  assert.match(specBlock, /loadKnownLabels\(/);
   assert.match(specBlock, /planChildrenDecision\(/);
   assert.match(specBlock, /createChildren\(/);
   assert.match(specBlock, /computePlanVerdict\(/);
@@ -637,12 +922,25 @@ test("main() runs the spec side-effects only inside the ok branch, scoped to sta
   assert.match(specBlock, /SPEC_EFFECTS_MARKER/);
 });
 
-test("main() only edits labels when the transition gate says ok", () => {
+test("main() validates labels and reconciles before creating — decision drives creation, not a bare count", () => {
+  const source = read("scripts/actions/dispatch-comment.js");
+  const specBlock = source.slice(source.indexOf('if (state === "spec")'));
+  assert.match(specBlock, /existingChildren/, "childrenOf's full children array, not just a count, is threaded through");
+  assert.match(specBlock, /knownLabels/);
+  assert.match(specBlock, /existingByIndex: decision\.existingByIndex/, "reconciliation's map is passed to createChildren");
+});
+
+test("main() re-reads labels and goes through resolveApply before editing — CAS, not an unconditional edit (#168 review, finding 5)", () => {
   const source = read("scripts/actions/dispatch-comment.js");
   const specBlock = source.slice(source.indexOf('if (state === "spec")'));
   const gateBlock = specBlock.slice(specBlock.indexOf("const gate = specTransitionPlan"));
   const ifGateOk = gateBlock.slice(gateBlock.indexOf("if (gate.ok)"), gateBlock.indexOf("upsertComment(repo, issue, specEffectsCommentBody"));
-  assert.match(ifGateOk, /"issue", "edit"/);
-  assert.match(ifGateOk, /--add-label/);
-  assert.match(ifGateOk, /--remove-label/);
+  // Re-reads labels fresh (not reusing the webhook snapshot `currentLabels`).
+  assert.match(ifGateOk, /"issue", "view", issue, "--repo", repo, "--json", "labels"/);
+  assert.match(ifGateOk, /resolveApply\(freshLabels, gate\.plan\)/);
+  // The edit itself only happens for apply/heal, using resolveApply's own add/remove — never an unconditional edit.
+  const editSlice = ifGateOk.slice(ifGateOk.indexOf('resolution.action === "apply"'));
+  assert.match(editSlice, /"issue", "edit"/);
+  assert.match(editSlice, /resolution\.add/);
+  assert.match(editSlice, /resolution\.remove/);
 });
