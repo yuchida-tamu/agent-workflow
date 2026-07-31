@@ -238,6 +238,13 @@ Adapter's own response, once the poll loop (§5) reaches a terminal
 { "status": "ok", "artifact": { "kind": "ipa|apk|dev-client", "url": "<artifacts.applicationArchiveUrl>" } }
 ```
 
+`artifact.kind` is **resolved at enqueue time and persisted into the ship-state
+record** (pre-flight check #3 already parses `eas.json`, so this costs nothing);
+the finish-time response reads it back from the record and never re-reads
+`eas.json`. This keeps both the normal path (finish is 15–40 min after enqueue)
+and the `build_id` resume path (which skips pre-flight entirely) correct even if
+`eas.json` was edited or deleted mid-build.
+
 `kind` is derived from the **workspace's own eas.json profile**, not from
 EAS's response — `developmentClient: true` in the resolved build profile ⇒
 `"dev-client"`; else `"ipa"` for `--platform ios`, `"apk"` for
