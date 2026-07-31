@@ -12,7 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { planRelease, verifyReleased } from "./core.js";
+import { planRelease, verifyReleased, renderReleaseRecord, resolveItemVersion } from "./core.js";
 import { loadConfig } from "../config/load.js";
 import { resolveReleaseKind } from "../../init/config-schema.js";
 import { LABEL_PREFIX, STATES } from "../state/machine.js";
@@ -39,6 +39,10 @@ if (flags.verify) {
     process.exit(20);
   }
   const releaseKind = resolveReleaseKind(loadConfig()).kind;
+  if (releaseKind !== "tag") {
+    console.log(`verify: release_kind is "${releaseKind}" — tag-based verification does not apply here.`);
+    process.exit(0);
+  }
   const labelled = JSON.parse(
     execFileSync(
       "gh",
@@ -47,15 +51,30 @@ if (flags.verify) {
       { encoding: "utf8" }
     )
   );
-  const version = JSON.parse(readFileSync("package.json", "utf8")).version;
   const tags = execFileSync("git", ["tag", "--list"], { encoding: "utf8" })
     .split("\n").map((t) => t.trim()).filter(Boolean);
 
-  const result = verifyReleased({
-    items: labelled.map((i) => ({ number: i.number, version })),
-    tags,
-    releaseKind,
-  });
+  // Every item gets its OWN version, resolved from its own release breadcrumb
+  // — never HEAD's `package.json` version reused across every item (#121).
+  // An item whose version cannot be recovered from recorded data is kept out
+  // of `verifyReleased` entirely and reported as its own "unverifiable"
+  // category, so it can never masquerade as a false finding.
+  const resolved = [];
+  const unverifiable = [];
+  for (const item of labelled) {
+    const comments = JSON.parse(
+      execFileSync(
+        "gh",
+        ["api", `repos/${flags.repo}/issues/${item.number}/comments`, "--jq", "[.[] | {body}]"],
+        { encoding: "utf8" }
+      )
+    );
+    const r = resolveItemVersion({ comments });
+    if (r.version) resolved.push({ number: item.number, version: r.version });
+    else unverifiable.push({ number: item.number, reason: r.unverifiable });
+  }
+
+  const result = verifyReleased({ items: resolved, tags, releaseKind });
 
   if (!result.applicable) {
     console.log(`verify: release_kind is "${result.releaseKind}" — tag-based verification does not apply here.`);
@@ -65,9 +84,15 @@ if (flags.verify) {
     const which = f.expectedTag ? ` (${f.expectedTag})` : "";
     console.error(`#${f.number}: labelled state:released but ${f.reason}${which}`);
   }
+  for (const u of unverifiable) {
+    console.error(`#${u.number}: unverifiable: ${u.reason}`);
+  }
+  const summary = [];
+  if (result.findings.length) summary.push(`${result.findings.length} item(s) claim a release that does not exist`);
+  if (unverifiable.length) summary.push(`${unverifiable.length} item(s) could not be verified`);
   console.log(
-    result.findings.length
-      ? `verify: ${result.findings.length} item(s) claim a release that does not exist`
+    summary.length
+      ? `verify: ${summary.join("; ")}`
       : `verify: ${labelled.length} item(s) labelled released, every one backed by a tag`
   );
   process.exit(result.findings.length ? 10 : 0);
@@ -125,6 +150,10 @@ try {
     sh("git", ["tag", "-a", plan.tag, "-m", `Release ${plan.tag}`]);
     sh("git", ["push", "origin", plan.tag]);
     gh(["release", "create", plan.tag, "--repo", flags.repo, "--title", plan.tag, "--generate-notes"]);
+    // The breadcrumb `--verify` reads back: this item's own tag, recorded on
+    // its own issue, so a later verify never has to guess it from HEAD's
+    // `package.json` (#121).
+    gh(["issue", "comment", String(flags.issue), "--repo", flags.repo, "--body", renderReleaseRecord({ tag: plan.tag })]);
     sh(process.execPath, [
       new URL("../state/cli.js", import.meta.url).pathname,
       "apply",
