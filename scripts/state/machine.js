@@ -140,3 +140,78 @@ export function planTransition(labels, to, options = {}) {
   }
   return { from, to, gate: gateFor(from, to), add: [labelFor(to)], remove: [labelFor(from)] };
 }
+
+// Compare-and-swap: resolve what to do when applying a previously computed
+// transition against a freshly re-read set of labels, taken immediately
+// before the write. Two independent drivers — the manual CLI
+// (scripts/state/cli.js) and the async gate workflow
+// (scripts/actions/gate-comment.js) — can each decide to apply the very same
+// transition; by the time either issues its edit, the other may already have
+// won. Re-reading labels right before the write and asking this function
+// what to do is what stops that race from stacking conflicting state labels
+// on the issue — observed live on #119 (`state:spec` + `state:ready`
+// simultaneously, which then makes `stateFromLabels` throw "conflicting" for
+// every reader from then on).
+//
+// `plan` carries `{ from, to, add, remove }` — the shape `planTransition`
+// returns, or an equivalent literal a caller builds itself (gate-comment.js
+// does, since it derives its transition from `pendingGateFor` rather than
+// calling `planTransition`). `currentLabels` is the fresh read. Four shapes:
+//
+//   from present, to absent   → apply — nothing has moved; do the edit.
+//   from absent,  to present  → noop  — another driver already won this
+//                                        exact transition. Re-applying would
+//                                        be a same-op retry with nothing new
+//                                        to write.
+//   from present, to present  → heal  — the corruption this function exists
+//                                        to prevent has already happened:
+//                                        both labels are live, which is
+//                                        exactly the #119 shape. There is one
+//                                        correct resolution — `to` is the
+//                                        transition's outcome and is kept,
+//                                        `from` is stale and is dropped — and
+//                                        it can only be reached via the very
+//                                        race this seam closes, so healing it
+//                                        here (rather than merely refusing
+//                                        and leaving the conflict for a human
+//                                        to fix by hand) is the right call:
+//                                        left alone, `stateFromLabels` throws
+//                                        for every subsequent reader of this
+//                                        issue, forever, until someone edits
+//                                        labels manually.
+//   from absent,  to absent   → refuse (throws) — neither label survived to
+//                                        this read: a third transition beat
+//                                        both drivers, or labels were cleared
+//                                        entirely. Guessing which is worse
+//                                        than naming exactly what was found
+//                                        and stopping.
+export function resolveApply(currentLabels, plan) {
+  const { from, to } = plan;
+  const hasTo = currentLabels.includes(labelFor(to));
+  if (from === null) {
+    // The unlabeled-entry case (`planTransition([], "idea")`): there is no
+    // `from` label to compare against, only the target itself.
+    return hasTo
+      ? { action: "noop", note: `already applied by another driver — state:${to} is already present` }
+      : { action: "apply", add: plan.add, remove: plan.remove };
+  }
+  const hasFrom = currentLabels.includes(labelFor(from));
+  if (hasFrom && !hasTo) return { action: "apply", add: plan.add, remove: plan.remove };
+  if (!hasFrom && hasTo) {
+    return {
+      action: "noop",
+      note: `already applied by another driver — state:${from} is gone and state:${to} is already present`,
+    };
+  }
+  if (hasFrom && hasTo) {
+    return {
+      action: "heal",
+      remove: [labelFor(from)],
+      note: `both state:${from} and state:${to} were present — two drivers raced this transition; removed the stale state:${from} and kept state:${to}`,
+    };
+  }
+  const found = currentLabels.filter((l) => l.startsWith(LABEL_PREFIX));
+  throw new Error(
+    `cannot apply ${from} → ${to}: neither state:${from} nor state:${to} is present (found: ${found.join(", ") || "none"})`
+  );
+}

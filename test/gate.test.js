@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseCommand, validateApproval, approvalTransitions } from "../scripts/gate/validator.js";
 import { resolveTrustedReviewState } from "../scripts/identity/identity.js";
+import { resolveApply } from "../scripts/state/machine.js";
+import { renderApprovalComment } from "../scripts/actions/gate-comment.js";
 
 test("parseCommand finds the command anywhere in the body", () => {
   assert.deepEqual(parseCommand("looks good!\n/approve"), { command: "approve", gate: null });
@@ -369,6 +371,61 @@ test("a stale trusted artifact refuses a human's G3 approval, naming the head it
   });
   assert.equal(v.ok, false);
   assert.match(v.reason, new RegExp(prHead));
+});
+
+// --- gate-comment.js's re-fetch: the compare-and-swap it shares with the CLI (#126) --
+//
+// `gate-comment.js` trusted the webhook event payload's labels — a snapshot
+// from whenever the comment was posted — and wrote its edit straight from
+// that snapshot. By execution time a second driver (the manual CLI, most
+// often) can have already applied the very transition this approval names,
+// or carried the issue further still; observed live on #119, where this
+// workflow added `state:spec` back onto an issue the CLI had already carried
+// to `state:ready`, stacking both labels. It now re-reads labels immediately
+// before the edit and runs them through the same `resolveApply` the CLI
+// uses — these tests build the exact `{from, to, add, remove}` shape
+// `gate-comment.js` constructs from `pendingGateFor` (it never calls
+// `planTransition`) and drive it through the full matrix.
+
+const g1Plan = { from: "idea", to: "spec", add: ["state:spec"], remove: ["state:idea"] };
+
+test("gate-comment CAS: fresh read still shows from, no to → applies exactly as the event implied", () => {
+  const resolution = resolveApply(["state:idea", "bug"], g1Plan);
+  assert.deepEqual(resolution, { action: "apply", add: ["state:spec"], remove: ["state:idea"] });
+  assert.equal(
+    renderApprovalComment({ gate: "G1", plan: g1Plan, author: "alice", resolution }),
+    "agentflow: ✅ **G1 approved** by @alice — `state:idea` → `state:spec`."
+  );
+});
+
+test("gate-comment CAS: fresh read shows the CLI already won → no-op, no edit, says so", () => {
+  const resolution = resolveApply(["state:spec", "bug"], g1Plan);
+  assert.equal(resolution.action, "noop");
+  const rendered = renderApprovalComment({ gate: "G1", plan: g1Plan, author: "alice", resolution });
+  assert.match(rendered, /`G1` was already approved by another driver/);
+  assert.match(rendered, /`state:spec` is already present/);
+  assert.match(rendered, /No change made/);
+});
+
+test("gate-comment CAS: fresh read shows both labels stacked (#119) → heals and says a race happened", () => {
+  const resolution = resolveApply(["state:idea", "state:spec"], g1Plan);
+  assert.equal(resolution.action, "heal");
+  assert.deepEqual(resolution.remove, ["state:idea"]);
+  const rendered = renderApprovalComment({ gate: "G1", plan: g1Plan, author: "alice", resolution });
+  assert.match(rendered, /✅ \*\*G1 approved\*\* by @alice — `state:idea` → `state:spec`/);
+  assert.match(rendered, /Two drivers had raced this transition/);
+  assert.match(rendered, /stale `state:idea` has been removed/);
+});
+
+test("gate-comment CAS: fresh read shows the issue moved past this transition entirely → refuses, names what was found", () => {
+  // The exact #119 shape from the CLI's side: the manual chain had already
+  // carried the issue to `ready` by the time this workflow's edit ran.
+  assert.throws(
+    () => resolveApply(["state:ready", "bug"], g1Plan),
+    /cannot apply idea → spec: neither state:idea nor state:spec is present \(found: state:ready\)/
+  );
+  // gate-comment.js catches exactly this and turns it into an issue comment
+  // rather than crashing the workflow — the message it wraps is this one.
 });
 
 test("a bot's G3 carve-out is refused with no review artifact, quoting the review guard's reason", () => {
