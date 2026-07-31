@@ -26,7 +26,7 @@ GitHub 上で動作する、プラットフォーム非依存のエージェン�
    から投稿します。
 4. **エージェントは次のことをしない。** 状態ラベルの遷移、ゲート承認の発行、
    Issue の直接起票。
-5. **ゲートの間は自律的に。** 人間の判断が入るのはゲート（G1 ブリーフ、G2 プラン、
+5. **ゲートの間は自律的に。** 人間の判断が入るのはゲート（G1 ブリーフ、G2 計画、
    G3 マージ、G4 リリース）と、リトライ回数を使い切ったときだけです。その間に
    あるものは、確認を挟まずに進みます。
 6. **レビューは独立かつ Opus ティア。** `code-reviewer` と `ux-reviewer` は、
@@ -89,7 +89,7 @@ node init/cli.js adopt --verify --target /path/to/your-repo --repo <owner>/<name
 | `agentflow-identity` | agentflow の GitHub App として振る舞う: `token` · `exec` · `whoami` · `doctor` |
 | `agentflow-log` | 実行台帳: `start` · `end` · `audit`（モデルティアの遵守状況） |
 | `agentflow-release` | G4: タグ付け + GitHub リリース、`verified → released`（`--verify` は不変条件を確認） |
-| `agentflow-e2e` | コンパイル済みトレースから Gherkin シナリオを再生する: `run` · `smoke` |
+| `agentflow-e2e` | コンパイル済みトレースから Gherkin シナリオをリプレイする: `run` · `smoke` |
 
 ## さらに深く
 

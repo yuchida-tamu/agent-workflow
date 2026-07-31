@@ -119,3 +119,31 @@ PRs get risk verdicts from baseline + `policies/business.yml`.
   delivery: `git merge-base --is-ancestor <head> origin/main` is. A mid-run change to an
   approved plan is a **Plan amendment** comment linking the original plan, with
   every affected child issue edited to match — see `agents/architect.md`.
+
+## Japanese house glossary (用語集)
+
+One term set spans the JA site (`docs/index.html`) and the four `*.ja` docs — a
+reader crossing between them should never meet two words for one concept. When
+writing Japanese, use these. The losing variant is deliberate only inside code
+identifiers (e.g. `plan.json`, `plan.*`).
+
+| English | 日本語 |
+| --- | --- |
+| determinism ladder | 決定論のはしご（rung = 段） |
+| plan (prose) | 計画（プラン は `plan.json` 等の成果物識別子のみ） |
+| replay | リプレイ |
+| findings | 指摘 |
+| brief | ブリーフ |
+| shaping | 整形 |
+| gate | ゲート |
+| loop | ループ |
+| trace | トレース |
+| subagent | サブエージェント |
+| review | レビュー |
+| worktree | worktree（原綴のまま） |
+| adapter | アダプター |
+| runner | ランナー |
+| validator | バリデーター |
+
+Long-vowel rule: -er / -or / -ar 系の外来語には長音符を付す（アダプター・ランナー・
+バリデーター・パーサー・ドライバー）。
