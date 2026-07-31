@@ -71,7 +71,13 @@ point the adapter at it — there's no attach-to-existing-Metro path.
 - **Readiness** is polled against Metro's real `/status` HTTP endpoint
   (`waitForMetroReady`), not a log-line grep — a boot banner can print
   before Metro can actually serve a bundle. Default timeout 30s
-  (`AGENTFLOW_EXPO_METRO_TIMEOUT_MS`).
+  (`AGENTFLOW_EXPO_METRO_TIMEOUT_MS`). A 200 alone isn't enough to declare
+  ready, though: `/status` carries no identity of its own, so readiness also
+  confirms via `lsof` that the port is actually bound to the pid THIS
+  `start` spawned, not a foreign packager already sitting on it — `lsof` is
+  always present on the macOS/simulator runtime this adapter targets, and
+  on an `lsof`-less host `start` simply times out honestly instead of
+  false-readying against the wrong process.
 - **State** lives in a session record (`lib/session.js`), one JSON file per
   `session_id` under `AGENTFLOW_EXPO_STATE_DIR` (default: a fixed path under
   the OS tmp dir, `agentflow-expo/sessions/`). Every op (`start`/`stop`/

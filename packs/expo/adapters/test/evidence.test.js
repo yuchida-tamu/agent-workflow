@@ -258,3 +258,57 @@ test("appendManifest: a FRESH lock (younger than staleMs) is never taken over �
     );
   });
 });
+
+// A prior version took a stale lock over via an unconditional
+// `rm(lockPath, {force:true})`, which gives no exclusivity signal: every
+// waiter that independently judged the SAME stale lock as stale would each
+// "successfully" rm it — including a waiter whose rm executes AFTER a
+// faster waiter already removed the stale lock and won a brand-new `wx`
+// lock, ripping that FRESH lock out from under its active holder and
+// letting a second waiter's `wx` also succeed. Two holders inside the
+// critical section at once is exactly the lost-update corruption the lock
+// exists to prevent — and with N waiters racing the same dead lock, this
+// isn't a rare edge case, it's the common one. The fix (atomic rename to a
+// unique quarantine name, "winner-decides") is only proven by exercising
+// real concurrency: a single-waiter test can't distinguish "takes over
+// correctly" from "takes over racily but nobody else was there to notice."
+test("appendManifest: MULTI-WAITER takeover — N concurrent waiters against one dead holder's aged lock take over exactly once, with zero double-entry and no lost rows", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = await writeLockFile(dir, 500); // one shared stale lock, pre-seeded once
+    const N = 10;
+    const warnings = { chunks: [], write(s) { this.chunks.push(s); } };
+
+    const rows = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        appendManifest(
+          dir,
+          { type: "log", path: `waiter-${i}.log`, label: `waiter ${i}` },
+          { staleMs: 50, retries: 400, delayMs: 5, stderr: warnings }
+        )
+      )
+    );
+
+    // The observable signature of double-entry corruption: two waiters both
+    // inside the critical section at once means both read the same array,
+    // both push, and the LAST writeManifestAtomic clobbers everything the
+    // other one wrote — a lost row, not an extra one. So "every waiter's
+    // row survived, all distinct" is exactly what rules that out.
+    const manifest = await readManifest(dir);
+    assert.equal(manifest.length, N, "every waiter's row must survive — none lost to overlapping critical sections");
+    const paths = new Set(manifest.map((r) => r.path));
+    assert.equal(paths.size, N, "no two waiters' rows collapsed into one — distinct paths for every waiter");
+    assert.deepEqual(new Set(rows.map((r) => r.path)), paths, "every waiter's own return value matches a real, distinct row");
+
+    // Exactly one waiter should ever have performed the actual takeover —
+    // the rest queue behind that winner's fresh (non-stale) lock and never
+    // themselves attempt a rename.
+    const takeovers = warnings.chunks.filter((c) => c.includes(lockPath) && c.includes("taking it over"));
+    assert.equal(takeovers.length, 1, "exactly one waiter wins the stale-lock takeover, not one per waiter racing the same dead lock");
+
+    // No leftover lock file or .stale-* quarantine file survives once every
+    // waiter has settled — the winner's own cleanup, and every eventual
+    // lock holder's own release, account for all of them.
+    const files = await readdir(dir);
+    assert.deepEqual(files.sort(), [MANIFEST_FILE], "no manifest.json.lock or .stale-* quarantine file left behind");
+  });
+});
