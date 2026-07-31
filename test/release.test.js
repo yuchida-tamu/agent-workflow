@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { tagFor, findG4Approval, planRelease } from "../scripts/release/core.js";
+import {
+  tagFor,
+  findG4Approval,
+  planRelease,
+  verifyReleased,
+  renderReleaseRecord,
+  releaseTagFromComments,
+  resolveItemVersion,
+} from "../scripts/release/core.js";
 
 const authorized = ["alice"];
 const approvalComments = [{ author: "alice", body: "/approve G4" }];
@@ -145,4 +153,105 @@ test("no path returns ok without both a verified state and a real approver", () 
     { ...base, releaseKind: "none" },
   ];
   for (const c of cases) assert.equal(planRelease(c).ok, false, JSON.stringify(c.state ?? c));
+});
+
+// --- per-item version resolution (#121) --------------------------------------
+//
+// `verifyReleased` was always correct given each item's own version — the bug
+// was the CLI feeding it HEAD's single `package.json` version for every
+// released item instead. The fix grounds resolution in what the release flow
+// itself records: a breadcrumb comment on the issue, naming the tag it was
+// released at.
+
+test("renderReleaseRecord names the tag, and releaseTagFromComments reads it back", () => {
+  const body = renderReleaseRecord({ tag: "v1.0.0" });
+  assert.match(body, /Released as `v1\.0\.0`/);
+  assert.equal(releaseTagFromComments([{ body }]), "v1.0.0");
+});
+
+test("releaseTagFromComments ignores unrelated comments and finds the breadcrumb among them", () => {
+  const comments = [
+    { body: "/approve G4" },
+    { body: "some unrelated chatter" },
+    { body: renderReleaseRecord({ tag: "v2.3.0" }) },
+  ];
+  assert.equal(releaseTagFromComments(comments), "v2.3.0");
+});
+
+test("releaseTagFromComments returns null when no breadcrumb exists", () => {
+  assert.equal(releaseTagFromComments([]), null);
+  assert.equal(releaseTagFromComments([{ body: "/approve G4" }]), null);
+  assert.equal(releaseTagFromComments(undefined), null);
+});
+
+test("releaseTagFromComments takes the latest breadcrumb if more than one exists", () => {
+  const comments = [
+    { body: renderReleaseRecord({ tag: "v1.0.0" }) },
+    { body: renderReleaseRecord({ tag: "v1.0.1" }) },
+  ];
+  assert.equal(releaseTagFromComments(comments), "v1.0.1");
+});
+
+test("resolveItemVersion resolves from the breadcrumb when present", () => {
+  const comments = [{ body: renderReleaseRecord({ tag: "v1.4.0" }) }];
+  assert.deepEqual(resolveItemVersion({ comments }), { version: "v1.4.0" });
+});
+
+test("a version-less item — no breadcrumb at all — reports unverifiable, not a finding", () => {
+  const r = resolveItemVersion({ comments: [{ author: "alice", body: "/approve G4" }] });
+  assert.equal(r.version, undefined);
+  assert.match(r.unverifiable, /no release breadcrumb/);
+});
+
+test("resolveItemVersion is honest about no comments at all too", () => {
+  const r = resolveItemVersion({ comments: [] });
+  assert.match(r.unverifiable, /no release breadcrumb/);
+});
+
+// --- two released items, two different versions, both verify clean ----------
+//
+// This is the shape the original bug could never pass: #5 at v1.0.0 and #9 at
+// v1.1.0 coexisting under `state:released`, resolved from their own
+// breadcrumbs rather than a single value borrowed from HEAD.
+
+test("two released items at different versions both verify clean once resolved per-item", () => {
+  const itemFive = { number: 5, comments: [{ body: renderReleaseRecord({ tag: "v1.0.0" }) }] };
+  const itemNine = { number: 9, comments: [{ body: renderReleaseRecord({ tag: "v1.1.0" }) }] };
+
+  const resolved = [itemFive, itemNine].map((i) => ({
+    number: i.number,
+    ...resolveItemVersion({ comments: i.comments }),
+  }));
+  assert.deepEqual(resolved, [
+    { number: 5, version: "v1.0.0" },
+    { number: 9, version: "v1.1.0" },
+  ]);
+
+  const result = verifyReleased({ items: resolved, tags: ["v1.0.0", "v1.1.0"], releaseKind: "tag" });
+  assert.deepEqual(result.findings, []);
+});
+
+// --- the old false-finding case, pinned dead ---------------------------------
+//
+// #121's exact failure scenario: #5 was released at v1.0.0 (tag exists).
+// Development moved HEAD's package.json on to 1.1.0 with no tag yet. The old
+// CLI fed every released item HEAD's version and reported #5 as a false
+// finding — "no such tag (v1.1.0)" — against an item that was genuinely
+// released. Resolving from #5's own breadcrumb must never reproduce that.
+
+test("false-finding case pinned dead: HEAD moving past a released item's version cannot poison its verify", () => {
+  const headPackageJsonVersion = "1.1.0"; // what the old, buggy CLI would have used for every item
+  const itemFive = { number: 5, comments: [{ body: renderReleaseRecord({ tag: "v1.0.0" }) }] };
+
+  const resolvedVersion = resolveItemVersion({ comments: itemFive.comments });
+  assert.equal(resolvedVersion.version, "v1.0.0", "must resolve #5's own tag, not HEAD's version");
+  assert.notEqual(resolvedVersion.version, tagFor(headPackageJsonVersion));
+
+  // No v1.1.0 tag exists yet — only v1.0.0, which is what #5 actually shipped.
+  const result = verifyReleased({
+    items: [{ number: 5, version: resolvedVersion.version }],
+    tags: ["v1.0.0"],
+    releaseKind: "tag",
+  });
+  assert.deepEqual(result.findings, [], "a legitimately released item must never be flagged because HEAD moved on");
 });

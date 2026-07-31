@@ -121,3 +121,56 @@ export function verifyReleased({ items = [], tags = [], releaseKind = "tag" } = 
   }
   return { applicable: true, releaseKind, findings };
 }
+
+// --- per-item version resolution --------------------------------------------
+//
+// `verifyReleased` above takes each item's *own* version — #121 found the CLI
+// feeding it HEAD's `package.json` version for every item instead, which is
+// wrong the moment two different versions have ever been released (this repo
+// now carries three tags, so the bug was live, not theoretical). The fix is
+// to ground resolution in what the release flow actually *records*:
+// `agentflow-release` now leaves a breadcrumb comment on the issue it just
+// released, naming the tag it cut — the same audit-trail shape already used
+// for merges (`merge-record.js`) and postmerge smoke. `--verify` reads that
+// comment back instead of trusting HEAD's version for everyone.
+//
+// Items released before this fix shipped carry no such breadcrumb, and
+// `state:released` items stay open (they never get a close-by-merge event),
+// so there is no secondary ancestry record to fall back to either. Reporting
+// those "unverifiable" is the honest answer — never a guess dressed up as a
+// finding, and never conflated with a genuine "no such tag" finding.
+
+export const RELEASE_RECORD_MARKER = "<!-- agentflow-release-record -->";
+
+// What the release CLI itself writes on an item's issue when it cuts a tag
+// for it. Parsing exactly what we write keeps resolution deterministic — no
+// scraping freeform comment text for something that merely looks like a
+// version.
+export function renderReleaseRecord({ tag }) {
+  return `${RELEASE_RECORD_MARKER}\n📦 Released as \`${tag}\`.`;
+}
+
+// comments: [{ body }] — every comment on the item's issue, unfiltered.
+// → the tag named in the item's own release breadcrumb, or null. The last
+// match wins, consistent with the other markers in this repo, in case a
+// re-release ever appends a fresher record.
+export function releaseTagFromComments(comments) {
+  const found = [...(comments ?? [])].reverse().find((c) => c?.body?.startsWith(RELEASE_RECORD_MARKER));
+  if (!found) return null;
+  const m = found.body.match(/Released as `([^`]+)`/);
+  return m ? m[1] : null;
+}
+
+// → { version } | { unverifiable: reason }. Resolution order: the release
+// breadcrumb on the issue, full stop — there is no second deterministic
+// source (see above). An item whose own version cannot be recovered from
+// recorded data is its own category, kept apart from `verifyReleased`'s
+// findings so it can never surface as a false one.
+export function resolveItemVersion({ comments } = {}) {
+  const tag = releaseTagFromComments(comments);
+  if (tag) return { version: tag };
+  return {
+    unverifiable:
+      "no release breadcrumb recorded on the issue (released before this tracking existed, or outside agentflow-release)",
+  };
+}
