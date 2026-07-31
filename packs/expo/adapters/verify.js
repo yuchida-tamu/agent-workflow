@@ -41,7 +41,7 @@ import * as agentDevice from "./lib/agent-device.js";
 import { unwrap } from "./lib/agent-device.js";
 import { defaultRunner } from "./lib/proc.js";
 import { loadSession } from "./lib/session.js";
-import { reserveEntry } from "./lib/evidence.js";
+import { reserveEntry, finalizeEntry } from "./lib/evidence.js";
 
 const INTERFACE = "verify";
 const PLATFORM = "ios";
@@ -340,21 +340,41 @@ async function readOp(request, deps) {
 // lib/session.js's header note on the same fallback shape) this still
 // honors "a screenshot is always captured", just outside the bundle, under a
 // random name since there's no manifest to reserve a slot in.
+//
+// #139 (residual from #141's re-review): `reserveEntry`'s row lands BEFORE
+// the actual PNG capture below — that's the whole point of reserving the
+// slot atomically (see reserveEntry's own comment) — which means a capture
+// that fails AFTER a successful reservation used to leave a permanent
+// manifest row pointing at a file that was never written: not silent
+// corruption (the missing file is visible), but a dangling reference with
+// no way to tell "still capturing" from "capture died" after the fact. The
+// row now carries `status`, finalized to "written" or "failed" once the
+// capture's outcome is known — best-effort (`.catch`): a finalize failure
+// must never mask the capture's own real outcome, which this still throws
+// for exactly as before.
 async function captureScreenshot({ record, evidenceDir, deps, label }) {
   let path;
+  let finalize = null;
   if (evidenceDir) {
     const entry = await deps.reserveEntry(evidenceDir, { type: "screenshot", ext: ".png", label: label ?? "screenshot" });
     path = entry.path;
+    finalize = (status) => deps.finalizeEntry(evidenceDir, path, status).catch(() => {});
   } else {
     const dir = join(tmpdir(), "agentflow-expo-verify");
     await mkdir(dir, { recursive: true });
     path = join(dir, `${randomUUID()}.png`);
   }
 
-  await callAgentDevice(["screenshot", "--out", path, ...sessionFlags(record)], {
-    runner: deps.runner,
-    sessionId: record.session_id,
-  });
+  try {
+    await callAgentDevice(["screenshot", "--out", path, ...sessionFlags(record)], {
+      runner: deps.runner,
+      sessionId: record.session_id,
+    });
+  } catch (err) {
+    if (finalize) await finalize("failed");
+    throw err;
+  }
+  if (finalize) await finalize("written");
 
   return path;
 }
@@ -367,6 +387,7 @@ function defaultHandlerDeps() {
     loadSession,
     readFile: fsReadFile,
     reserveEntry,
+    finalizeEntry,
     stderr: process.stderr,
   };
 }

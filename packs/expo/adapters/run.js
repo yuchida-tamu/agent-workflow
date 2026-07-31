@@ -36,6 +36,7 @@ import {
   isAlive,
   kill,
   captureIdentity,
+  isPortOwnedBy,
 } from "./lib/proc.js";
 import * as agentDevice from "./lib/agent-device.js";
 import { saveSession, loadSession, resolveStateDir } from "./lib/session.js";
@@ -169,19 +170,40 @@ function defaultProbe(port, { timeoutMs = 1000 } = {}) {
 // the log is still watched for an EADDRINUSE line so a port conflict fails
 // fast instead of waiting out the full timeout. Every dependency is
 // injectable so this is testable without a real bundler or a real socket.
+//
+// `pid`, when given, closes a false-ready race a bare /status 200 cannot:
+// Metro's /status carries no instance identity (see lib/proc.js's
+// `isPortOwnedBy` header) — if a *different*, already-running packager is
+// already bound to the same port (a stale session, a developer's own
+// terminal — see skills/expo-dev.md's "port 8081 already held"), that
+// foreign process answers 200 immediately, often well before OUR freshly
+// spawned `expo start` has even bound the port itself, let alone logged its
+// own EADDRINUSE. Without a pid check, that 200 would be accepted as ready
+// on the strength of an endpoint that can't tell the two apart. With `pid`
+// given, a 200 only counts once the OS's own port->pid mapping also
+// confirms `pid` — not some other process — is the one actually bound;
+// otherwise this keeps polling (our own spawn should itself hit
+// EADDRINUSE and get caught below shortly after). Omitting `pid` keeps the
+// old bare-probe behavior, for callers with nothing to bind the check to.
 export async function waitForMetroReady({
   port,
+  pid,
   logPath,
   timeoutMs = METRO_READY_TIMEOUT_MS,
   intervalMs = 250,
   probe = defaultProbe,
+  checkPortOwner = isPortOwnedBy,
   readFile = defaultReadFile,
   sleep = defaultSleep,
   clock = Date.now,
+  runner = defaultRunner,
 }) {
   const deadline = clock() + timeoutMs;
   do {
-    if (port && (await probe(port).catch(() => false))) return true;
+    if (port && (await probe(port).catch(() => false))) {
+      const owned = !pid || (await checkPortOwner(port, pid, { runner }).catch(() => false));
+      if (owned) return true;
+    }
     const text = await readFile(logPath).catch(() => "");
     if (/EADDRINUSE|address already in use/i.test(text)) {
       throw recoverable(`Metro port already in use (see ${logPath})`);
@@ -290,7 +312,7 @@ export function createHandlers(overrides = {}) {
 
     let entryPoint;
     try {
-      const ready = await deps.waitForMetroReady({ logPath, port });
+      const ready = await deps.waitForMetroReady({ logPath, port, pid: metroProc.pid });
       if (!ready) {
         throw recoverable(`Metro did not report ready within ${METRO_READY_TIMEOUT_MS}ms (port ${port} may be in use)`);
       }

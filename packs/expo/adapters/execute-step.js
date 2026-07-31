@@ -8,12 +8,24 @@
 // every agent-device call, `loadSession` from lib/session.js resolves the
 // `run`-started session, `isAlive` from lib/proc.js re-checks Metro's
 // pid+identity the same way run.js's own `status` op does, and
-// `appendManifest`/`readManifest` from lib/evidence.js own the evidence
+// `reserveEntry`/`finalizeEntry` from lib/evidence.js own the evidence
 // bundle. Each action/assertion is compiled to a plain agent-device argv
 // array inline, so there is no seam for this file and verify.js to collide
 // on. `invoke()` itself gained a lib-level behavior change in #164 (unwraps
 // the `{success,data}` envelope by default) — see lib/agent-device.js's file
 // header for why that's a structural fix, not a per-caller one.
+//
+// #139: this used to mint its own screenshot filename by reading
+// `readManifest`'s current length, then `appendManifest`-ing the row only
+// AFTER capture — the exact three-step read/capture/append race
+// lib/evidence.js's `reserveEntry` was built to close for verify.js (#134's
+// review). Nothing here ever exercised the race in practice (execute-step
+// captures at most one screenshot per call), but a shared `evidence_dir`
+// between a live `run` session and this file's own screenshot is exactly
+// the "two writers, one bundle" scenario `reserveEntry` exists for — so
+// this now goes through the same reserve/finalize pair verify.js uses,
+// for the same shared-dir-safety symmetry, rather than keeping a second,
+// narrower implementation of the same idea.
 //
 // ---- The failure-vs-infrastructure line (the whole point of this contract) -
 //
@@ -46,7 +58,7 @@ import { runMain, recoverable, fatal, diagnostic, AdapterError } from "./lib/con
 import { invoke, translateSelector, openSession, AgentDeviceError, defaultRunner } from "./lib/agent-device.js";
 import { isAlive } from "./lib/proc.js";
 import { loadSession } from "./lib/session.js";
-import { appendManifest, readManifest } from "./lib/evidence.js";
+import { reserveEntry, finalizeEntry } from "./lib/evidence.js";
 
 const INTERFACE = "execute-step";
 
@@ -347,24 +359,33 @@ async function runAssertion(assertion, ctx) {
 // One screenshot per execute-step call — captured at the end of replay
 // (either the final UI state on a pass, or the failure moment on a fail),
 // matching both illustrative examples in interfaces/execute-step.md (each
-// shows exactly one evidence entry). Best-effort end to end: the screenshot
-// invoke AND the manifest write share one try/catch, so a manifest-write
-// failure (a read-only/unwritable evidence_dir, for instance) can never
-// throw out of here and mask the step's actual pass/fail verdict — it just
-// leaves evidence empty, same as a screenshot capture failure.
+// shows exactly one evidence entry). Best-effort end to end: a reservation
+// failure OR a capture failure both just leave evidence empty (returning
+// null) rather than throwing out of here and masking the step's actual
+// pass/fail verdict — same outward behavior as before #139, now going
+// through `reserveEntry`/`finalizeEntry` (see the file header) instead of a
+// bespoke readManifest-then-appendManifest sequence. A reservation failure
+// (e.g. a read-only/unwritable evidence_dir) means the manifest row for
+// this screenshot was never durably recorded, so the capture itself is
+// skipped entirely rather than taking a PNG nothing will ever reference.
 async function captureScreenshot(ctx, deps, evidenceDir) {
   if (!evidenceDir) return null;
-  const manifest = await deps.readManifest(evidenceDir).catch(() => []);
-  const fileName = `${String(manifest.length + 1).padStart(4, "0")}.png`;
-  const outPath = join(evidenceDir, fileName);
+  let entry;
   try {
-    await invoke(withSessionFlags(["screenshot", "--out", outPath], ctx), { runner: ctx.runner, json: false });
-    await deps.appendManifest(evidenceDir, { type: "screenshot", path: outPath, label: "execute-step" });
+    entry = await deps.reserveEntry(evidenceDir, { type: "screenshot", ext: ".png", label: "execute-step" });
   } catch (err) {
-    diagnostic(`[execute-step] screenshot capture failed: ${err.message}`, deps.stderr);
+    diagnostic(`[execute-step] evidence manifest reservation failed: ${err.message}`, deps.stderr);
     return null;
   }
-  return outPath;
+  try {
+    await invoke(withSessionFlags(["screenshot", "--out", entry.path], ctx), { runner: ctx.runner, json: false });
+  } catch (err) {
+    diagnostic(`[execute-step] screenshot capture failed: ${err.message}`, deps.stderr);
+    await deps.finalizeEntry(evidenceDir, entry.path, "failed").catch(() => {});
+    return null;
+  }
+  await deps.finalizeEntry(evidenceDir, entry.path, "written").catch(() => {});
+  return entry.path;
 }
 
 async function readLogTail(ctx) {
@@ -419,8 +440,8 @@ function defaultHandlerDeps() {
     runner: defaultRunner,
     isAlive,
     loadSession,
-    appendManifest,
-    readManifest,
+    reserveEntry,
+    finalizeEntry,
     readFile: defaultReadFile,
     sleep: defaultSleep,
     clock: Date.now,
