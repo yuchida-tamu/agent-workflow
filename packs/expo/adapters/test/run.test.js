@@ -249,6 +249,99 @@ test("waitForMetroReady: with no port given, falls back to log-only EADDRINUSE d
   assert.equal(probeCalled, false);
 });
 
+// ---- waitForMetroReady: pid-bound readiness (#139) ----------------------
+// Metro's /status carries no instance identity of its own (see
+// lib/proc.js's isPortOwnedBy header) — a 200 alone can't tell OUR freshly
+// spawned Metro apart from a foreign packager already bound to the same
+// port (the two-Metro false-ready case). `pid` + `checkPortOwner` close
+// that gap: a 200 only counts once the OS's own port->pid mapping also
+// says `pid` is the one actually listening.
+
+test("waitForMetroReady: no pid given -> the old bare-probe behavior, port owner is never even checked", async () => {
+  let checkPortOwnerCalled = false;
+  const ready = await waitForMetroReady({
+    port: 8081,
+    logPath: "/fake/app.log",
+    probe: async () => true,
+    checkPortOwner: async () => { checkPortOwnerCalled = true; return false; },
+    readFile: async () => "",
+    sleep: async () => {},
+    clock: () => 0,
+  });
+  assert.equal(ready, true);
+  assert.equal(checkPortOwnerCalled, false);
+});
+
+test("waitForMetroReady: pid given and it owns the port -> ready", async () => {
+  const ready = await waitForMetroReady({
+    port: 8081,
+    pid: 4242,
+    logPath: "/fake/app.log",
+    probe: async () => true,
+    checkPortOwner: async (port, pid) => port === 8081 && pid === 4242,
+    readFile: async () => "",
+    sleep: async () => {},
+    clock: () => 0,
+  });
+  assert.equal(ready, true);
+});
+
+// The two-Metro false-ready case this whole check exists to close: /status
+// answers 200 (a foreign packager already on the port), but the OS's own
+// port->pid mapping says some OTHER pid owns it — never our own.
+test("waitForMetroReady: /status answers 200 from a FOREIGN process on the port -> not ready, keeps polling instead of false-readying", async () => {
+  let t = 0;
+  const ready = await waitForMetroReady({
+    port: 8081,
+    pid: 4242,
+    logPath: "/fake/app.log",
+    timeoutMs: 20,
+    probe: async () => true, // a foreign packager already answers 200
+    checkPortOwner: async () => false, // but it isn't pid 4242
+    readFile: async () => "",
+    sleep: async () => { t += 10; },
+    clock: () => t,
+  });
+  assert.equal(ready, false);
+});
+
+test("waitForMetroReady: a foreign 200 stops false-readying, and our own spawn's later EADDRINUSE still fails fast", async () => {
+  let polls = 0;
+  await assert.rejects(
+    () => waitForMetroReady({
+      port: 8081,
+      pid: 4242,
+      logPath: "/fake/app.log",
+      probe: async () => true, // the foreign process keeps answering 200
+      checkPortOwner: async () => false, // never our pid
+      readFile: async () => {
+        polls += 1;
+        // our own `expo start` only logs EADDRINUSE on its second attempt
+        return polls >= 2 ? "Error: listen EADDRINUSE: address already in use :::8081\n" : "";
+      },
+      sleep: async () => {},
+      clock: () => 0,
+    }),
+    (err) => { assert.equal(err.code, EXIT_RECOVERABLE); return true; }
+  );
+});
+
+test("waitForMetroReady: checkPortOwner throwing is treated as not-owned, not a crash — same fail-closed direction as probe", async () => {
+  let t = 0;
+  const ready = await waitForMetroReady({
+    port: 8081,
+    pid: 4242,
+    logPath: "/fake/app.log",
+    timeoutMs: 5,
+    probe: async () => true,
+    checkPortOwner: async () => { throw new Error("lsof not found"); },
+    readFile: async () => "",
+    sleep: async () => { t += 5; },
+    clock: () => t,
+  });
+  assert.equal(ready, false);
+});
+
 // ---- full start/stop/status flows, deps fully mocked -------------------
 
 async function withTempDirs(fn) {
@@ -345,6 +438,23 @@ test("start (reuse path): dev client already installed -> no build, Metro starts
       log: join(evidenceDir, "app.log"),
       identity: FAKE_METRO_IDENTITY,
     });
+  });
+});
+
+// #139: `start` must bind the readiness check to the Metro pid IT spawned —
+// otherwise `waitForMetroReady`'s /status probe can't tell a foreign
+// packager already on the port apart from our own (see waitForMetroReady's
+// own pid-bound tests above).
+test("start: passes the spawned Metro pid to waitForMetroReady, so a foreign packager on the port can't false-ready this session", async () => {
+  await withTempDirs(async ({ workspace, stateDir, evidenceDir }) => {
+    let seenPid = null;
+    const deps = {
+      ...baseDeps({ stateDir, appsInstalled: ["com.example.app"] }),
+      waitForMetroReady: async ({ pid }) => { seenPid = pid; return true; },
+    };
+    const handlers = createHandlers(deps);
+    await handlers.start({ workspace, target: "iPhone 15", evidence_dir: evidenceDir });
+    assert.equal(seenPid, 4242, "the pid spawnBackground actually returned, not a guess");
   });
 });
 

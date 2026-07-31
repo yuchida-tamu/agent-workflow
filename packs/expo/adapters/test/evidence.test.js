@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, rm, readFile, readdir, open, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendManifest, readManifest, reserveEntry, MANIFEST_FILE } from "../lib/evidence.js";
+import { appendManifest, readManifest, reserveEntry, finalizeEntry, MANIFEST_FILE } from "../lib/evidence.js";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(join(tmpdir(), "agentflow-expo-evidence-test-"));
@@ -99,7 +99,7 @@ test("appendManifest: the manifest is never observed as a torn/partial file mid-
 test("reserveEntry: mints sequential, zero-padded filenames and records the row in one call", async () => {
   await withTempDir(async (dir) => {
     const first = await reserveEntry(dir, { type: "screenshot", ext: ".png", label: "boot" });
-    assert.deepEqual(first, { type: "screenshot", path: join(dir, "0001.png"), label: "boot" });
+    assert.deepEqual(first, { type: "screenshot", path: join(dir, "0001.png"), label: "boot", status: "reserved" });
     const second = await reserveEntry(dir, { type: "screenshot", ext: ".png", label: "after tap" });
     assert.equal(second.path, join(dir, "0002.png"));
 
@@ -149,5 +149,112 @@ test("reserveEntry: concurrent reservations never mint the same index — the ra
     assert.equal(paths.size, N, "every reservation must have minted a distinct filename");
     const manifest = await readManifest(dir);
     assert.equal(manifest.length, N, "every reservation's row must be durably recorded, none lost to a race");
+  });
+});
+
+// ---- finalizeEntry: honestly closing the "reserved" window (#139, a ------
+// residual from #141's re-review) --------------------------------------
+
+test("finalizeEntry: transitions a reserved row to written", async () => {
+  await withTempDir(async (dir) => {
+    const entry = await reserveEntry(dir, { type: "screenshot", ext: ".png" });
+    assert.equal(entry.status, "reserved");
+    const updated = await finalizeEntry(dir, entry.path, "written");
+    assert.equal(updated.status, "written");
+    const manifest = await readManifest(dir);
+    assert.equal(manifest[0].status, "written");
+  });
+});
+
+test("finalizeEntry: transitions a reserved row to failed — a PNG-write failure leaves an honest row instead of a silent ghost reference", async () => {
+  await withTempDir(async (dir) => {
+    const entry = await reserveEntry(dir, { type: "screenshot", ext: ".png" });
+    await finalizeEntry(dir, entry.path, "failed");
+    const manifest = await readManifest(dir);
+    assert.equal(manifest[0].status, "failed");
+    assert.equal(manifest[0].path, entry.path, "the row still names the file that was never actually written");
+  });
+});
+
+test("finalizeEntry: rejects any status other than written/failed", async () => {
+  await withTempDir(async (dir) => {
+    const entry = await reserveEntry(dir, { type: "screenshot", ext: ".png" });
+    await assert.rejects(() => finalizeEntry(dir, entry.path, "reserved"), TypeError);
+    await assert.rejects(() => finalizeEntry(dir, entry.path, "bogus"), TypeError);
+  });
+});
+
+test("finalizeEntry: a path with no matching row is a no-op, not a throw — finalize is best-effort bookkeeping on a decision already made elsewhere", async () => {
+  await withTempDir(async (dir) => {
+    const result = await finalizeEntry(dir, join(dir, "9999.png"), "written");
+    assert.equal(result, null);
+    assert.deepEqual(await readManifest(dir), []);
+  });
+});
+
+test("finalizeEntry: appendManifest rows never carry a status field at all — only reserveEntry's two-step rows need one", async () => {
+  await withTempDir(async (dir) => {
+    const row = await appendManifest(dir, { type: "log", path: "app.log" });
+    assert.ok(!("status" in row));
+    const manifest = await readManifest(dir);
+    assert.ok(!("status" in manifest[0]));
+  });
+});
+
+// ---- manifest lock age-out: a crashed holder must not wedge every later --
+// writer forever (#139, residual from #138's review) ------------------
+
+async function writeLockFile(dir, ageMs) {
+  const lockPath = join(dir, `${MANIFEST_FILE}.lock`);
+  const handle = await open(lockPath, "w");
+  await handle.close();
+  const past = new Date(Date.now() - ageMs);
+  await utimes(lockPath, past, past);
+  return lockPath;
+}
+
+test("appendManifest: a lock file older than staleMs is taken over (with a warning), not waited out forever", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = await writeLockFile(dir, 500); // already "ancient" relative to a tiny staleMs below
+    const warnings = { chunks: [], write(s) { this.chunks.push(s); } };
+    const row = await appendManifest(
+      dir,
+      { type: "log", path: "app.log" },
+      { staleMs: 50, retries: 50, delayMs: 5, stderr: warnings }
+    );
+    assert.deepEqual(row, { type: "log", path: "app.log", label: "log" });
+    const manifest = await readManifest(dir);
+    assert.deepEqual(manifest, [row]);
+    assert.ok(
+      warnings.chunks.some((c) => c.includes(lockPath) && /taking it over/.test(c)),
+      "a stale-lock takeover must warn, naming the lock path"
+    );
+  });
+});
+
+test("reserveEntry: a lock file older than staleMs is taken over the same way", async () => {
+  await withTempDir(async (dir) => {
+    await writeLockFile(dir, 500);
+    const entry = await reserveEntry(
+      dir,
+      { type: "screenshot", ext: ".png" },
+      { staleMs: 50, retries: 50, delayMs: 5, stderr: { write: () => {} } }
+    );
+    assert.equal(entry.path, join(dir, "0001.png"));
+  });
+});
+
+test("appendManifest: a FRESH lock (younger than staleMs) is never taken over — only a provably abandoned lock is, so a genuinely live holder is never disturbed mid-write", async () => {
+  await withTempDir(async (dir) => {
+    await writeLockFile(dir, 5); // fresh — well under staleMs
+    await assert.rejects(
+      () =>
+        appendManifest(
+          dir,
+          { type: "log", path: "app.log" },
+          { staleMs: 10_000, retries: 5, delayMs: 5, stderr: { write: () => {} } }
+        ),
+      /could not acquire manifest lock/
+    );
   });
 });

@@ -4,7 +4,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMain, EXIT_OK, EXIT_RECOVERABLE, EXIT_FATAL } from "../lib/contract.js";
-import { appendManifest, readManifest, reserveEntry, MANIFEST_FILE } from "../lib/evidence.js";
+import { appendManifest, readManifest, reserveEntry, finalizeEntry, MANIFEST_FILE } from "../lib/evidence.js";
 import {
   unwrap,
   normalizeElements,
@@ -116,7 +116,8 @@ function baseDeps(overrides = {}) {
     // when a request actually carries evidence_dir, so most tests never
     // exercise it. Tests that care about numbering/manifest content pass
     // the real `reserveEntry` against a tmp dir instead (see withTempDir).
-    reserveEntry: async (dir, { type, ext, label }) => ({ type, path: join(dir, `mock${ext}`), label }),
+    reserveEntry: async (dir, { type, ext, label }) => ({ type, path: join(dir, `mock${ext}`), label, status: "reserved" }),
+    finalizeEntry: async () => null,
     stderr: { write: () => {} },
     ...overrides,
   };
@@ -283,7 +284,7 @@ test("snapshot: builds `snapshot -i --session --platform --device --json`, maps 
       snapshot: () => jsonOk(CANNED_SNAPSHOT.data),
       screenshot: () => jsonOk({ path: "ignored" }),
     });
-    const handlers = createHandlers(baseDeps({ runner, reserveEntry }));
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry, finalizeEntry }));
     const response = await handlers.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir });
 
     const snapshotCall = runner.calls.find((c) => c.args[0] === "snapshot");
@@ -300,7 +301,11 @@ test("snapshot: builds `snapshot -i --session --platform --device --json`, maps 
     assert.equal(response.screenshot, join(evidenceDir, "0001.png"));
 
     const manifest = JSON.parse(await readFile(join(evidenceDir, MANIFEST_FILE), "utf8"));
-    assert.deepEqual(manifest, [{ type: "screenshot", path: join(evidenceDir, "0001.png"), label: "snapshot" }]);
+    // status: "written" — reserveEntry's row is finalized once the capture
+    // below it actually succeeds (#139).
+    assert.deepEqual(manifest, [
+      { type: "screenshot", path: join(evidenceDir, "0001.png"), label: "snapshot", status: "written" },
+    ]);
   });
 });
 
@@ -319,7 +324,7 @@ test("snapshot: second call in the same bundle numbers the screenshot 0002.png",
   await withTempDir(async (evidenceDir) => {
     await appendManifest(evidenceDir, { type: "screenshot", path: "x", label: "y" }); // seed one prior entry
     const runner = fakeRunner({ snapshot: () => jsonOk(CANNED_SNAPSHOT.data) });
-    const handlers = createHandlers(baseDeps({ runner, reserveEntry }));
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry, finalizeEntry }));
     const response = await handlers.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir });
     assert.equal(response.screenshot, join(evidenceDir, "0002.png"));
   });
@@ -328,8 +333,8 @@ test("snapshot: second call in the same bundle numbers the screenshot 0002.png",
 test("snapshot: two concurrent calls sharing one evidence_dir never mint the same screenshot filename (the race reserveEntry fixes)", async () => {
   await withTempDir(async (evidenceDir) => {
     const runner = fakeRunner({ snapshot: () => jsonOk(CANNED_SNAPSHOT.data) });
-    const handlersA = createHandlers(baseDeps({ runner, reserveEntry }));
-    const handlersB = createHandlers(baseDeps({ runner, reserveEntry }));
+    const handlersA = createHandlers(baseDeps({ runner, reserveEntry, finalizeEntry }));
+    const handlersB = createHandlers(baseDeps({ runner, reserveEntry, finalizeEntry }));
     const [a, b] = await Promise.all([
       handlersA.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir }),
       handlersB.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir }),
@@ -338,6 +343,29 @@ test("snapshot: two concurrent calls sharing one evidence_dir never mint the sam
     const manifest = await readManifest(evidenceDir);
     assert.equal(manifest.length, 2, "both entries must land in the manifest, none lost to a race");
     assert.deepEqual(new Set(manifest.map((row) => row.path)), new Set([a.screenshot, b.screenshot]));
+  });
+});
+
+// #139 (residual from #141's re-review): a reservation lands its manifest
+// row BEFORE the actual PNG capture runs (reserveEntry's own doc comment) —
+// if the capture then fails, the row must not stay a permanent dangling
+// "reserved" reference to a file that was never written. It's finalized
+// "failed" instead, an honest record, while the original capture error
+// still propagates unchanged (never masked as a passing snapshot).
+test("snapshot: a screenshot capture failure after reservation finalizes the row as 'failed', not a dangling 'reserved' ghost, and the error still propagates", async () => {
+  await withTempDir(async (evidenceDir) => {
+    const runner = fakeRunner({
+      snapshot: () => jsonOk(CANNED_SNAPSHOT.data),
+      screenshot: () => jsonFail("SESSION_NOT_FOUND", "session gone mid-capture"),
+    });
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry, finalizeEntry }));
+    await assert.rejects(
+      () => handlers.snapshot({ session_id: "sess-abc123", evidence_dir: evidenceDir }),
+      (err) => { assert.equal(err.code, EXIT_RECOVERABLE); return true; }
+    );
+    const manifest = await readManifest(evidenceDir);
+    assert.equal(manifest.length, 1, "the reservation itself still landed a row");
+    assert.equal(manifest[0].status, "failed", "never left dangling at 'reserved' once the capture's outcome is known");
   });
 });
 
@@ -472,7 +500,7 @@ test("act: unsupported action kind -> fatal (20)", async () => {
 test("act: always captures a post-action screenshot and appends it to the manifest", async () => {
   await withTempDir(async (evidenceDir) => {
     const runner = fakeRunner({ press: () => jsonOk({}), screenshot: () => jsonOk({}) });
-    const handlers = createHandlers(baseDeps({ runner, reserveEntry }));
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry, finalizeEntry }));
     const response = await handlers.act({
       session_id: "sess-abc123",
       action: { kind: "tap", ref: "e12" },
@@ -480,7 +508,9 @@ test("act: always captures a post-action screenshot and appends it to the manife
     });
     assert.equal(response.screenshot, join(evidenceDir, "0001.png"));
     const manifest = await readManifest(evidenceDir);
-    assert.deepEqual(manifest, [{ type: "screenshot", path: join(evidenceDir, "0001.png"), label: "act:tap" }]);
+    assert.deepEqual(manifest, [
+      { type: "screenshot", path: join(evidenceDir, "0001.png"), label: "act:tap", status: "written" },
+    ]);
   });
 });
 
@@ -489,7 +519,7 @@ test("act: always captures a post-action screenshot and appends it to the manife
 test("act: a failing action is still recoverable (10), but the failure frame is still captured and appended before rethrowing", async () => {
   await withTempDir(async (evidenceDir) => {
     const runner = fakeRunner({ press: () => jsonFail("COMMAND_FAILED", "no visible effect"), screenshot: () => jsonOk({}) });
-    const handlers = createHandlers(baseDeps({ runner, reserveEntry }));
+    const handlers = createHandlers(baseDeps({ runner, reserveEntry, finalizeEntry }));
     await assert.rejects(
       () => handlers.act({ session_id: "sess-abc123", action: { kind: "tap", ref: "e1" }, evidence_dir: evidenceDir }),
       (err) => { assert.equal(err.code, EXIT_RECOVERABLE); return true; }

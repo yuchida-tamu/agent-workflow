@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMain, EXIT_OK, EXIT_RECOVERABLE, EXIT_FATAL } from "../lib/contract.js";
 import { saveSession, loadSession } from "../lib/session.js";
-import { appendManifest, readManifest } from "../lib/evidence.js";
+import { reserveEntry, finalizeEntry, readManifest } from "../lib/evidence.js";
 import { AgentDeviceError } from "../lib/agent-device.js";
 import {
   createHandlers,
@@ -246,8 +246,8 @@ function baseDeps({ stateDir, runner, readFile } = {}) {
     runner: runner ?? makeRunner(async () => okResult()),
     isAlive: async () => true,
     loadSession: (id) => loadSession(id, { stateDir }),
-    appendManifest,
-    readManifest,
+    reserveEntry,
+    finalizeEntry,
     readFile: readFile ?? (async () => ""),
     sleep,
     clock,
@@ -922,7 +922,7 @@ test("execute: assertion default timeout is used when timeout_ms is omitted", as
 
 // ---- screenshot capture is best-effort ------------------------------------
 
-test("execute: a screenshot capture failure does not mask a passing verdict, just leaves evidence empty", async () => {
+test("execute: a screenshot capture failure does not mask a passing verdict, just leaves evidence empty — and finalizes the reserved row as 'failed', not a dangling ghost", async () => {
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async (_cmd, args) =>
@@ -941,20 +941,30 @@ test("execute: a screenshot capture failure does not mask a passing verdict, jus
 
     assert.equal(response.status, "passed");
     assert.deepEqual(response.evidence, []);
+    // #139: reserveEntry's row lands before the capture it names runs — a
+    // capture failure after that must finalize the row "failed", an honest
+    // record, rather than leaving it stuck at "reserved" forever.
+    const manifest = await readManifest(evidenceDir);
+    assert.equal(manifest.length, 1, "the reservation itself still landed a row");
+    assert.equal(manifest[0].status, "failed");
   });
 });
 
-// Finding #3: appendManifest shares the same try/catch as the screenshot
-// invoke — a manifest-write failure (read-only evidence_dir, disk full, ...)
-// must never throw out of captureScreenshot and mask the step's actual
-// verdict. Exercised for both a passing and a failing step so the fix isn't
-// accidentally scoped to only one code path.
-test("execute: a manifest-write failure (e.g. read-only evidence_dir) does not mask a passing verdict", async () => {
+// Finding #3 (execute-step.js, pre-#139): the screenshot invoke AND its
+// manifest bookkeeping shared one try/catch — a manifest-write failure
+// (read-only evidence_dir, disk full, ...) must never throw out of
+// captureScreenshot and mask the step's actual verdict. #139 moved the
+// bookkeeping to reserveEntry/finalizeEntry (shared with verify.js); the
+// failure now happens at the RESERVATION step instead of an append after
+// capture, so these override `reserveEntry`, not `appendManifest`. Exercised
+// for both a passing and a failing step so the fix isn't accidentally
+// scoped to only one code path.
+test("execute: a manifest reservation failure (e.g. read-only evidence_dir) does not mask a passing verdict", async () => {
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async () => okResult());
     const deps = baseDeps({ stateDir, runner });
-    deps.appendManifest = async () => { throw new Error("EACCES: permission denied, open 'manifest.json'"); };
+    deps.reserveEntry = async () => { throw new Error("EACCES: permission denied, open 'manifest.json'"); };
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({
@@ -970,12 +980,12 @@ test("execute: a manifest-write failure (e.g. read-only evidence_dir) does not m
   });
 });
 
-test("execute: a manifest-write failure does not mask a failing verdict either", async () => {
+test("execute: a manifest reservation failure does not mask a failing verdict either", async () => {
   await withDirs(async ({ stateDir, evidenceDir }) => {
     await saveFixture(stateDir);
     const runner = makeRunner(async (_cmd, args) => (args[0] === "press" ? failResult("Selector did not resolve") : okResult()));
     const deps = baseDeps({ stateDir, runner });
-    deps.appendManifest = async () => { throw new Error("EACCES: permission denied, open 'manifest.json'"); };
+    deps.reserveEntry = async () => { throw new Error("EACCES: permission denied, open 'manifest.json'"); };
     const handlers = createHandlers(deps);
 
     const response = await handlers.execute({

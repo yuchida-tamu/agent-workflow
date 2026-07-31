@@ -11,6 +11,8 @@ import {
   captureIdentity,
   isAlive,
   kill,
+  portOwners,
+  isPortOwnedBy,
 } from "../lib/proc.js";
 
 async function withTempDir(fn) {
@@ -367,4 +369,72 @@ test("captureIdentity/isAlive against a real live process (self), using the real
   assert.ok(identity, "ps should be able to describe this live process");
   assert.equal(await isAlive(process.pid, identity), true);
   assert.equal(await isAlive(process.pid, "definitely not my own command line"), false);
+});
+
+// ---- port ownership: Metro's /status carries no identity of its own -----
+// (#139: the deterministic replacement — ask the OS's own port->pid mapping
+// via `lsof`, rather than trusting whichever process answers /status first.)
+
+function fakeLsofRunner(responses) {
+  return {
+    exec: async (cmd, args) => {
+      assert.equal(cmd, "lsof");
+      const port = args[0];
+      const found = typeof responses === "function" ? responses(port, args) : responses[port];
+      return found ?? { code: 1, stdout: "", stderr: "", error: null };
+    },
+  };
+}
+
+test("portOwners: parses lsof's bare pid-per-line -t output", async () => {
+  const runner = fakeLsofRunner({ "-iTCP:8081": { code: 0, stdout: "4242\n", stderr: "", error: null } });
+  assert.deepEqual(await portOwners(8081, { runner }), [4242]);
+});
+
+test("portOwners: builds the exact `-iTCP:<port> -sTCP:LISTEN -t` argv", async () => {
+  let seenArgs = null;
+  const runner = { exec: async (cmd, args) => { seenArgs = args; return { code: 1, stdout: "", stderr: "", error: null }; } };
+  await portOwners(8081, { runner });
+  assert.deepEqual(seenArgs, ["-iTCP:8081", "-sTCP:LISTEN", "-t"]);
+});
+
+test("portOwners: multiple listeners on the port all come back (rare, but lsof -t can list more than one line)", async () => {
+  const runner = fakeLsofRunner({ "-iTCP:8081": { code: 0, stdout: "4242\n5353\n", stderr: "", error: null } });
+  assert.deepEqual(await portOwners(8081, { runner }), [4242, 5353]);
+});
+
+test("portOwners: nothing bound yet (lsof exits non-zero, nothing found) resolves an empty array, not a throw", async () => {
+  const runner = fakeLsofRunner({});
+  assert.deepEqual(await portOwners(8081, { runner }), []);
+});
+
+test("portOwners: lsof missing entirely (spawn-level error) also resolves an empty array", async () => {
+  const runner = { exec: async () => ({ code: 1, stdout: "", stderr: "", error: new Error("ENOENT") }) };
+  assert.deepEqual(await portOwners(8081, { runner }), []);
+});
+
+test("isPortOwnedBy: true only when the given pid is among the port's actual listeners", async () => {
+  const runner = fakeLsofRunner({ "-iTCP:8081": { code: 0, stdout: "4242\n", stderr: "", error: null } });
+  assert.equal(await isPortOwnedBy(8081, 4242, { runner }), true);
+});
+
+// The whole point: a foreign packager already bound to the port (a stale
+// session, a developer's own terminal) must never read as "ours" just
+// because SOMETHING answers on the port.
+test("isPortOwnedBy: false when a DIFFERENT pid owns the port — the two-Metro false-ready case", async () => {
+  const runner = fakeLsofRunner({ "-iTCP:8081": { code: 0, stdout: "9999\n", stderr: "", error: null } });
+  assert.equal(await isPortOwnedBy(8081, 4242, { runner }), false);
+});
+
+test("isPortOwnedBy: false for a falsy pid, without even shelling out to lsof", async () => {
+  let called = false;
+  const runner = { exec: async () => { called = true; return { code: 0, stdout: "4242\n", stderr: "", error: null }; } };
+  assert.equal(await isPortOwnedBy(8081, undefined, { runner }), false);
+  assert.equal(await isPortOwnedBy(8081, 0, { runner }), false);
+  assert.equal(called, false);
+});
+
+test("isPortOwnedBy: false when nothing is bound to the port yet (not ready, not a foreign owner either)", async () => {
+  const runner = fakeLsofRunner({});
+  assert.equal(await isPortOwnedBy(8081, 4242, { runner }), false);
 });

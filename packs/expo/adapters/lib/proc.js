@@ -203,3 +203,41 @@ export async function kill(pid, identity, { signal = "SIGTERM", group = false, r
     return false;
   }
 }
+
+// ---- port ownership: is a listening port actually OUR spawned process? ----
+//
+// Metro's own `/status` endpoint (run.js's `waitForMetroReady`) is a bare
+// `200`/text response — confirmed against a live `expo start`: no header,
+// token, or body field distinguishes which invocation answered it. That's
+// fine when only one Metro could possibly be bound to the port, but on a
+// shared machine (see skills/expo-dev.md's "port 8081 already held" note) a
+// *different*, already-running packager can already be listening on the
+// exact port this session just asked for — our own `expo start` hasn't
+// bound yet, is still polling, and picks up 200s from a process that isn't
+// ours at all. There is no probe-the-endpoint-harder fix for this: the
+// endpoint genuinely carries no identity to check. The only deterministic
+// signal is the OS's own port -> pid mapping, so that's what this checks
+// instead — `lsof`'s bare `-t` (pid-only) output for whatever process the
+// kernel has actually bound to the port, compared against the pid we
+// ourselves spawned.
+export async function portOwners(port, { runner = defaultRunner } = {}) {
+  const result = await runner.exec("lsof", [`-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {});
+  if (result.error || result.code !== 0) return [];
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(Number)
+    .filter(Number.isFinite);
+}
+
+// True only when `pid` itself is among the process(es) the OS has bound to
+// `port`. A missing pid, an unparseable/unavailable `lsof`, or a not-yet-
+// bound port all resolve `false` — the same "not confirmed yet, keep
+// waiting" direction `waitForMetroReady` already treats every other
+// not-ready signal as, never a false positive.
+export async function isPortOwnedBy(port, pid, { runner = defaultRunner } = {}) {
+  if (!pid) return false;
+  const owners = await portOwners(port, { runner });
+  return owners.includes(pid);
+}

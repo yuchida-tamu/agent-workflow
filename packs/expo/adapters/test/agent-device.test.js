@@ -198,6 +198,71 @@ test("closeSession: adds --shutdown only when requested", async () => {
   assert.ok(runner.calls[1].args.includes("--shutdown"));
 });
 
+// ---- openSession/closeSession go through invoke()'s default unwrap ------
+// (#139, pinning #165: both used to return `invoke()`'s value raw, which
+// was harmless only because every caller discarded the body or reacted
+// solely to the throw — see lib/agent-device.js's file header, "blast
+// radius considered". #165 made `invoke()` unwrap the {success,data}
+// envelope by default at the one chokepoint every caller (including these
+// two) already goes through, which structurally closes the #134-class
+// "return the raw envelope, let a caller forget to unwrap it" defect for
+// openSession/closeSession too — even though nothing here reads their
+// return value today. These pin that it actually holds, not just that it
+// happens to compile, so a future caller that DOES start reading the body
+// gets the unwrapped shape for free instead of reintroducing #134's bug.)
+
+test("openSession: returns invoke()'s unwrapped payload, not the raw {success,data} envelope", async () => {
+  const runner = fakeRunner(() => ({
+    code: 0,
+    stdout: JSON.stringify({ success: true, data: { session: "agentflow-run-sess-1", pid: 4242 } }),
+    stderr: "",
+  }));
+  const result = await openSession({ app: "com.example.app", session: "agentflow-run-sess-1", runner });
+  assert.deepEqual(result, { session: "agentflow-run-sess-1", pid: 4242 });
+});
+
+test("openSession: a success:false body at exit 0 throws AgentDeviceError — a daemon-level open failure is never silently accepted", async () => {
+  const runner = fakeRunner(() => ({
+    code: 0,
+    stdout: JSON.stringify({ success: false, error: { code: "DEVICE_NOT_FOUND", message: "no booted device" } }),
+    stderr: "",
+  }));
+  await assert.rejects(
+    () => openSession({ app: "com.example.app", session: "s1", runner }),
+    (err) => {
+      assert.ok(err instanceof AgentDeviceError);
+      assert.match(err.message, /DEVICE_NOT_FOUND/);
+      return true;
+    }
+  );
+});
+
+test("closeSession: returns invoke()'s unwrapped payload, not the raw {success,data} envelope", async () => {
+  const runner = fakeRunner(() => ({
+    code: 0,
+    stdout: JSON.stringify({ success: true, data: { closed: true } }),
+    stderr: "",
+  }));
+  const result = await closeSession({ session: "s1", runner });
+  assert.deepEqual(result, { closed: true });
+});
+
+test("closeSession: a success:false body at exit 0 throws AgentDeviceError, same as any other invoke() caller", async () => {
+  const runner = fakeRunner(() => ({
+    code: 0,
+    stdout: JSON.stringify({ success: false, error: { code: "SESSION_NOT_FOUND", message: "no such session" } }),
+    stderr: "",
+  }));
+  await assert.rejects(
+    () => closeSession({ session: "s1", runner }),
+    (err) => {
+      assert.ok(err instanceof AgentDeviceError);
+      assert.match(err.message, /SESSION_NOT_FOUND/);
+      return true;
+    }
+  );
+});
+
 test("translateRef: adds the CLI's required @ prefix to a bare snapshot ref", () => {
   assert.equal(translateRef("e12"), "@e12");
 });

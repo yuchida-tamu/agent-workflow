@@ -48,6 +48,13 @@ client bundle is already installed on the target simulator
   (`onOutput` → `diagnostic`), so a live invocation shows real progress
   instead of going silent for a quarter hour.
 
+Note: the build is spawned **detached** (so a timeout can kill
+xcodebuild/CocoaPods grandchildren by process group, not just the direct
+child — see `lib/proc.js`), which means an interactive Ctrl-C during a live
+invocation does **not** propagate into the build; it keeps running until
+`BUILD_TIMEOUT_MS` regardless — the headless/retry timeout path is
+unaffected either way.
+
 Never target a fresh/never-built simulator and expect a fast `start` — pick
 a target that already has the dev client installed when speed matters, or
 plan for the build.
