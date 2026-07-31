@@ -51,6 +51,23 @@ workflow — the adapter has no way to *verify* that itself (it has no access
 to issue state); this is a contract restated from ship.md, enforced by core
 never invoking `submit` before G4, not by anything in this adapter.
 
+The version-handshake op every interface answers (`interfaces/README.md`) is
+mandatory here too, explicitly:
+
+```json
+{ "op": "describe" }
+→ { "interface": "ship", "interface_version": "1" }
+```
+
+`adapters/lib/contract.js#runMain` already answers `describe` automatically
+for any adapter wired through it (see `describeResponse`, called before a
+handler map is even consulted) — `ship`'s own `main()` needs no `describe`
+handler, only `runMain({ interfaceName: "ship", handlers: { build,
+distribute, submit } })`, the same wiring `run.js`'s own `main()` uses. Stated
+explicitly here anyway, since a spec that only says "it's automatic" without
+ever writing down the literal response a future implementer should expect
+is exactly the kind of thing worth pinning down rather than leaving implicit.
+
 ## 2. EAS CLI ground truth (live-probed 2026-07-31)
 
 Machine detail: the global/shim `eas` under the ambient Node version
@@ -89,10 +106,34 @@ Confirmed live facts that shape the design below:
   logged in, no project dir, no git repo, no EAS project id — all
   reproduced live, see below) the CLI still prints plain human text to
   stdout and exits non-zero; there is no JSON error envelope. The adapter
-  must never assume `stdout` is JSON just because `--json` was passed —
-  guard `JSON.parse` and fall back to raw stdout/stderr as the error
-  message, exactly like `run.js#readExpoConfig` already does for `expo
-  config --json`.
+  must never assume `stdout` is JSON just because `--json` was passed.
+
+  Precisely what `run.js#readExpoConfig` does on failure, so the comparison
+  to it is exact rather than a loose gesture: it branches on **exit code
+  first, before ever calling `JSON.parse`** — a non-zero exit (or a spawn
+  `error`) throws `fatal()` with message precedence `error?.message ??
+  result.stderr ?? "exit ${code}"`; **`stdout` is never consulted in that
+  branch**. Only on exit `0` does it attempt `JSON.parse(result.stdout)`,
+  and a parse failure there throws `fatal()` quoting the parser's own error
+  message (not the offending text). Both failure paths return `fatal`
+  (`20`) — `expo config --json` failing is a workspace/config problem, not
+  a transient one.
+
+  Ship's parser must copy the **structure** of that (branch on exit code
+  before ever attempting `JSON.parse` — never try/catch-parse text you
+  already know isn't JSON because the process failed) but **cannot copy the
+  message precedence verbatim**, because eas and expo disagree on which
+  stream carries the useful text: every failure string captured live in
+  this section ("An Expo user account is required...", "Run this command
+  inside a project directory.", "EAS project not configured...") came back
+  on **stdout**, not stderr, even with `--json` set. Applying
+  `readExpoConfig`'s exact order (`error?.message ?? stderr ?? "exit
+  ${code}"`) against `eas` would silently discard that text — `stderr` is
+  typically empty for these failures — and surface a bare `"exit 1"`
+  instead. Ship's parser precedence should instead be `error?.message ??
+  result.stdout ?? result.stderr ?? "exit ${code}"`: stdout ahead of
+  stderr, matching where `eas` actually writes its error text, confirmed
+  live rather than assumed from `expo`'s convention.
 - **`eas submit` has no `--json` flag at all** (confirmed against its full
   `--help` flag list: `-e/-g/-p/--id/--latest/--non-interactive/--path/--url
   /--verbose/--verbose-fastlane/--[no-]wait` — no `--json`). This is a real
@@ -292,14 +333,26 @@ Design for it explicitly rather than pretending `--json` will show up:
 
 ## 4. Credentials & prerequisite contract (fail-closed)
 
-Mirrors `run.js`'s `schemeFromConfig` pattern: **cheap, local, pre-flight
-checks that name the exact gap and refuse before spending any of a 15–40
-minute cloud round-trip**, rather than letting a slow remote call discover
-a config problem 30 minutes in. Every check below throws `fatal(20)` (never
-`recoverable(10)` — none of these are transient, a bounded retry cannot fix
-a missing login or a missing `eas.json`) via `adapters/lib/contract.js`'s
-existing `fatal()`, exactly like `workspace.js#assertWorkspace` already does
-for a missing workspace-local `expo` binary.
+**Cheap, local, pre-flight checks that name the exact gap and refuse before
+spending any of a 15–40 minute cloud round-trip**, rather than letting a
+slow remote call discover a config problem 30 minutes in — the same
+motivation `run.js`'s `schemeFromConfig` has for resolving the dev-client
+deep-link scheme before Metro even spawns. The **exit-code precedent**,
+though, is `workspace.js#assertWorkspace` (not `schemeFromConfig` —
+`schemeFromConfig` itself throws `recoverable(10)`, because a missing
+`scheme` is one specific, narrowly-scoped app.json field a human can add in
+seconds without touching anything else `run` already set up; it does not
+generalize to "every pre-flight gap is recoverable"). `assertWorkspace` is
+the right precedent here: a missing prerequisite (there, no workspace-local
+`expo` binary; here, no `.git`/`eas.json`/project id/login) throws
+`fatal(20)`, because none of these six checks are transient — a bounded
+retry that changes nothing about the workspace or the credential state
+hits the identical gap every time, exactly like `assertWorkspace`'s own
+"no workspace-local expo" case. Every check below throws `fatal(20)` via
+`adapters/lib/contract.js`'s existing `fatal()`; each rung's one-line
+justification for why *this* gap is fatal rather than recoverable is
+stated inline, since "fatal by default" is a deliberate per-rung judgment
+here, not a blanket rule applied without checking each case.
 
 Pre-flight ladder, run in this order (cheapest/most-fundamental first),
 **before** invoking `eas build`/`eas submit` at all:
@@ -308,23 +361,34 @@ Pre-flight ladder, run in this order (cheapest/most-fundamental first),
    is not prompt-safe (§2, ladder item 2) — the adapter must not rely on
    `eas` to fail this cleanly. `fatal(20)`: `"workspace <path> is not a git
    repository — EAS requires one (eas build); run 'git init'"`.
+   *Fatal, not recoverable:* a missing `.git` is a static fact about the
+   checkout; retrying the identical request without a human running
+   `git init` in between reproduces the exact same gap every time.
 2. **Workspace has `eas.json`.** Do not let EAS auto-generate one on the
    fly (§2, ladder item 3) — an unattended adapter silently accepting
    whatever default profiles EAS writes is exactly the kind of surprise
    this contract exists to prevent. `fatal(20)`: `"no eas.json in <path> —
    run 'eas build:configure' (or hand-author one) before shipping; see
    https://docs.expo.dev/build-reference/eas-json/"`.
+   *Fatal, not recoverable:* same reasoning as (1) — `eas.json`'s absence
+   doesn't change between retries; only a human authoring the file does.
 3. **`eas.json` has a `build.<profile>` entry matching `request.profile`.**
    Read and parse `eas.json` directly (it's just JSON) rather than shelling
    out to `eas config --json` for this one check — no network round-trip
    needed. `fatal(20)`: `"eas.json has no build.<profile> profile — add one
    or pass a profile eas.json actually defines"`.
+   *Fatal, not recoverable:* the named profile is deterministically absent
+   from the file every retry would re-read — nothing about waiting or
+   re-invoking changes what `eas.json` contains.
 4. **The workspace's app config carries an EAS project id**
    (`extra.eas.projectId`, resolved via the same `expo config --json`
    pattern `run.js#readExpoConfig` already uses — reuse that function
    rather than re-deriving Expo's config merge a second time). `fatal(20)`:
    `"workspace app config has no extra.eas.projectId — run 'eas init' to
    link an EAS project"`.
+   *Fatal, not recoverable:* linking a project is a one-time `eas init`
+   action a human/CI step performs, not something elapsed time or a blind
+   retry supplies on its own.
 5. **Logged in, or `EXPO_TOKEN` set.** Run `eas whoami` (§2: <1s, no
    project needed) OR check `process.env.EXPO_TOKEN` is non-empty — either
    satisfies this. `fatal(20)`: `"not authenticated to EAS: not logged in
@@ -333,6 +397,14 @@ Pre-flight ladder, run in this order (cheapest/most-fundamental first),
    This message deliberately echoes the exact real CLI text captured live
    in §2, so a human reading the adapter's own refusal recognizes it as the
    same underlying gap `eas` itself would report.
+   *Fatal, not recoverable — the one rung worth double-checking explicitly,
+   since a login gap could plausibly look transient:* it isn't. "Not
+   authenticated" is a static credential-state fact, not a momentary
+   network condition — a bounded retry with no human/CI action in between
+   observes the identical `Not logged in` every time. Contrast this with a
+   genuine network blip mid-poll against an *already-running* build (§5),
+   which correctly stays `recoverable(10)` because retrying there really
+   can succeed on its own, with nothing else changing.
 6. **`submit` only: platform store credentials are configured.** Unlike
    1–5, this is **not** cheaply pre-flight-checkable — there is no
    `eas credentials list --json` in this CLI version's surface (`eas
@@ -350,6 +422,13 @@ Pre-flight ladder, run in this order (cheapest/most-fundamental first),
    pattern-match table itself as a TODO for whoever implements against
    real ASC credentials, seeded from whatever `eas submit`'s actual
    stderr says on the first real attempt.
+   *Fatal once detected, not recoverable:* like 1–5, a genuinely missing or
+   misconfigured ASC credential doesn't heal on retry — only a human running
+   `eas credentials` does. This is explicitly *not* the same bucket as an
+   EAS-side network hiccup during the `submit` call itself, which is a real,
+   separate failure mode that should be classified `recoverable(10)` and
+   never routed through this pattern-match path at all — the two must not
+   be conflated by whoever writes the pattern-match table.
 
 `--freeze-credentials` (always passed on `build`, §3) is the enforcement
 mechanism for "no silent credential mutation" between pre-flight checks
@@ -396,13 +475,49 @@ version of eas-cli writes down its own build-status vocabulary.
 
 **Resumability**: because the build id and last-observed status are
 persisted to the ship-state file (§7) immediately after the enqueue call —
-before the first poll even runs — a second invocation of this adapter given
-the *same* `ship_id` (or, more simply, given `build_id` directly — see §7's
-`op: poll`/reuse note) does not re-submit a new build. It loads the
-existing record, sees a non-terminal `status`, and resumes polling the same
-`build_id` from wherever it left off. This is what makes a 30-minute EAS
-build survive an adapter-process restart (agent process recycled, host
-rebooted) without either losing the build or accidentally starting two.
+before the first poll even runs — a second invocation can pick the same
+build back up rather than starting a new one. This is what makes a
+30-minute EAS build survive an adapter-process restart (agent process
+recycled, host rebooted) without either losing the build or accidentally
+starting two.
+
+**Resume-trigger shape (decided, not left open):** no fourth op is added to
+`interfaces/ship.md`'s fixed `build`/`distribute`/`submit` vocabulary — that
+would be a core-interface change this spec has no authority to make
+unilaterally (contrast §10, which *does* flag two things that genuinely
+need core's sign-off; this one doesn't need it, because it stays inside
+`build`'s existing shape). Instead, `build`'s own request grows one
+**optional** field:
+
+```json
+{ "op": "build", "workspace": "...", "profile": "preview", "build_id": "<eas build uuid from a prior enqueue>" }
+```
+
+Handler behavior, keyed on whether `request.build_id` is present:
+
+- **Absent** (the normal case, ship.md's documented shape unchanged): run
+  the full pre-flight ladder (§4) and enqueue a new build, exactly as
+  described above.
+- **Present**: skip the enqueue call and the pre-flight ladder's
+  config-shape checks (1–4; login (5) is still worth re-checking, since it's
+  as cheap the second time as the first) and go straight to loading the
+  ship-state record for `ship-<build_id>` (§7) and resuming the poll loop
+  from its last-observed `status`. This is the exact `loadSessionOrThrow`
+  split `run.js` already uses for `stop`/`status`: `loadSession` failing
+  with `ENOENT` means a genuinely unknown id — throw `fatal(20)`: `"unknown
+  build_id: <id>"` (a bounded retry can't invent a build id that was never
+  enqueued, so this is fatal, not recoverable, by the same argument §4
+  applies throughout); any other read failure (corrupt state file) throws
+  `recoverable(10)` naming the state path, since a concurrent writer
+  finishing mid-read is a real possibility `run.js`'s own version of this
+  split already accounts for.
+
+The **response shape is identical either way** — `{"status":"ok",
+"artifact":{...}}` once terminal, or the same `recoverable`/`fatal` throws
+mid-poll (§5 above) — a caller resuming a build cannot tell, from the
+response alone, whether this invocation enqueued it or picked up an
+existing one. That symmetry is deliberate: `build_id` is purely a resume
+hint, not a different mode with its own response contract to learn.
 
 Progress reporting matches the shared contract's existing pattern exactly:
 `diagnostic()` (already in `contract.js`, used today by `run.js` for `expo
@@ -563,15 +678,21 @@ canned `eas` CLI stdout/exit codes, fake `sleep`/`clock` so the poll loop in
   - `finished` → op resolves `{status:"ok", artifact:{kind, url}}`;
     `errored`/`canceled` → throws `recoverable(10)` naming the build's
     detail-page URL
-- **Resumability**: seed `loadSession` with an existing `ship-<id>` record
-  in `status: "in-progress"`; assert the handler polls the *same*
-  `build_id` and never calls the enqueue command a second time.
+- **Resumability (§5's resume-trigger shape)**: seed `loadSession` with an
+  existing `ship-<id>` record in `status: "in-progress"`, then call `build`
+  with `request.build_id` set to that same id; assert the handler polls the
+  *same* `build_id` and never calls the enqueue command a second time. A
+  companion test: `request.build_id` naming an id `loadSession` doesn't
+  have (mocked `ENOENT`) → `fatal(20)` `"unknown build_id: ..."` without
+  ever calling `runner.exec`.
 - **`--json` unreliable-on-failure guard (§2)**: mock `runner.exec`
   returning a non-zero exit with **plain text** stdout (not JSON) even
-  though `--json` was in the invoked args; assert the handler doesn't
-  throw a `JSON.parse` error itself — it must fall back to the raw
-  stdout/stderr as the error message, same as `run.js#readExpoConfig`'s
-  existing non-JSON guard.
+  though `--json` was in the invoked args; assert the handler doesn't throw
+  a `JSON.parse` error itself, and that the resulting error message is
+  built from `stdout` (not a bare `"exit ${code}"`) — pinning down the
+  stdout-before-stderr precedence §2 specifies, which is the one place
+  ship's parser deliberately diverges from `run.js#readExpoConfig`'s own
+  order.
 - **`submit`'s missing-`--json` regex fallback (§3)**: mock `runner.exec`
   returning exit 0 with human stdout containing a submissions URL → asserts
   `submission_id` extracted; mock exit 0 with stdout that has **no**
@@ -606,10 +727,9 @@ credentialed Expo/Apple/Google account:
      matching what `eas build:view <id>` itself reports if polled by hand
      in a second terminal.
    - kill the adapter process mid-poll (simulating a crash), re-invoke
-     `build` (or a dedicated resume path — see §10) with the same
-     `build_id`/ship-state record present: confirm it resumes polling
-     rather than starting a second EAS build (check `eas build:list` for
-     exactly one build, not two).
+     `build` with `build_id` set to the persisted id (§5's resume-trigger
+     shape): confirm it resumes polling rather than starting a second EAS
+     build (check `eas build:list` for exactly one build, not two).
    - on completion, the op's stdout `artifact.url` downloads a real
      `.ipa`/`.apk` — confirm the file actually opens/installs, not just
      that a URL string came back.
