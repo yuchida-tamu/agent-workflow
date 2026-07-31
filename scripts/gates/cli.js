@@ -227,7 +227,7 @@ export function main(argv, { sh = defaultSh, log = console.log, err = console.er
     }
     if (flags.reject) {
       const { gate } = reject({ sh, repo: flags.repo, issue: flags.reject, reason: flags.reason, releaseKind });
-      log(`rejected #${flags.reject} (was waiting at ${gate}).`);
+      log(`posted /reject on #${flags.reject} (was waiting at ${gate}).`);
       return 0;
     }
 

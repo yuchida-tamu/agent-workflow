@@ -370,7 +370,7 @@ test("main: --reject argv path with a reason posts and reports the gate", () => 
   const logs = [];
   const code = main(["--reject", "2", "--reason", "scope too big"], { sh, log: (m) => logs.push(m) });
   assert.equal(code, 0);
-  assert.match(logs.join("\n"), /rejected #2 \(was waiting at G2\)/);
+  assert.match(logs.join("\n"), /posted \/reject on #2 \(was waiting at G2\)/);
   assert.deepEqual(sh.posted, [{ number: 2, body: "/reject scope too big" }]);
 });
 
