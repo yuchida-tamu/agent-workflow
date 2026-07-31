@@ -6,7 +6,17 @@ import {
   selectArtifact,
   renderItem,
 } from "../scripts/gates/core.js";
-import { USAGE, parseArgs, listInbox, approve, reject, main } from "../scripts/gates/cli.js";
+import {
+  USAGE,
+  parseArgs,
+  listInbox,
+  approve,
+  reject,
+  main,
+  resolveReleaseKindFor,
+  resolveRemoteReleaseKind,
+} from "../scripts/gates/cli.js";
+import { releaseKindOf } from "../scripts/config/load.js";
 
 const issue = (number, labels, over = {}) => ({
   number,
@@ -206,9 +216,18 @@ function ghIssue(number, labels, comments = []) {
 // A stand-in for `execFileSync("gh", args)`: matches on the gh subcommand
 // rather than the full argv, so tests read as "what gh call, what does it
 // answer" instead of brittle argv equality.
+//
+// `fixtures.local` — what `gh repo view` reports as the local checkout's own
+// repo; a fixture that never sets it fails loudly on the first call rather
+// than silently answering something a test didn't ask for.
+// `fixtures.remoteConfig` — the target repo's agentflow.config.json, base64-
+// roundtripped exactly like the real `gh api ... --jq .content` would; `null`
+// simulates the file (or the repo) being unreadable, e.g. a 404.
 function fakeGh(fixtures) {
   const posted = [];
+  const calls = [];
   const sh = (args) => {
+    calls.push(args);
     const [group, verb] = args;
     if (group === "issue" && verb === "list") {
       return JSON.stringify(fixtures.list.map(({ number, title, labels, createdAt }) => ({ number, title, labels, createdAt })));
@@ -224,9 +243,20 @@ function fakeGh(fixtures) {
       posted.push({ number: Number(args[2]), body: args[args.indexOf("--body") + 1] });
       return "";
     }
+    if (group === "repo" && verb === "view") {
+      if (!("local" in fixtures)) throw new Error("fakeGh: unhandled call gh repo view — set fixtures.local");
+      if (fixtures.local === null) throw new Error("simulated: gh repo view failed (not a GitHub checkout)");
+      return `${fixtures.local}\n`;
+    }
+    if (group === "api") {
+      if (!("remoteConfig" in fixtures)) throw new Error("fakeGh: unhandled call gh api — set fixtures.remoteConfig");
+      if (fixtures.remoteConfig === null) throw new Error("simulated: HTTP 404: Not Found (agentflow.config.json)");
+      return Buffer.from(JSON.stringify(fixtures.remoteConfig)).toString("base64") + "\n";
+    }
     throw new Error(`fakeGh: unhandled call ${args.join(" ")}`);
   };
   sh.posted = posted;
+  sh.calls = calls;
   return sh;
 }
 
@@ -268,7 +298,7 @@ test("main: empty inbox says so and touches gh only for the list", () => {
 });
 
 test("main: a populated inbox lists every item and prints how to act on it", () => {
-  const sh = fakeGh({ list: [g1, g2] });
+  const sh = fakeGh({ list: [g1, g2], local: "o/r" }); // --repo names the local checkout: no remote config fetch
   const logs = [];
   const code = main(["--repo", "o/r"], { sh, log: (m) => logs.push(m) });
   assert.equal(code, 0);
@@ -320,7 +350,9 @@ test("main: --approve argv path prints confirmation and posts once", () => {
   const logs = [];
   const code = main(["--approve", "1"], { sh, log: (m) => logs.push(m) });
   assert.equal(code, 0);
-  assert.match(logs.join("\n"), /approved G1 on #1/);
+  // "posted", not "approved" — the CLI knows it posted a comment, not that an
+  // authorized approver's identity was behind it; the workflow decides that.
+  assert.match(logs.join("\n"), /posted \/approve G1 on #1 — the gate workflow validates and applies it\./);
   assert.deepEqual(sh.posted, [{ number: 1, body: "/approve G1" }]);
 });
 
@@ -350,4 +382,86 @@ test("main: --approve on an issue nobody is waiting on exits 10 without posting"
   assert.equal(code, 10);
   assert.match(errs[0], /not waiting at an inbox gate/);
   assert.deepEqual(sh.posted, []);
+});
+
+// --- release_kind must come from the repo the queue is ABOUT, not from cwd --
+//
+// `buildQueue` uses release_kind only to decide whether G4 applies; a `--repo`
+// that names a different project must never inherit cwd's agentflow.config.json
+// for that decision — this is what #173's review flagged (medium): mis-queued
+// G4, hidden or phantom depending on which way the two repos' kinds differ.
+
+test("resolveReleaseKindFor: no --repo never touches gh — cwd's own config applies", () => {
+  const sh = fakeGh({}); // any gh call here is a bug: throws "unhandled call"
+  assert.equal(resolveReleaseKindFor({ sh, repo: undefined }), releaseKindOf());
+  assert.deepEqual(sh.calls, []);
+});
+
+test("resolveReleaseKindFor: --repo naming the local checkout uses the local config, no remote fetch", () => {
+  const sh = fakeGh({ local: "yuchida-tamu/agent-workflow" });
+  const kind = resolveReleaseKindFor({ sh, repo: "yuchida-tamu/agent-workflow" });
+  assert.equal(kind, releaseKindOf());
+  assert.ok(!sh.calls.some((c) => c[0] === "api"), "same repo must never fetch a remote config");
+});
+
+test("resolveReleaseKindFor: repo name matching is case-insensitive", () => {
+  const sh = fakeGh({ local: "Owner/Repo" });
+  resolveReleaseKindFor({ sh, repo: "owner/repo" });
+  assert.ok(!sh.calls.some((c) => c[0] === "api"));
+});
+
+test("resolveRemoteReleaseKind: reads release_kind from the TARGET repo's own config", () => {
+  const sh = fakeGh({ remoteConfig: { release_kind: "none" } });
+  assert.equal(resolveRemoteReleaseKind({ sh, repo: "other/repo" }), "none");
+});
+
+test("resolveReleaseKindFor: a different repo's release_kind wins over the local checkout's, in both directions", () => {
+  // local (this repo) is release_kind: "tag" — assert the remote value is used
+  // regardless of whether it agrees or disagrees with that.
+  const store = fakeGh({ local: "home/repo", remoteConfig: { release_kind: "store" } });
+  assert.equal(resolveReleaseKindFor({ sh: store, repo: "other/repo" }), "store");
+
+  const none = fakeGh({ local: "home/repo", remoteConfig: { release_kind: "none" } });
+  assert.equal(resolveReleaseKindFor({ sh: none, repo: "other/repo" }), "none");
+});
+
+test("resolveReleaseKindFor: an unreadable remote config falls back to the local one, with a printed note", () => {
+  const sh = fakeGh({ local: "home/repo", remoteConfig: null }); // simulated 404
+  const notes = [];
+  const kind = resolveReleaseKindFor({ sh, repo: "other/repo", log: (m) => notes.push(m) });
+  assert.equal(kind, releaseKindOf(), "falls back to the local config, not a hardcoded default");
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /could not read agentflow\.config\.json from other\/repo/);
+  assert.match(notes[0], /falling back to the local checkout/);
+});
+
+test("resolveReleaseKindFor: an undeterminable local repo still tries the target repo's own config first", () => {
+  const sh = fakeGh({ local: null, remoteConfig: { release_kind: "none" } });
+  assert.equal(resolveReleaseKindFor({ sh, repo: "other/repo" }), "none");
+});
+
+test("main: --repo on a different repo queues G4 by THAT repo's release_kind, not the local one", () => {
+  const releasedItem = ghIssue(9, ["state:verified", "priority:p1"], ["## Release\nv2 notes."]);
+  const sh = fakeGh({ list: [releasedItem], local: "home/repo", remoteConfig: { release_kind: "tag" } });
+  const logs = [];
+  const code = main(["--repo", "other/repo"], { sh, log: (m) => logs.push(m) });
+  assert.equal(code, 0);
+  assert.match(logs.join("\n"), /1 item\(s\) waiting/, "G4 must be visible: the remote repo does release");
+});
+
+test("main: --repo on a different repo hides G4 when that repo's release_kind is none, even if local releases", () => {
+  const releasedItem = ghIssue(9, ["state:verified", "priority:p1"], ["## Release\nv2 notes."]);
+  const sh = fakeGh({ list: [releasedItem], local: "home/repo", remoteConfig: { release_kind: "none" } });
+  const logs = [];
+  const code = main(["--repo", "other/repo"], { sh, log: (m) => logs.push(m) });
+  assert.equal(code, 0);
+  assert.match(logs.join("\n"), /nothing waiting at a gate/, "release_kind:none must hide G4 for THIS repo, not borrow local's");
+});
+
+// --- --help / README honesty: "posted" is not "approved" --------------------
+
+test("--help states plainly that a non-approver's posted /approve is refused downstream", () => {
+  assert.match(USAGE, /approvers list/);
+  assert.match(USAGE, /refuses the comment if not/);
+  assert.match(USAGE.replace(/\s+/g, " "), /not the same as approving/);
 });

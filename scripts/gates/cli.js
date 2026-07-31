@@ -17,7 +17,10 @@
 // `agentflow · gate` workflow validates it and performs the transition. This
 // tool posts only; it never edits a state label itself, and it re-reads the
 // issue immediately before posting so it never approves a gate that already
-// moved out from under it.
+// moved out from under it. Posting is not approving: the workflow separately
+// checks that the poster is on the target repo's `approvers` list, and
+// refuses (silently, from this tool's point of view — it only knows it
+// posted) if not. "posted" is the honest claim; "approved" would not be.
 //
 // G3 (merge) is deliberately absent from both the listing and --approve/
 // --reject — see INBOX_GATES in ./core.js. G3 is PR-native (a real review, or
@@ -36,6 +39,7 @@
 import { execFileSync } from "node:child_process";
 import { buildQueue, selectArtifact, renderItem } from "./core.js";
 import { releaseKindOf } from "../config/load.js";
+import { resolveReleaseKind } from "../../init/config-schema.js";
 
 export const USAGE = `usage:
   agentflow-gates [--repo owner/name] [--limit N]
@@ -49,7 +53,10 @@ that cannot show the diff is exactly the mistake this tool refuses to invite.
 
 --approve/--reject post the standard /approve or /reject comment through your
 own \`gh\` account; the gate workflow validates it and performs the transition.
-This tool only posts — it never edits a state label.`;
+This tool only posts — it never edits a state label. Posting is not the same
+as approving: the workflow separately checks that you are on the target
+repo's approvers list and refuses the comment if not — a non-approver's
+--approve still reports "posted", because that is all this tool did.`;
 
 // Anything unrecognised is an error, including bare positional words — a
 // silently-ignored flag is how a caller believes they asked for something
@@ -91,6 +98,53 @@ export function fetchIssueWithComments(sh, repo, number) {
   const issue = { number: raw.number, title: raw.title, labels: (raw.labels ?? []).map((l) => l.name), createdAt: raw.createdAt };
   const comments = (raw.comments ?? []).map((c) => ({ body: c.body, author: c.author?.login ?? c.author ?? null }));
   return { issue, comments };
+}
+
+// The local checkout's own repo, or null if that can't be determined (not a
+// GitHub repo, no `gh` auth, etc.) — used only to decide whether `--repo`
+// points somewhere else, never as a fallback identity for anything else.
+function localRepoSlug(sh) {
+  try {
+    return sh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+const normalizeRepoSlug = (slug) => (slug ?? "").trim().toLowerCase();
+
+// `release_kind` decides whether G4 exists at all (buildQueue). It must come
+// from the repo the queue is actually *about*, not from whatever
+// agentflow.config.json happens to sit in the caller's cwd — those are the
+// same file only when `--repo` is omitted or names the local checkout. Read
+// the target repo's own config over the API so a cross-repo `--repo` never
+// borrows a release_kind that belongs to a different project.
+export function resolveRemoteReleaseKind({ sh, repo }) {
+  const raw = sh(["api", `repos/${repo}/contents/agentflow.config.json`, "--jq", ".content"]);
+  const config = JSON.parse(Buffer.from(raw.trim(), "base64").toString("utf8"));
+  return resolveReleaseKind(config).kind;
+}
+
+// Local cwd's config when `--repo` is absent or names the local checkout;
+// otherwise the *target* repo's own config, with a printed note and a
+// fall-back to the local file only when the remote one can't be read (repo
+// has no agentflow.config.json yet, no `gh` access to it, etc.) — a silent
+// fallback here would be exactly the bug this fixes, just harder to notice.
+export function resolveReleaseKindFor({ sh, repo, log = () => {} }) {
+  if (!repo) return releaseKindOf();
+  const local = localRepoSlug(sh);
+  if (local && normalizeRepoSlug(local) === normalizeRepoSlug(repo)) {
+    return releaseKindOf();
+  }
+  try {
+    return resolveRemoteReleaseKind({ sh, repo });
+  } catch {
+    log(
+      `note: could not read agentflow.config.json from ${repo} — falling back to the local checkout's ` +
+        `release_kind to decide whether G4 applies there. This may mis-queue G4 if the two repos differ.`
+    );
+    return releaseKindOf();
+  }
 }
 
 // --- the pure-ish operations, mockable via `sh` -----------------------------
@@ -163,12 +217,12 @@ export function main(argv, { sh = defaultSh, log = console.log, err = console.er
     return 20;
   }
 
-  const releaseKind = releaseKindOf();
+  const releaseKind = resolveReleaseKindFor({ sh, repo: flags.repo, log });
 
   try {
     if (flags.approve) {
       const { gate } = approve({ sh, repo: flags.repo, issue: flags.approve, releaseKind });
-      log(`approved ${gate} on #${flags.approve}.`);
+      log(`posted /approve ${gate} on #${flags.approve} — the gate workflow validates and applies it.`);
       return 0;
     }
     if (flags.reject) {
