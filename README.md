@@ -81,6 +81,7 @@ comment at the top of its `cli.js`) for full flags.
 | `agentflow-verdict` | read a recorded risk verdict and ask whether it authorises a gate unattended |
 | `agentflow-identity` | act as the agentflow GitHub App: `token` · `exec` · `whoami` · `doctor` |
 | `agentflow-log` | run ledger: `start` · `end` · `audit` (model-tier compliance) |
+| `agentflow-gates` | approval inbox: list what's waiting at G1/G2/G4 with an artifact excerpt; `--approve <issue>` / `--reject <issue> --reason "..."` post the standard comment through your own `gh` identity — the gate workflow then validates it and refuses a non-approver's `/approve`, so "posted" is not the same claim as "approved" (G3 excluded — it's PR-native) |
 | `agentflow-release` | G4: tag + GitHub release, `verified → released` (`--verify` checks the invariant) |
 | `agentflow-e2e` | replay Gherkin scenarios from compiled traces: `run` · `smoke` |
 
