@@ -12,7 +12,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { assembleFacts } from "../facts/core.js";
+import { assembleFacts, rotWarning } from "../facts/core.js";
 import { evaluate, validatePack } from "../policy/engine.js";
 
 const TOOLKIT = process.env.AGENTFLOW_TOOLKIT ?? join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -84,6 +84,11 @@ const packs = packPaths.map((p) => {
 
 const verdict = evaluate(packs, facts);
 
+// Honest rot-warning: the config budget for unmapped diff share, applied to
+// this PR's actual unmapped_fraction. Null whenever there is no domains.yml
+// to have rotted, or no unmapped_warn_fraction configured — see rotWarning.
+const rot = rotWarning(facts.domains, config.unmapped_warn_fraction);
+
 // --- labels: replace risk:*, add obligation labels ---
 const currentLabels = event.pull_request.labels?.map((l) => l.name) ?? [];
 const editArgs = ["pr", "edit", String(prNumber), "--repo", repo, "--add-label", `risk:${verdict.level}`];
@@ -112,7 +117,7 @@ verdict-sha: ${headSha}
 | ${verdict.obligations.require.join(", ") || "—"} | ${verdict.obligations.block.join(", ") || "—"} | ${verdict.obligations.run.join(", ") || "—"} |
 
 ${verdict.matched.length ? `<details><summary>${verdict.matched.length} rule(s) matched</summary>\n\n| pack | rule | obligations |\n|---|---|---|\n${rows}\n\n</details>` : "No rules matched."}
-${verdict.warnings.length ? `\n⚠️ ${verdict.warnings.join(" · ")}` : ""}`;
+${verdict.warnings.length ? `\n⚠️ ${verdict.warnings.join(" · ")}` : ""}${rot ? `\n${rot}` : ""}`;
 
 const existing = JSON.parse(
   sh("gh", ["api", `repos/${repo}/issues/${prNumber}/comments`, "--jq", "[.[] | {id, body}]"])

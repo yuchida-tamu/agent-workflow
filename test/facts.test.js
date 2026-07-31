@@ -12,6 +12,7 @@ import {
   domainFacts,
   driftFacts,
   packageFacts,
+  rotWarning,
 } from "../scripts/facts/core.js";
 
 const DOMAINS = {
@@ -219,4 +220,48 @@ test("assembleFacts threads the configured value through", () => {
     unmappedCriticality: "medium",
   });
   assert.equal(facts.domains.max_criticality, "medium");
+});
+
+// --- rot warning: the diff-scoped counterpart to `adopt --coverage`'s budget --
+
+test("no warning when there is no domains fact to have rotted", () => {
+  // Mirrors domainFacts: a repo with no domains.yml has nothing to warn about.
+  assert.equal(rotWarning(null, 0.2), null);
+  assert.equal(rotWarning(undefined, 0.2), null);
+});
+
+test("no warning when the project never configured a budget", () => {
+  assert.equal(rotWarning({ unmapped_fraction: 0.9 }, undefined), null);
+  assert.equal(rotWarning({ unmapped_fraction: 0.9 }, null), null);
+  // A stringly-typed config value (e.g. unvalidated YAML) is not a number.
+  assert.equal(rotWarning({ unmapped_fraction: 0.9 }, "0.2"), null);
+});
+
+test("renders once the diff's unmapped share exceeds its budget", () => {
+  const msg = rotWarning({ unmapped_fraction: 0.3 }, 0.2);
+  assert.equal(msg, "⚠ 30.0% of this diff is unmapped by domains.yml (budget 20.0%) — the map may be rotting");
+});
+
+test("does not render exactly at the budget", () => {
+  // Same boundary as adopt --coverage's `warn` flag: strictly greater than.
+  assert.equal(rotWarning({ unmapped_fraction: 0.2 }, 0.2), null);
+});
+
+test("does not render below the budget", () => {
+  assert.equal(rotWarning({ unmapped_fraction: 0.1 }, 0.2), null);
+});
+
+test("end to end: assembleFacts' domain fact feeds the warning directly", () => {
+  const facts = assembleFacts({
+    stage: "pr",
+    numstat: [
+      { file: "scripts/release/cli.js", adds: 1, dels: 0 },
+      { file: "scripts/other/cli.js", adds: 1, dels: 0 },
+      { file: "scripts/facts/core.js", adds: 1, dels: 0 },
+    ],
+    domains: MAP,
+    unmappedCriticality: "medium",
+  });
+  assert.equal(facts.domains.unmapped_fraction, 2 / 3);
+  assert.match(rotWarning(facts.domains, 0.2), /the map may be rotting/);
 });
