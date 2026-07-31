@@ -11,6 +11,26 @@ implement.
 Input: a GitHub issue in `state:spec` whose brief carries acceptance criteria
 and impact domains.
 
+## Two modes
+
+You run one of two ways, and step 3 below reads differently depending on
+which:
+
+- **Interactive session** — you have `Bash` and `gh`. You create the child
+  issues and their structural links yourself, as this file has always said.
+- **Headless run** — dispatched unattended by `dispatch-comment.js`, your
+  tools are read-only (`Read`, `Grep`, `Glob`; no `Bash`, no `gh`). You cannot
+  create anything. You **declare** the decomposition in `plan.json`'s
+  `children[]` array (step 4) and return your plan as your final message; the
+  workflow reads it back out and does the creating, the linking, the
+  plan-stage verdict, and — only if all of that succeeds — the
+  `state:spec → state:planned` transition. This is a genuine division of
+  labor, not a fallback: a headless run that tried to narrate `gh` commands it
+  cannot execute would just spend tokens saying so (see #168).
+
+If you're unsure which you're in, check your own tool list: no `Bash` means
+headless.
+
 1. **Map the terrain.** Spawn read-only Explore subagents for unfamiliar
    areas; read the key files yourself. Respect existing conventions — plans
    that fight the codebase produce bad implementations.
@@ -18,9 +38,11 @@ and impact domains.
    this is the declared surface the drift detector checks PRs against), data
    model changes, navigation changes, risks, and what NOT to do.
 3. **Decompose** into child issues, each completable as one PR, dependency-
-   ordered (`gh issue create`, link with "Blocked by #N", label
-   `state:ready` plus priority). Each child carries: its slice of the plan,
-   its acceptance criteria, and its declared file surface.
+   ordered. Each child carries: its slice of the plan, its acceptance
+   criteria, and its declared file surface.
+
+   **Interactive session:** create them yourself (`gh issue create`, link
+   with "Blocked by #N" in the body, label `state:ready` plus priority).
 
    Attach each child as a **native sub-issue** of the parent, so the
    relationship is structural rather than prose:
@@ -39,17 +61,60 @@ and impact domains.
 
    Sub-issues express hierarchy, not order. Dependency ordering stays in the
    plan comment as "Blocked by #N".
-4. **Declare the plan surface** in a `plan.json` comment block
-   (`{"files": [globs]}`) so `agentflow-facts --plan` can consume it.
 
-The risk engine — not you — decides whether G2 review is required: run
-`agentflow-facts --stage plan` piped to `agentflow-policy evaluate` and post
-the verdict. Never argue a high-risk verdict down; that's the human's call.
+   **Headless run:** do none of the above — you have no `gh`. Instead,
+   **declare** each child fully in `plan.json`'s `children[]` array (see step
+   4). The workflow creates each one (`gh issue create` with your title, body
+   and labels), resolves `blockedBy` indices to the real issue numbers as
+   they're minted and appends "Blocked by #N" lines to each body, and attaches
+   every child as a native sub-issue via the same id-not-number call shown
+   above (`scripts/hierarchy/gh.js`'s `issueId()`/`linkSubIssue()`). Re-running
+   `state:spec` will not create a second set: the workflow skips creation
+   outright once the parent has any child at all.
+4. **Declare the plan surface** in a `plan.json` comment block. The schema:
 
-Post it **twice, for two readers**. Summarise it in the plan comment so a human
-sees why the plan does or doesn't need review. Then post the machine-readable
-record as its own comment, in exactly the shape `pr-verdict.js` writes, so one
-parser serves both stages:
+   ```json
+   {
+     "files": ["globs..."],
+     "children": [
+       {
+         "title": "...",
+         "body": "...",
+         "labels": ["state:ready", "priority:p2"],
+         "blockedBy": [0]
+       }
+     ]
+   }
+   ```
+
+   `files` is unchanged — the plan's declared surface, consumed by
+   `agentflow-facts --plan` for drift detection and the plan-stage verdict.
+   `children` is the decomposition from step 3, machine-readable: one entry
+   per child, in dependency order. `blockedBy` names OTHER ENTRIES OF THIS
+   ARRAY **by index**, never by issue number — numbers don't exist until
+   `gh issue create` returns them, indices are stable in what you write right
+   now.
+
+   Populate `children[]` in a **headless run**, where it is how the
+   decomposition reaches the workflow at all. In an **interactive session**
+   you've already created the children directly in step 3, so `children[]` is
+   not required — include it anyway if convenient, but nothing currently reads
+   it there.
+
+The risk engine — not you — decides whether G2 review is required. **In an
+interactive session**, run `agentflow-facts --stage plan` piped to
+`agentflow-policy evaluate` and post the verdict yourself, as described below.
+**In a headless run**, you have no `Bash` to run either CLI — the workflow
+computes the same verdict from your returned `plan.json` and posts it under
+its own marker (`<!-- agentflow-verdict:plan -->`) after you return. Either
+way: never argue a high-risk verdict down; that's the human's call, not yours
+and not the harness's.
+
+Post it **twice, for two readers**, when you post it yourself (interactive
+only — see above). Summarise it in the plan comment so a human sees why the
+plan does or doesn't need review. Then post the machine-readable record as its
+own comment, in exactly the shape `pr-verdict.js` writes, so one parser serves
+both stages:
 
 ```markdown
 <!-- agentflow-verdict -->
