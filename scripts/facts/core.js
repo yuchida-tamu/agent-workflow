@@ -95,6 +95,27 @@ export function domainFacts(domains, files, { unmappedCriticality = null } = {})
   };
 }
 
+// A rot-warning line for a PR verdict comment: the same budget
+// `agentflow-init adopt --coverage` enforces against the whole repo
+// (`unmapped_warn_fraction`), applied here to a single diff's
+// `domains.unmapped_fraction`. `domainFacts` above scores unmapped code by
+// contributing `unmapped_criticality` — this is the honesty check that the map
+// producing that score is not itself decaying. Two guards, same shape as
+// `domainFacts`'s: no `domains` fact means no map to have grown stale, and a
+// missing/non-numeric budget means the project never configured one.
+//
+// Strictly greater than, matching `adopt --coverage`'s `warn` flag exactly —
+// a diff sitting right at its own budget is not yet over it.
+export function rotWarning(domains, unmappedWarnFraction) {
+  if (!domains || typeof unmappedWarnFraction !== "number") return null;
+  if (!(domains.unmapped_fraction > unmappedWarnFraction)) return null;
+  const pct = (fraction) => `${(fraction * 100).toFixed(1)}%`;
+  return (
+    `⚠ ${pct(domains.unmapped_fraction)} of this diff is unmapped by domains.yml ` +
+    `(budget ${pct(unmappedWarnFraction)}) — the map may be rotting`
+  );
+}
+
 // plan.files may be globs. Drift facts only activate at PR time.
 export function driftFacts({ planFiles = null, diffFiles = [], brief = null, domains = null, domainsTouched = [] }) {
   const facts = {};
