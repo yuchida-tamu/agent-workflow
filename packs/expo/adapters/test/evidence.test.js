@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, readdir, open, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { appendManifest, readManifest, reserveEntry, finalizeEntry, MANIFEST_FILE } from "../lib/evidence.js";
 
 async function withTempDir(fn) {
@@ -269,12 +270,24 @@ test("appendManifest: a FRESH lock (younger than staleMs) is never taken over �
 // critical section at once is exactly the lost-update corruption the lock
 // exists to prevent — and with N waiters racing the same dead lock, this
 // isn't a rare edge case, it's the common one. The fix (atomic rename to a
-// unique quarantine name, "winner-decides") is only proven by exercising
-// real concurrency: a single-waiter test can't distinguish "takes over
-// correctly" from "takes over racily but nobody else was there to notice."
-test("appendManifest: MULTI-WAITER takeover — N concurrent waiters against one dead holder's aged lock take over exactly once, with zero double-entry and no lost rows", async () => {
+// unique claim name, self-verified by dev:ino — see evidence.js's own
+// header for the full "twice-revised" history) is only proven by
+// exercising real concurrency: a single-waiter test can't distinguish
+// "takes over correctly" from "takes over racily but nobody else was there
+// to notice."
+//
+// staleMs is deliberately wide (not the 50ms of the single-waiter tests
+// above) and the assertion is `>= 1`, not `=== 1` (review LOW finding on
+// #177's original version of this test): with N=10 real concurrent
+// appenders doing actual fs I/O, a loaded CI runner can stall long enough
+// for even a freshly-won lock to itself age past a razor-thin staleMs,
+// triggering a second, benign takeover round. That would fail a strict
+// `=== 1` on correct code. What must never happen — corruption — is fully
+// covered by the row-count and distinct-path assertions below regardless
+// of how many takeover rounds it actually took.
+test("appendManifest: MULTI-WAITER takeover — N concurrent waiters against one dead holder's aged lock take over with zero double-entry and no lost rows", async () => {
   await withTempDir(async (dir) => {
-    const lockPath = await writeLockFile(dir, 500); // one shared stale lock, pre-seeded once
+    const lockPath = await writeLockFile(dir, 2000); // one shared stale lock, pre-seeded once
     const N = 10;
     const warnings = { chunks: [], write(s) { this.chunks.push(s); } };
 
@@ -283,7 +296,7 @@ test("appendManifest: MULTI-WAITER takeover — N concurrent waiters against one
         appendManifest(
           dir,
           { type: "log", path: `waiter-${i}.log`, label: `waiter ${i}` },
-          { staleMs: 50, retries: 400, delayMs: 5, stderr: warnings }
+          { staleMs: 200, retries: 400, delayMs: 5, stderr: warnings }
         )
       )
     );
@@ -299,16 +312,81 @@ test("appendManifest: MULTI-WAITER takeover — N concurrent waiters against one
     assert.equal(paths.size, N, "no two waiters' rows collapsed into one — distinct paths for every waiter");
     assert.deepEqual(new Set(rows.map((r) => r.path)), paths, "every waiter's own return value matches a real, distinct row");
 
-    // Exactly one waiter should ever have performed the actual takeover —
-    // the rest queue behind that winner's fresh (non-stale) lock and never
-    // themselves attempt a rename.
+    // At least one waiter must have performed the actual takeover of the
+    // originally-dead lock — the corruption-prevention property is "not
+    // one per waiter racing the same dead lock", which a `>= 1` bound on a
+    // race-free run still demonstrates without being sensitive to a
+    // possible second, benign round (see comment above the test).
     const takeovers = warnings.chunks.filter((c) => c.includes(lockPath) && c.includes("taking it over"));
-    assert.equal(takeovers.length, 1, "exactly one waiter wins the stale-lock takeover, not one per waiter racing the same dead lock");
+    assert.ok(takeovers.length >= 1, "at least one waiter must win the stale-lock takeover");
 
-    // No leftover lock file or .stale-* quarantine file survives once every
-    // waiter has settled — the winner's own cleanup, and every eventual
-    // lock holder's own release, account for all of them.
+    // No leftover lock file or .claim-* file survives once every waiter has
+    // settled — the winner's own cleanup, and every eventual lock holder's
+    // own release, account for all of them.
     const files = await readdir(dir);
-    assert.deepEqual(files.sort(), [MANIFEST_FILE], "no manifest.json.lock or .stale-* quarantine file left behind");
+    assert.deepEqual(files.sort(), [MANIFEST_FILE], "no manifest.json.lock or .claim-* file left behind");
+  });
+});
+
+// ---- crash-recovery: an arbiter dying mid-takeover must never wedge -----
+// future takeovers (#179, replacing #177's takeover-arbitration race file,
+// which had exactly this hole — a SIGKILLed arbiter left its own
+// `wx`-exclusive race file behind, and every later waiter's own arbitration
+// attempt then piled up on THAT file's EEXIST forever, even though the
+// original dead lock it was arbitrating had already been dealt with. The
+// permanent wedge this whole feature exists to break, recreated one level
+// up).
+//
+// The inode-checked claim replacing it has no such file: its only artifacts
+// are `lockPath` itself (already renamed away by the time a claim exists at
+// all) and a uniquely-named `claimPath` nothing else will ever try to open
+// again by name. Simulating a claimant that dies right after detaching
+// `lockPath` but before creating the fresh lock or cleaning its claim up —
+// the only crash point `rename`'s atomicity actually allows — leaves
+// exactly that: `lockPath` absent, one orphaned claim file. A later waiter
+// must recover immediately (it doesn't even need staleMs — `lockPath`
+// being gone just means `open(lockPath, "wx")` succeeds on the first try),
+// and the orphan must never be consulted or block anything.
+test("appendManifest: an arbiter that dies mid-takeover (lockPath already detached, claim never cleaned up) never wedges a later waiter", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, `${MANIFEST_FILE}.lock`);
+    // Simulate the dead arbiter's exact mid-takeover state: its rename
+    // already succeeded (lockPath is gone) and it crashed before creating
+    // a fresh lock or removing its claim.
+    const orphanClaim = `${lockPath}.claim-999999-${randomUUID()}`;
+    const orphanHandle = await open(orphanClaim, "w");
+    await orphanHandle.close();
+
+    const row = await appendManifest(dir, { type: "log", path: "app.log" }, { staleMs: 50, retries: 50, delayMs: 5 });
+    assert.deepEqual(row, { type: "log", path: "app.log", label: "log" });
+    const manifest = await readManifest(dir);
+    assert.deepEqual(manifest, [row], "the write went through — no wedge from the crashed arbiter's leftovers");
+
+    // The orphaned claim is inert litter, not a hazard: nobody references
+    // its exact random name again, so unlike the race file it replaces it
+    // never gets in a later waiter's way. This test doesn't assert it away
+    // (nothing in the design sweeps it up) — only that it never blocks.
+    const files = await readdir(dir);
+    assert.ok(files.includes(MANIFEST_FILE));
+  });
+});
+
+// A second, harsher crash point: several dead arbiters over time (repeated
+// crashes across many evidence-collection runs against the same dir) leave
+// several orphaned claims behind at once. None of them individually or
+// collectively block anything, because none of their names is ever the one
+// a later waiter tries to open.
+test("appendManifest: multiple leftover orphaned claims from repeated dead arbiters still never wedge a later waiter", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, `${MANIFEST_FILE}.lock`);
+    for (let i = 0; i < 5; i++) {
+      const h = await open(`${lockPath}.claim-${1000 + i}-${randomUUID()}`, "w");
+      await h.close();
+    }
+
+    const row = await appendManifest(dir, { type: "log", path: "app.log" }, { staleMs: 50, retries: 50, delayMs: 5 });
+    assert.deepEqual(row, { type: "log", path: "app.log", label: "log" });
+    const manifest = await readManifest(dir);
+    assert.deepEqual(manifest, [row]);
   });
 });

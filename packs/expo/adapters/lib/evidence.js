@@ -78,23 +78,27 @@ export async function readManifest(evidenceDir) {
   }
 }
 
-// Age of `lockPath` in ms, or null if it's already gone (raced away between
-// the failed `open` and this `stat` — treated as "not stale", just retry the
-// open normally on the next loop iteration rather than acting on stale
-// information).
-async function lockAgeMs(lockPath) {
+async function identityOf(pathOrStat) {
   try {
-    const st = await stat(lockPath);
-    return Date.now() - st.mtimeMs;
+    const st = typeof pathOrStat === "string" ? await stat(pathOrStat) : pathOrStat;
+    return `${st.dev}:${st.ino}`;
   } catch {
     return null;
   }
 }
 
-async function identityOf(pathOrStat) {
+// Age (ms) and dev:ino identity of `path`, both read from ONE `stat` call,
+// or null if it's already gone (raced away between the failed `open` and
+// this `stat` — treated as "not stale", just retry the open normally on the
+// next loop iteration rather than acting on stale information). Capturing
+// age and identity from a single snapshot (rather than a separate stat for
+// each) means the staleness judgment and the identity later used to verify
+// a claim always describe the exact same file, never two different
+// snapshots in time.
+async function lockSnapshot(lockPath) {
   try {
-    const st = typeof pathOrStat === "string" ? await stat(pathOrStat) : pathOrStat;
-    return `${st.dev}:${st.ino}`;
+    const st = await stat(lockPath);
+    return { ageMs: Date.now() - st.mtimeMs, identity: `${st.dev}:${st.ino}` };
   } catch {
     return null;
   }
@@ -107,118 +111,154 @@ async function identityOf(pathOrStat) {
 // just hasn't finished yet) still eventually times out rather than looping
 // forever.
 //
-// Stale-lock takeover, revised (review finding — HIGH): a first pass used
-// unconditional `rm(lockPath, {force:true})`, which gives no exclusivity
-// signal at all — every waiter that independently judged the SAME
-// originally-dead lock as stale would each "successfully" rm it, including
-// a waiter whose rm executes AFTER a faster waiter already removed the dead
-// lock and `wx`-created a brand-new one — deleting that ACTIVE holder's
-// fresh lock out from under it and letting a second waiter's `wx` also
-// succeed. Two holders inside the critical section at once is exactly the
-// lost-update corruption this lock exists to prevent.
+// Stale-lock takeover, twice-revised:
 //
-// Swapping the removal for `rename(lockPath, claimPath)` (atomic,
-// ENOENT-on-missing-source, "winner decides") closes the *removal* half of
-// that hole but not the whole thing: MULTIPLE waiters can still
-// independently judge the SAME dead lock stale and each attempt their own
-// claiming rename. Only one rename can ever detach a given path, but that
-// guarantee is about the SOURCE PATH, not about WHICH file happens to be
-// there at the instant each waiter's rename actually executes — under real
-// N-way concurrency (confirmed empirically: this reliably lost manifest
-// rows) a slower waiter's rename, fired after a faster waiter has already
-// completed an entire claim → discard → fresh-relock cycle, still
-// "succeeds" against the fast waiter's brand-new active lock. `rename`
-// doesn't know or care that its target's identity changed underneath it.
+// Pass 1 (review finding — HIGH) used unconditional `rm(lockPath,
+// {force:true})`, which gives no exclusivity signal at all — every waiter
+// that independently judged the SAME originally-dead lock as stale would
+// each "successfully" rm it, including a waiter whose rm executes AFTER a
+// faster waiter already removed the dead lock and `wx`-created a brand-new
+// one — deleting that ACTIVE holder's fresh lock out from under it and
+// letting a second waiter's `wx` also succeed. Two holders inside the
+// critical section at once is exactly the lost-update corruption this lock
+// exists to prevent.
 //
-// The actual fix is arbitration BEFORE anyone touches the lock file at
-// all: at most one waiter may even ATTEMPT a takeover at a time, enforced
-// by its own `wx`-exclusive race file (`racePath`, distinct from the main
-// lock). Every other waiter that also judged the lock stale simply backs
-// off — it never reaches the point of examining or renaming `lockPath`
-// itself. Because only one process is ever mid-takeover for a given round,
-// there is no other party who could have raced a claim→relock cycle to
-// completion in the interim — the sole arbiter's own re-check, taken right
-// after it wins arbitration, is trustworthy: nothing else can have
-// disturbed `lockPath` since arbitration began (a genuinely live holder
-// never touches the lock file again after creating it until its own
-// release; only an arbiter destructively touches someone else's, and there
-// is at most one of those at a time). staleMs (orders of magnitude above
-// any real critical-section duration — see its own comment) makes it safe
-// to trust that re-check without yet another round of double-verification.
+// Pass 2 (#177, merged) serialised takeovers behind a second, separate
+// `wx`-exclusive "arbitration" lock file: at most one waiter could ever be
+// mid-takeover, so its own re-check of `lockPath` right after winning
+// arbitration was trustworthy — nothing else could have disturbed
+// `lockPath` in the interim. That closed the double-entry hole, but the
+// arbitration file was itself an ordinary lock with no crash recovery of
+// its own: an arbiter SIGKILLed between winning it and its cleanup orphaned
+// it, and every future waiter then piled up on THAT file's own EEXIST
+// forever — the exact permanent wedge this whole feature exists to break,
+// recreated one level up (#177's re-review, MEDIUM; #179).
+//
+// Pass 3 (this one) drops the second lock file entirely and makes the claim
+// itself self-verifying, so there is nothing left that can crash-wedge:
+//
+//   1. Judge `lockPath` stale from age (unchanged) and capture its dev:ino
+//      identity in the SAME stat call (`lockSnapshot`).
+//   2. `rename(lockPath, claimPath)`, `claimPath` unique per attempt
+//      (pid + random). `rename` is atomic: of however many waiters
+//      independently judged the SAME dead lock stale and race this same
+//      rename concurrently, exactly one detaches `lockPath`'s CURRENT
+//      content; every other one's source is already gone, so it gets
+//      ENOENT and just retries — no second lock needed to keep them from
+//      "piling on", the filesystem already refuses more than one of them
+//      anything to do.
+//   3. But `rename` only guarantees SOMETHING got detached, not that it's
+//      the specific dead lock a given waiter judged stale a moment ago — a
+//      faster waiter can already have completed claim → verify →
+//      fresh-relock in that same window, in which case a slower waiter's
+//      rename (still targeting the same well-known `lockPath` name) grabs
+//      the fast waiter's brand-new, LIVE lock instead (confirmed
+//      empirically to happen under real N-way concurrency during #177).
+//      This is what makes the claim self-verifying rather than trusting
+//      the rename alone: stat the claimed file and compare its actual
+//      dev:ino to the identity captured in step 1. A match proves this
+//      waiter really did detach the dead lock it judged stale; a mismatch
+//      means it grabbed someone else's fresh one.
+//   4. On mismatch, put it back (`rename(claimPath, lockPath)`) — the real
+//      holder's mutual exclusion depends on that path continuing to exist
+//      while it's mid-critical-section — then back off and retry against
+//      what is, from this waiter's perspective, simply a fresh (non-stale)
+//      lock like any other. (Accepted tradeoff: between the detach and the
+//      restore, `lockPath` is briefly absent, so in principle a THIRD
+//      waiter's ordinary, non-takeover `open(lockPath, "wx")` could land in
+//      that gap and then get overwritten by the restore. Closing this
+//      fully would need an atomic rename-swap Node doesn't expose
+//      portably. The window is a couple of in-process awaits nested inside
+//      an already-compound scenario — stale lock, multiple simultaneous
+//      takeover attempts, AND a third, independently-timed waiter hitting
+//      that exact gap — several orders of magnitude narrower than the bug
+//      this rewrite fixes, and, like the release check's own documented
+//      inode-reuse residual below, considered acceptable rather than worth
+//      a non-portable syscall.)
+//   5. On a match, the claim is provably the dead lock and ours alone (a
+//      unique name nothing else references) — discard it, log the
+//      takeover, and try to become the fresh holder. If a third waiter's
+//      ordinary `open(wx)` beat this one to the now-empty `lockPath`, that
+//      is just contention (EEXIST), not a bug — back off and retry.
+//
+// The recursion bottoms out here because the claim IS the arbitration: it
+// needs no lock of its own to protect it, since a wrongly-grabbed claim is
+// detected (by inode) and reversible (by rename) rather than requiring
+// exclusivity to have been established beforehand. A claimant that crashes
+// before step 5's cleanup leaks nothing but an inert, uniquely-named file —
+// nobody ever tries to open that exact name again, so unlike the
+// arbitration file it replaces, it can never block a future takeover (see
+// the crash-recovery test in evidence.test.js).
 async function withManifestLock(
   evidenceDir,
   fn,
   { retries = 600, delayMs = 20, staleMs = STALE_LOCK_AGE_MS, stderr = process.stderr } = {}
 ) {
   const lockPath = join(evidenceDir, LOCK_FILE);
-  const racePath = `${lockPath}.takeover-race`;
   let handle = null;
   for (let attempt = 0; attempt < retries && !handle; attempt++) {
     try {
       handle = await open(lockPath, "wx");
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      const age = await lockAgeMs(lockPath);
-      if (age === null || age < staleMs) {
+      const snapshot = await lockSnapshot(lockPath);
+      if (snapshot === null || snapshot.ageMs < staleMs) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }
 
-      // Worth attempting a takeover — but only as the sole arbiter for
-      // this lock. `racePath`'s own `wx` exclusivity is the arbitration:
-      // exactly one waiter can hold it at a time, same guarantee `wx`
-      // already gives the main lock itself.
-      let raceHandle;
+      // Worth attempting a takeover. `claimPath` is unique to this
+      // attempt, so nothing else will ever try to open this exact name —
+      // there is no exclusivity to win or lose over the NAME itself, only
+      // over what `rename` actually detaches (see the function header).
+      const claimPath = `${lockPath}.claim-${process.pid}-${randomUUID()}`;
       try {
-        raceHandle = await open(racePath, "wx");
-      } catch (raceErr) {
-        if (raceErr.code !== "EEXIST") throw raceErr;
-        // Someone else is already arbitrating a takeover of this exact
-        // lock — piling on with a second, independent claim attempt is
-        // exactly the hazard this arbitration exists to prevent. Back off
-        // and re-examine the main lock fresh on the next iteration.
+        await rename(lockPath, claimPath);
+      } catch (renameErr) {
+        if (renameErr.code === "ENOENT") {
+          // Another waiter's rename already detached `lockPath` first —
+          // this one lost the race for the source path itself, so there is
+          // nothing here to verify or clean up. Retry fresh.
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+        throw renameErr;
+      }
+
+      const claimedIdentity = await identityOf(claimPath);
+      if (claimedIdentity !== snapshot.identity) {
+        // Detached someone's fresh lock, not the dead one this waiter
+        // judged stale (step 3 in the header). Restore it so the real
+        // holder's exclusivity isn't compromised, then back off and retry
+        // against it like any other live lock.
+        await rename(claimPath, lockPath).catch((restoreErr) => {
+          if (restoreErr.code !== "ENOENT") throw restoreErr;
+        });
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }
+
+      // Verified: `claimPath` really is the dead lock this waiter judged
+      // stale, and it's ours alone — safe to discard. Bounded takeover, not
+      // a silent one: a crashed holder must never wedge the rest of a
+      // run's evidence collection, but taking over a lock that might still
+      // be legitimately held is exactly the "lost update" hazard this lock
+      // exists to prevent, so it's logged, not quiet.
+      diagnostic(
+        `[evidence] manifest lock ${lockPath} was ${Math.round(snapshot.ageMs)}ms old (>= ${staleMs}ms) — assuming its holder crashed mid-write and taking it over`,
+        stderr
+      );
+      await rm(claimPath, { force: true });
+
       try {
-        // Sole arbiter now: nothing else can be mid-takeover of this lock
-        // concurrently, so this re-check (unlike the pre-arbitration one
-        // above) is trustworthy for the actual decision.
-        const arbitratedAge = await lockAgeMs(lockPath);
-        if (arbitratedAge !== null && arbitratedAge >= staleMs) {
-          // As sole arbiter, `lockPath` cannot have been destructively
-          // touched by anyone else since arbitration began (a live holder
-          // never touches its own lock file again until release; no other
-          // waiter is mid-takeover). This rename is expected to succeed —
-          // ENOENT here would mean something outside this protocol removed
-          // the lock file, which this tolerates rather than crashing on.
-          const claimPath = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
-          try {
-            await rename(lockPath, claimPath);
-          } catch (renameErr) {
-            if (renameErr.code !== "ENOENT") throw renameErr;
-          }
-          // Bounded takeover, not a silent one: a crashed holder must
-          // never wedge the rest of a run's evidence collection, but
-          // taking over a lock that might still be legitimately held is
-          // exactly the "lost update" hazard this lock exists to prevent —
-          // so it's logged, not quiet, and only fires once age has been
-          // confirmed by the sole arbiter (see this function's own header
-          // for why that confirmation can be trusted here in a way a
-          // non-arbitrated one couldn't).
-          diagnostic(
-            `[evidence] manifest lock ${lockPath} was ${Math.round(arbitratedAge)}ms old (>= ${staleMs}ms) — assuming its holder crashed mid-write and taking it over`,
-            stderr
-          );
-          await rm(claimPath, { force: true }); // quarantined and ours alone as sole arbiter — safe to discard
-        }
-        // else: already resolved before we became arbiter (released
-        // normally, or an earlier round already took it over) — nothing to do.
-      } finally {
-        await raceHandle.close();
-        await rm(racePath, { force: true });
+        handle = await open(lockPath, "wx");
+      } catch (openErr) {
+        if (openErr.code !== "EEXIST") throw openErr;
+        // A third waiter's ordinary (non-takeover) open beat this one to
+        // the now-empty path — plain contention, not a bug. Retry.
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
       }
-      continue; // retry open(wx) from the top
     }
   }
   if (!handle) {
@@ -228,12 +268,22 @@ async function withManifestLock(
     return await fn();
   } finally {
     // Release by verified identity, not a blind path removal: the
-    // arbitrated takeover protocol above is designed to never disturb an
-    // active holder's lock, but this is the backstop — if `lockPath`
-    // doesn't currently resolve to the exact inode this handle created,
-    // something else's lock now occupies that name, and removing it would
-    // be the same class of bug the takeover rewrite above exists to close,
-    // just from the release side instead of the takeover side.
+    // self-verifying claim above is designed to never disturb an active
+    // holder's lock, but this is the backstop — if `lockPath` doesn't
+    // currently resolve to the exact inode this handle created, something
+    // else's lock now occupies that name, and removing it would be the same
+    // class of bug the takeover rewrite above exists to close, just from
+    // the release side instead of the takeover side.
+    //
+    // Documented residual, vanishingly rare: `ownIdentity` is fstat'd
+    // before `close()` (so it can't itself be stale), but `currentIdentity`
+    // is stat'd by path AFTER close — if this handle's own lock was taken
+    // over (its inode freed at close) and the OS immediately reuses that
+    // exact inode number for a brand-new `lockPath` in the sub-millisecond
+    // close→stat window, the identities would falsely match. Filesystem-
+    // dependent and requires immediate inode-number recycling, which most
+    // filesystems don't do; closing it fully would need an OS-level
+    // open-by-inode compare that Node doesn't expose portably.
     const ownIdentity = await identityOf(await handle.stat().catch(() => null));
     await handle.close();
     const currentIdentity = await identityOf(lockPath);
