@@ -6,6 +6,7 @@
 //   agentflow-review read  --repo owner/name --pr N
 //   agentflow-review check --repo owner/name --pr N --head <sha>
 //                           --reviewer <login> [--reviewer <login> ...]
+//                           [--pr-author <login>]
 //                           [--files a.js,b.js] [--ui-globs "src/ui/**,app/**"]
 //
 // `read` prints both parsed sources over the RAW (unfiltered) artifact
@@ -49,6 +50,17 @@
 // list from the platform pack and pass `--ui-globs` itself, or compute
 // `uiTouched` another way and skip these flags. Neither flag is required.
 //
+// `--pr-author <login>` (#187) is the PR-author self-exclusion: trusted-login
+// membership alone does not prove a marker comment or native review was NOT
+// posted by the PR's own author — a write-capable agent authoring its PR
+// under the same trusted login (an App bot, or `github-actions[bot]` under
+// headless review) could otherwise post its own passing artifact and clear
+// `--reviewer`'s check. Passed straight through to `filterByAuthor`'s
+// `excludeAuthor`, in the same pre-collapse pass as the trust filter — never
+// required (an omitted flag preserves the pre-#187 behaviour exactly), but a
+// caller that has the PR object and skips it is leaving this exact hole
+// open.
+//
 // All I/O — the `gh` calls — lives here. scripts/review/core.js is pure.
 
 import { execFileSync } from "node:child_process";
@@ -77,7 +89,7 @@ const flags = parseArgs(rest);
 if (!["read", "check"].includes(command) || !flags.repo || !flags.pr) {
   console.error(
     "usage: agentflow-review read  --repo owner/name --pr N\n" +
-      "       agentflow-review check --repo owner/name --pr N --head <sha> --reviewer <login> [--reviewer <login> ...] [--files a,b] [--ui-globs g1,g2]"
+      "       agentflow-review check --repo owner/name --pr N --head <sha> --reviewer <login> [--reviewer <login> ...] [--pr-author <login>] [--files a,b] [--ui-globs g1,g2]"
   );
   process.exit(20);
 }
@@ -126,8 +138,12 @@ try {
   // command === "check": filter to trusted logins BEFORE collapsing. See the
   // header comment for why this order, not the reverse, is what keeps a
   // trusted veto from being laundered away by a newer untrusted post.
-  const trustedComments = filterByAuthor(comments, reviewerLogins);
-  const trustedNativeReviews = filterByAuthor(nativeReviews, reviewerLogins);
+  // `--pr-author`, when given, excludes that login from the trusted set in
+  // the same pass (#187) — a trusted login is not proof of "not the PR's own
+  // author" once a write principal can author PRs under it.
+  const prAuthor = typeof flags["pr-author"] === "string" && flags["pr-author"].trim() ? flags["pr-author"] : null;
+  const trustedComments = filterByAuthor(comments, reviewerLogins, prAuthor);
+  const trustedNativeReviews = filterByAuthor(nativeReviews, reviewerLogins, prAuthor);
   const native = latestNativeReview(trustedNativeReviews);
   const comment = latestReviewComment(trustedComments);
 

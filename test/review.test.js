@@ -297,6 +297,50 @@ test("filterByAuthor on an empty or missing list yields an empty list", () => {
   assert.deepEqual(filterByAuthor(undefined, ["trusted-reviewer"]), []);
 });
 
+// --- filterByAuthor: PR-author self-exclusion (#187) ---------------------------
+//
+// Trusted-login membership alone used to be sufficient. It is not: a
+// write-capable agent that authors its own PR under the same trusted login
+// this guard trusts (the App bot, or `github-actions[bot]` under headless
+// review) could post its own `<!-- agentflow-review -->` marker on that PR
+// and pass `filterByAuthor`'s trust check unchanged — the login matches,
+// even though "reviewer" and "implementer" are the same principal. This is
+// the exact hole #189's future headless implementer would open the moment it
+// ships. `excludeAuthor` closes it in the SAME pre-collapse pass as the
+// trust filter, mirroring `decideBotReview`'s self-exclusion for native
+// review *submission* on the *reading* side.
+
+test("filterByAuthor drops an item authored by excludeAuthor even though its login is trusted", () => {
+  const items = [{ body: "a", author: authored("agentflow-bot[bot]") }];
+  assert.deepEqual(filterByAuthor(items, ["agentflow-bot[bot]"], "agentflow-bot[bot]"), []);
+});
+
+test("filterByAuthor's excludeAuthor match is case-insensitive, same as the trust check", () => {
+  const items = [{ body: "a", author: authored("Agentflow-Bot[bot]") }];
+  assert.deepEqual(filterByAuthor(items, ["agentflow-bot[bot]"], "AGENTFLOW-BOT[BOT]"), []);
+});
+
+test("filterByAuthor's excludeAuthor does not touch a DIFFERENT trusted author's item", () => {
+  const items = [
+    { body: "implementer's own post", author: authored("agentflow-bot[bot]") },
+    { body: "a genuine reviewer's post", author: authored("real-human-reviewer") },
+  ];
+  const kept = filterByAuthor(items, ["agentflow-bot[bot]", "real-human-reviewer"], "agentflow-bot[bot]");
+  assert.deepEqual(kept, [items[1]], "the excluded author's item is dropped; the other trusted author's survives");
+});
+
+test("filterByAuthor with excludeAuthor omitted (or null) behaves exactly as before — additive, not a new default", () => {
+  const items = [{ body: "a", author: authored("trusted-reviewer") }];
+  assert.deepEqual(filterByAuthor(items, ["trusted-reviewer"]), items);
+  assert.deepEqual(filterByAuthor(items, ["trusted-reviewer"], null), items);
+  assert.deepEqual(filterByAuthor(items, ["trusted-reviewer"], undefined), items);
+});
+
+test("filterByAuthor's excludeAuthor never widens what's trusted — an untrusted login is still dropped regardless", () => {
+  const items = [{ body: "a", author: authored("someone-else") }];
+  assert.deepEqual(filterByAuthor(items, ["trusted-reviewer"], "someone-else"), []);
+});
+
 // --- the veto-laundering attack (PR #123's second cold review, finding 3) ------
 //
 // Proven attack: a trusted reviewer posts `not-mergeable` at head. The PR's
@@ -348,6 +392,106 @@ test("ANTI-PATTERN, pinned so it is never re-derived as acceptable: filtering AF
     "BROKEN: the trusted reviewer's veto is gone, not recovered — native mergeable authorises unchallenged. " +
       "This is why filtering must happen before collapse, not after (see the ATTACK test above for the fix)."
   );
+});
+
+// --- SECURITY (#187): the PR author cannot self-authorise the comment path -----
+//
+// Surfaced by PR #186's review: `filterByAuthor`'s trust check has no
+// self-exclusion analogue to `decideBotReview`'s. Latent while only humans
+// author agent PRs; LIVE the moment a write-capable headless implementer
+// (#189) ships and authors its own PR under the same trusted login this
+// guard trusts. This block pins the exact "implementer is its own reviewer"
+// scenario #189 would create, end to end through the real reader pipeline
+// (filter → collapse → authorise), not just the filter in isolation.
+
+test("SECURITY (#189 scenario): the PR's own author, posting under the trusted bot login, never authorises its own PR", () => {
+  const implementerLogin = "agentflow-bot[bot]"; // the write principal's login == the trusted App login
+  const rawComments = [
+    { body: comment({ verdict: "mergeable", sha: HEAD }), author: authored(implementerLogin) },
+  ];
+  const trustedLogins = [implementerLogin];
+
+  const filtered = filterByAuthor(rawComments, trustedLogins, implementerLogin);
+  const collapsed = latestReviewComment(filtered);
+  assert.equal(collapsed, null, "the implementer's own post must never survive the filter, however trusted its login");
+
+  const result = reviewAuthorises({ comment: collapsed }, { headSha: HEAD });
+  assert.equal(result.authorised, false, "an implementer cannot be its own reviewer");
+  assert.equal(result.code, "no-artifact");
+});
+
+test("SECURITY: a GENUINE different trusted reviewer's artifact still authorises when excludeAuthor is set", () => {
+  const implementerLogin = "agentflow-bot[bot]";
+  const rawComments = [
+    { body: comment({ verdict: "mergeable", sha: HEAD }), author: authored("a-real-code-reviewer") },
+  ];
+  const trustedLogins = [implementerLogin, "a-real-code-reviewer"];
+
+  const filtered = filterByAuthor(rawComments, trustedLogins, implementerLogin);
+  const collapsed = latestReviewComment(filtered);
+  assert.equal(collapsed?.verdict, "mergeable", "excluding the implementer must not exclude a genuinely different trusted reviewer");
+
+  const result = reviewAuthorises({ comment: collapsed }, { headSha: HEAD });
+  assert.equal(result.authorised, true);
+  assert.equal(result.source, "comment");
+});
+
+test("SECURITY: a human reviewer's CHANGES_REQUESTED veto is unaffected by PR-author self-exclusion", () => {
+  const implementerLogin = "the-implementer";
+  const rawNative = [
+    { state: "CHANGES_REQUESTED", commit_id: HEAD, body: null, author: authored("human-reviewer") },
+  ];
+  const trustedLogins = [implementerLogin, "human-reviewer"];
+
+  const filtered = filterByAuthor(rawNative, trustedLogins, implementerLogin);
+  const native = latestNativeReview(filtered);
+  assert.equal(native?.verdict, "not-mergeable", "the human's veto must survive — exclusion only ever targets the implementer's own login");
+
+  const result = reviewAuthorises({ native }, { headSha: HEAD });
+  assert.equal(result.authorised, false);
+  assert.equal(result.code, "not-mergeable");
+  assert.equal(result.source, "native");
+});
+
+test("SECURITY: self-excluding the PR author still leaves absence-is-refusal and stale-sha semantics unchanged", () => {
+  // No artifact at all, even with excludeAuthor set — still refuses the
+  // ordinary way, not a special-cased security refusal.
+  const noArtifact = filterByAuthor([], ["trusted-reviewer"], "the-implementer");
+  assert.deepEqual(noArtifact, []);
+  assert.equal(reviewAuthorises({ comment: latestReviewComment(noArtifact) }, { headSha: HEAD }).code, "no-artifact");
+
+  // A genuinely trusted, non-implementer artifact that is merely STALE still
+  // refuses as stale-sha, not as a security refusal — self-exclusion must not
+  // change the shape of an unrelated refusal.
+  const staleComments = [{ body: comment({ verdict: "mergeable", sha: OLD }), author: authored("trusted-reviewer") }];
+  const staleFiltered = filterByAuthor(staleComments, ["trusted-reviewer", "the-implementer"], "the-implementer");
+  const staleCollapsed = latestReviewComment(staleFiltered);
+  const staleResult = reviewAuthorises({ comment: staleCollapsed }, { headSha: HEAD });
+  assert.equal(staleResult.authorised, false);
+  assert.equal(staleResult.code, "stale-sha");
+});
+
+test("SECURITY ATTACK: self-exclusion cannot be defeated by pairing a fake self-authored mergeable with a genuine trusted veto — the veto still wins", () => {
+  // Combines #187 (self-exclusion) with the #123 veto-laundering fix in one
+  // scenario: a trusted human reviewer posts a genuine `not-mergeable` first;
+  // the PR's own author (posting under the SAME trusted login the App uses)
+  // posts a newer fake `mergeable`. Both protections must hold at once — the
+  // fake is dropped for being self-authored, AND even if it weren't, a fresh
+  // veto from the other source would still win.
+  const implementerLogin = "agentflow-bot[bot]";
+  const rawComments = [
+    { body: comment({ verdict: "not-mergeable", sha: HEAD }), author: authored("trusted-human-reviewer") },
+    { body: comment({ verdict: "mergeable", sha: HEAD }), author: authored(implementerLogin) }, // newer, self-authored, trusted-shaped login
+  ];
+  const trusted = [implementerLogin, "trusted-human-reviewer"];
+
+  const filtered = filterByAuthor(rawComments, trusted, implementerLogin);
+  const collapsed = latestReviewComment(filtered);
+  assert.equal(collapsed?.verdict, "not-mergeable", "the implementer's fake pass never survives the filter, leaving only the genuine veto");
+
+  const result = reviewAuthorises({ comment: collapsed }, { headSha: HEAD });
+  assert.equal(result.authorised, false);
+  assert.equal(result.code, "not-mergeable");
 });
 
 // --- the UI-surface glob predicate ---------------------------------------------

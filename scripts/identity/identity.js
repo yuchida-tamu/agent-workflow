@@ -231,11 +231,26 @@ export function trustedReviewerLogins({ config = {} } = {}) {
 // `reviewAuthorises` at the call site. Pure — `nativeReviews`/`comments` are
 // already-fetched plain data; no `gh` here, so this stays testable without a
 // network.
-export function resolveTrustedReviewState({ config = {}, nativeReviews = [], comments = [] } = {}) {
+//
+// `prAuthor` (#187) is the PR's own author login, threaded straight into
+// `filterByAuthor`'s `excludeAuthor` for BOTH lists. Trusted-login
+// membership alone is not "not the implementer": once a write-capable agent
+// authors its PRs under the same trusted login this guard trusts (the App
+// bot, or `github-actions[bot]` under headless review), that agent can post
+// its own `<!-- agentflow-review -->` marker comment and pass the trust
+// check — the exact hole `decideBotReview`'s self-exclusion already closes
+// for *submitting* a native review, but the comment-artifact *reading* path
+// had no analogue. Applying it to `nativeReviews` too costs nothing (GitHub
+// already forbids a login from approving its own PR natively) and keeps one
+// exclusion rule for both sources rather than a rule that only covers one.
+// `prAuthor: null` (the default) preserves every existing caller's exact
+// behaviour — nothing is excluded, same as calling `filterByAuthor` with no
+// third argument.
+export function resolveTrustedReviewState({ config = {}, nativeReviews = [], comments = [], prAuthor = null } = {}) {
   const { logins, mode, why } = trustedReviewerLogins({ config });
   return {
-    native: latestNativeReview(filterByAuthor(nativeReviews, logins)),
-    comment: latestReviewComment(filterByAuthor(comments, logins)),
+    native: latestNativeReview(filterByAuthor(nativeReviews, logins, prAuthor)),
+    comment: latestReviewComment(filterByAuthor(comments, logins, prAuthor)),
     mode,
     trustedLogins: logins,
     why,

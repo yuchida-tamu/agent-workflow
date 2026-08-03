@@ -205,7 +205,11 @@ if (isMain) {
   // Resolve who is trusted from config, THEN filter the raw lists to that
   // trust, THEN collapse to "the latest" — never the reverse (scripts/review/core.js's
   // documented obligation; `resolveTrustedReviewState` is where #113 does this).
-  const trust = resolveTrustedReviewState({ config, nativeReviews, comments });
+  // `prAuthor` is threaded through so a marker comment or native review
+  // authored by the PR's own author is dropped even when its login is
+  // otherwise trusted (#187) — the self-exclusion `decideBotReview` below
+  // already applies when this PR's own principal tries to SUBMIT a review.
+  const trust = resolveTrustedReviewState({ config, nativeReviews, comments, prAuthor: pr.user?.login ?? null });
   const changedFiles = (view.files ?? []).map((f) => f.path);
   const uiTouched = uiSurfaceTouched(changedFiles, uiGlobsFor(config));
 
