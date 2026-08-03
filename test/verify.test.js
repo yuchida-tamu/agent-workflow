@@ -380,10 +380,10 @@ test("check 5: unparseable output fails on either exit code", () => {
 // ---------------------------------------------------------------------------
 // roll-up, exit code, rendering
 
-test("verifyChecks: six checks, always in the same order", () => {
+test("verifyChecks: seven checks, always in the same order", () => {
   assert.deepEqual(
     run().map((c) => c.name),
-    ["agentflow.config.json", "labels", "domains.yml", ".github/workflows", "agentflow-next", "G3 mode"],
+    ["agentflow.config.json", "labels", "domains.yml", ".github/workflows", "agentflow-next", "G3 mode", "e2e readiness"],
   );
 });
 
@@ -393,12 +393,12 @@ test("a fully adopted repo with a labelled backlog: every check passes, exit 0",
   // A note is not a defect: the exit code is still 0.
   const checks = run();
   assert.equal(checks.every((c) => c.ok), true);
-  assert.equal(rollup(checks), "6 passed (1 note)");
+  assert.equal(rollup(checks), "7 passed (1 note)");
   assert.equal(exitCode(checks), 0);
 });
 
 test("rollup: a note is visible in the roll-up, and plural when there are two", () => {
-  assert.equal(rollup(run({ next: { code: 1, stdout: '{"idle":true}', error: null } })), "6 passed (2 notes)");
+  assert.equal(rollup(run({ next: { code: 1, stdout: '{"idle":true}', error: null } })), "7 passed (2 notes)");
   assert.equal(
     rollup(
       run({
@@ -406,15 +406,15 @@ test("rollup: a note is visible in the roll-up, and plural when there are two", 
         config: { value: { ...validConfig, extra_key: 1 }, error: null },
       }),
     ),
-    "6 passed (3 notes)",
+    "7 passed (3 notes)",
   );
 });
 
 test("rollup: failures are counted, and every other row still reports", () => {
   const checks = run({ domains: { value: null, error: null } });
-  assert.equal(rollup(checks), "5 passed, 1 failed (1 note)");
+  assert.equal(rollup(checks), "6 passed, 1 failed (1 note)");
   assert.equal(exitCode(checks), 1);
-  assert.equal(checks.length, 6, "one failing check never suppresses the others");
+  assert.equal(checks.length, 7, "one failing check never suppresses the others");
 });
 
 test("renderChecks: ✓/✗ per row, notes indented under theirs, roll-up last", () => {
@@ -424,8 +424,9 @@ test("renderChecks: ✓/✗ per row, notes indented under theirs, roll-up last",
   assert.equal(lines[4], "✓ agentflow-next — the dispatcher runs; the backlog is idle");
   assert.equal(lines[5], `  ! ${IDLE_NOTE}`);
   assert.equal(lines[6], "✓ G3 mode — solo-comment");
-  assert.equal(lines[8], "");
-  assert.equal(lines.at(-1), "6 passed (2 notes)");
+  assert.equal(lines[8], "✓ e2e readiness — no .feature files — post-merge smoke passes vacuously");
+  assert.equal(lines[9], "");
+  assert.equal(lines.at(-1), "7 passed (2 notes)");
 });
 
 test("renderChecks: a failed row is marked ✗ and keeps its detail", () => {
@@ -434,7 +435,7 @@ test("renderChecks: a failed row is marked ✗ and keeps its detail", () => {
     lines[4],
     "✗ agentflow-next — exited 20 (usage/IO error) — check `gh auth status` and that the repo is reachable",
   );
-  assert.equal(lines.at(-1), "5 passed, 1 failed (1 note)");
+  assert.equal(lines.at(-1), "6 passed, 1 failed (1 note)");
 });
 
 // --- release_kind ------------------------------------------------------------
@@ -603,4 +604,76 @@ test("check 6: an unreadable config does not crash the check", () => {
   const check = g3Check(run({ config: { value: null, error: "ENOENT" } }));
   assert.equal(check.ok, true);
   assert.match(check.detail, /solo-comment/);
+});
+
+// --- check 7: e2e readiness (#182) -------------------------------------------
+//
+// A repo with `.feature` files but no resolvable pack (or nothing compiled)
+// reported clean here and then hard-failed post-merge on its first properly-
+// linked PR. post-merge no longer hard-fails, so this check never fails
+// adoption either — it always names which of the three post-merge states
+// (no scenarios, zero traces, ready) the repo is in, as a note.
+
+const e2eCheck = (checks) => checks.find((c) => c.name === "e2e readiness");
+
+test("check 7: no .feature files passes cleanly, no note owed", () => {
+  const check = e2eCheck(run({}));
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /no \.feature files/);
+  assert.equal(check.note, null);
+});
+
+test("check 7: feature files but zero compiled traces passes, with a note", () => {
+  const check = e2eCheck(run({ e2e: { featureFiles: ["a.feature", "b.feature"], traceCount: 0 } }));
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /2 feature file\(s\), 0 compiled traces/);
+  assert.match(check.note, /vacuously.*zero traces/i);
+});
+
+test("check 7: a ready suite with no pack resolvable passes, with a note naming why", () => {
+  const check = e2eCheck(
+    run({
+      config: { value: { ...validConfig, platform: "rn-expo" }, error: null },
+      e2e: { featureFiles: ["a.feature"], traceCount: 3, toolkitPacks: [], consumerPacks: [] },
+    }),
+  );
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /no pack resolvable/);
+  assert.match(check.note, /skip the smoke/);
+  assert.match(check.note, /"platform"/);
+});
+
+test("check 7: no platform configured names that explicitly in the note", () => {
+  const check = e2eCheck(
+    run({ e2e: { featureFiles: ["a.feature"], traceCount: 3, toolkitPacks: [], consumerPacks: [] } }),
+  );
+  assert.match(check.note, /\(none configured\)/);
+});
+
+test("check 7: a ready suite with a resolvable toolkit pack passes cleanly", () => {
+  const check = e2eCheck(
+    run({
+      config: { value: { ...validConfig, platform: "rn-expo" }, error: null },
+      e2e: { featureFiles: ["a.feature"], traceCount: 3, toolkitPacks: ["expo"], consumerPacks: [] },
+    }),
+  );
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /pack resolved \(toolkit/);
+  assert.equal(check.note, null);
+});
+
+test("check 7: a ready suite with a vendored consumer pack also resolves", () => {
+  const check = e2eCheck(
+    run({ e2e: { featureFiles: ["a.feature"], traceCount: 3, toolkitPacks: [], consumerPacks: ["my-platform"] } }),
+  );
+  assert.equal(check.ok, true);
+  assert.match(check.detail, /pack resolved \(consumer/);
+});
+
+test("check 7: never fails the run — a defect here would block adoption on the wrong thing", () => {
+  const checks = run({
+    config: { value: { ...validConfig, platform: "rn-expo" }, error: null },
+    e2e: { featureFiles: ["a.feature"], traceCount: 3, toolkitPacks: [], consumerPacks: [] },
+  });
+  assert.equal(exitCode(checks), 0);
 });

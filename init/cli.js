@@ -168,6 +168,40 @@ function readParsed(path, parse) {
   }
 }
 
+// `.feature` files directly under `dir` — an absent directory is "none", not
+// an error, the same convention `post-merge.js` and `scripts/e2e/cli.js` use.
+function readFeatureFiles(dir) {
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(".feature"));
+  } catch {
+    return [];
+  }
+}
+
+// Files under `dir`, recursively — what "0 compiled traces" (#182) counts.
+function countTraceFiles(dir) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const entry of entries) {
+    count += entry.isDirectory() ? countTraceFiles(join(dir, entry.name)) : 1;
+  }
+  return count;
+}
+
+// A plain directory listing, empty (never an error) when `dir` is absent.
+function listDir(dir) {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
 // The stubs actually on disk. An absent one is not an error here — the check
 // reports it, alongside the ones that are installed but wrong.
 function readWorkflows(dir, expected) {
@@ -370,6 +404,12 @@ switch (command) {
         protection: ghGet(`/repos/${flags.repo}/branches/${verifyBranch}/protection`),
         expectedLabels,
         expectedWorkflows,
+        e2e: {
+          featureFiles: readFeatureFiles(join(flags.target, "e2e/scenarios")),
+          traceCount: countTraceFiles(join(flags.target, "e2e/traces")),
+          toolkitPacks: listDir(join(HERE, "..", "packs")),
+          consumerPacks: listDir(join(flags.target, "packs")),
+        },
       });
 
       console.log(`verify ${flags.target} → ${flags.repo}\n`);
