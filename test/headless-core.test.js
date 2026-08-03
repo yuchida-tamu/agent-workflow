@@ -9,6 +9,7 @@ import {
   OUTCOMES,
   TOKEN_VAR,
   classify,
+  extractJsonFence,
   launchPlan,
   parseUsage,
   reviewText,
@@ -233,6 +234,56 @@ test("output that isn't JSON at all passes through untouched", () => {
 
 test("valid JSON with neither field falls back to the raw stdout", () => {
   assert.equal(reviewText('{"unexpected":1}'), '{"unexpected":1}');
+});
+
+// --- extractJsonFence: the fenced-block scan, shared by two callers ---------
+//
+// Lifted out of scripts/actions/dispatch-comment.js's plan.json extraction
+// (#175) so scripts/actions/headless-review.js's findings extraction (#171)
+// can reuse the SAME scan instead of growing a second copy. dispatch.test.js
+// keeps its own coverage of `extractPlan`/`isValidPlanCandidate` (the
+// plan.json-specific predicate layered on top); these tests pin the generic
+// scan itself: last-fence-wins, degrade-not-throw, and the `isValid`
+// predicate as the seam a caller uses to keep its own payload schema local.
+
+test("extractJsonFence finds a single fence satisfying isValid", () => {
+  const text = 'prose\n```json\n{"a":1}\n```\nmore prose';
+  assert.deepEqual(extractJsonFence(text, (c) => "a" in c), { a: 1 });
+});
+
+test("extractJsonFence returns null when there is no matching fence, without throwing", () => {
+  assert.equal(extractJsonFence("no fences here at all"), null);
+  assert.equal(extractJsonFence(""), null);
+  assert.equal(extractJsonFence(null), null);
+  assert.equal(extractJsonFence(undefined), null);
+});
+
+test("extractJsonFence: a malformed fence is skipped, not fatal", () => {
+  const text = '```json\nnot valid json at all\n```';
+  assert.doesNotThrow(() => extractJsonFence(text));
+  assert.equal(extractJsonFence(text), null);
+});
+
+test("extractJsonFence: the LAST fence satisfying isValid wins, among fences that qualify", () => {
+  const text = [
+    "```json", '{"which":"first"}', "```",
+    "some prose in between",
+    "```json", '{"which":"second"}', "```",
+  ].join("\n");
+  assert.deepEqual(extractJsonFence(text, () => true), { which: "second" });
+});
+
+test("extractJsonFence: isValid disqualifies a candidate without losing an earlier qualifying one", () => {
+  const text = [
+    "```json", '{"ok":true,"n":1}', "```",
+    "```json", '{"ok":false,"n":2}', "```", // fails isValid — must not win by being last
+  ].join("\n");
+  assert.deepEqual(extractJsonFence(text, (c) => c.ok === true), { ok: true, n: 1 });
+});
+
+test("extractJsonFence: the default isValid accepts anything that parses", () => {
+  assert.deepEqual(extractJsonFence('```json\n{"x":1}\n```'), { x: 1 });
+  assert.deepEqual(extractJsonFence('```json\n[1,2,3]\n```'), [1, 2, 3]);
 });
 
 // --- the shell, with an injected spawn ---------------------------------------

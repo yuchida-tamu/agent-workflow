@@ -19,7 +19,7 @@ import { parse as parseYaml } from "yaml";
 import { DISPATCH } from "../next/core.js";
 import { LABEL_PREFIX, planTransition, resolveApply } from "../state/machine.js";
 import { dispatchEnabled } from "../headless/config.js";
-import { TOKEN_VAR, classify, launchPlan, reviewText, summaryLine } from "../headless/core.js";
+import { TOKEN_VAR, classify, extractJsonFence, launchPlan, reviewText, summaryLine } from "../headless/core.js";
 import { runProcess } from "../headless/run.js";
 import { loadTiers } from "../log/cli.js";
 import { childrenOf, linkSubIssue } from "../hierarchy/gh.js";
@@ -189,7 +189,11 @@ export function artifactCommentBody(state, agent, note) {
 // last. A fence that fails to parse is skipped, not fatal — extraction degrades
 // to "no plan found" (`null`), never a throw, so a malformed plan.json
 // escalates to a human instead of crashing the workflow.
-const JSON_FENCE_RE = () => /```json\b([\s\S]*?)```/gi;
+//
+// The scan itself (`extractJsonFence`) now lives in scripts/headless/core.js,
+// shared with scripts/actions/headless-review.js's `findings` extraction
+// (#171) — this module keeps only what's specific to plan.json: the
+// candidate predicate below.
 
 // A title consisting only of dots/ellipsis — the literal placeholder shape
 // THIS REPO'S OWN `agents/architect.md` schema example uses
@@ -235,19 +239,7 @@ export function isValidPlanCandidate(parsed) {
 }
 
 export function extractPlan(text) {
-  if (!text) return null;
-  let winner = null;
-  const re = JSON_FENCE_RE();
-  let match;
-  while ((match = re.exec(text)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      if (isValidPlanCandidate(parsed)) winner = parsed;
-    } catch {
-      // Not a plan.json fence (or a corrupted one) — keep scanning.
-    }
-  }
-  return winner;
+  return extractJsonFence(text, isValidPlanCandidate);
 }
 
 // --- label allowlist: the control-plane boundary (#168 review, finding 1) --

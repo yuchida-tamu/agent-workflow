@@ -7,8 +7,14 @@ import {
   findingsFromText,
   verdictFromFindings,
   reviewVerdict,
+  reviewBasis,
   decideNativeReview,
   renderNativeReview,
+  nativeReviewEvent,
+  reconcileNativeReviews,
+  BASIS_CLEAN,
+  BASIS_FINDING,
+  BASIS_UNREADABLE,
 } from "../scripts/actions/headless-review.js";
 import { verifyChecks } from "../init/verify.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
@@ -159,12 +165,129 @@ test("findingsFromText degrades to null rather than throwing", () => {
   assert.equal(findingsFromText('{"no findings key":true}'), null);
 });
 
+// --- #171: extraction reads the FENCED block, not the whole prose output ----
+//
+// The root cause: the agent's real, documented output shape is a full prose
+// review that CONCLUDES with a fenced ```json block — see
+// agents/code-reviewer.md's headless exception. The old `findingsFromText`
+// only ever tried `JSON.parse(text)` on the WHOLE string, which throws on
+// that shape, degrades to `null`, and `verdictFromFindings(null)` reads as
+// `not-mergeable` — indistinguishable from a genuine refusal. This is the
+// exact prose-plus-fence shape observed on hsk-habit PRs #21/#22.
+
+test("findingsFromText reads the LAST fenced json block out of a full prose review", () => {
+  const text = [
+    "## Review",
+    "",
+    "I looked at the diff and found nothing blocking.",
+    "",
+    "```json",
+    '{ "findings": [] }',
+    "```",
+  ].join("\n");
+  assert.deepEqual(findingsFromText(text), []);
+});
+
+test("findingsFromText: the fenced block's own findings still drive the verdict — high blocks, medium doesn't", () => {
+  const highText = [
+    "Found a real bug.",
+    "```json",
+    '{ "findings": [{ "file": "a.js", "line": 3, "claim": "x", "scenario": "y", "severity": "high" }] }',
+    "```",
+  ].join("\n");
+  assert.deepEqual(findingsFromText(highText), [{ file: "a.js", line: 3, claim: "x", scenario: "y", severity: "high" }]);
+  assert.equal(verdictFromFindings(findingsFromText(highText)), "not-mergeable");
+
+  const mediumText = [
+    "One nit, nothing blocking.",
+    "```json",
+    '{ "findings": [{ "file": "a.js", "line": 3, "claim": "x", "scenario": "y", "severity": "medium" }] }',
+    "```",
+  ].join("\n");
+  assert.equal(verdictFromFindings(findingsFromText(mediumText)), "mergeable");
+});
+
+test("findingsFromText: the LAST matching fence wins over an earlier one quoted mid-discussion", () => {
+  const text = [
+    "An earlier draft looked like this, quoted for context:",
+    "```json",
+    '{ "findings": [{ "file": "a.js", "line": 1, "claim": "draft", "scenario": "-", "severity": "high" }] }',
+    "```",
+    "",
+    "But after re-reading, the real answer is:",
+    "```json",
+    '{ "findings": [] }',
+    "```",
+  ].join("\n");
+  assert.deepEqual(findingsFromText(text), []);
+});
+
+test("findingsFromText: truly unreadable output (no fence, malformed fence) stays null", () => {
+  assert.equal(findingsFromText("just prose, no fence and no bare JSON anywhere"), null);
+  assert.equal(findingsFromText("```json\nnot even valid json\n```"), null);
+  assert.equal(findingsFromText("```json\n{ \"no findings key\": true }\n```"), null);
+});
+
 test("reviewVerdict refuses unconditionally on any non-ok outcome", () => {
   for (const outcome of ["disabled", "unauthenticated", "rate-limited", "failed"]) {
     assert.equal(reviewVerdict({ outcome, text: '{"findings":[]}' }), "not-mergeable", outcome);
   }
   assert.equal(reviewVerdict({ outcome: "ok", text: '{"findings":[]}' }), "mergeable");
   assert.equal(reviewVerdict({ outcome: "ok", text: '{"findings":[{"severity":"high"}]}' }), "not-mergeable");
+});
+
+// --- reviewBasis: the verdict AND why (#181-C threading) --------------------
+//
+// This is the value that lets a caller finally distinguish "a real `high`
+// finding blocked this" from "we could not trust this run's findings at
+// all" — before this, both collapsed to the same `not-mergeable` string and
+// nothing downstream could tell them apart (#181's own root incident).
+// This IS the #171 re-pin table from the issue's plan comment, at the basis
+// seam rather than the string-verdict one.
+
+test("reviewBasis: the #171 table — prose+fenced [] mergeable/clean, high not-mergeable/finding, medium mergeable/clean, unreadable not-mergeable/unreadable", () => {
+  const proseWithFence = "No blocking issues.\n```json\n{ \"findings\": [] }\n```";
+  assert.deepEqual(reviewBasis({ outcome: "ok", text: proseWithFence }), { verdict: "mergeable", basis: BASIS_CLEAN, findings: [] });
+
+  const highFinding = [{ file: "a.js", line: 1, claim: "bug", scenario: "crashes", severity: "high" }];
+  assert.deepEqual(
+    reviewBasis({ outcome: "ok", text: JSON.stringify({ findings: highFinding }) }),
+    { verdict: "not-mergeable", basis: BASIS_FINDING, findings: highFinding },
+  );
+
+  const mediumFinding = [{ file: "a.js", line: 1, claim: "nit", scenario: "-", severity: "medium" }];
+  assert.deepEqual(
+    reviewBasis({ outcome: "ok", text: JSON.stringify({ findings: mediumFinding }) }),
+    { verdict: "mergeable", basis: BASIS_CLEAN, findings: mediumFinding },
+  );
+
+  assert.deepEqual(
+    reviewBasis({ outcome: "ok", text: "unreadable prose, no fence at all" }),
+    { verdict: "not-mergeable", basis: BASIS_UNREADABLE, findings: null },
+  );
+});
+
+test("reviewBasis: a non-ok outcome is unreadable, never a 'finding'", () => {
+  // The run never produced output to read — that must not be laundered into
+  // looking like it found something, only into a safe refusal.
+  for (const outcome of ["disabled", "unauthenticated", "rate-limited", "failed"]) {
+    assert.deepEqual(reviewBasis({ outcome, text: '{"findings":[{"severity":"high"}]}' }), {
+      verdict: "not-mergeable",
+      basis: BASIS_UNREADABLE,
+      findings: null,
+    });
+  }
+});
+
+test("reviewVerdict is reviewBasis's verdict — the two can never disagree", () => {
+  for (const [outcome, text] of [
+    ["ok", '{"findings":[]}'],
+    ["ok", '{"findings":[{"severity":"high"}]}'],
+    ["ok", "unreadable"],
+    ["failed", "n/a"],
+  ]) {
+    assert.equal(reviewVerdict({ outcome, text }), reviewBasis({ outcome, text }).verdict);
+  }
 });
 
 // --- native-mode: submitting a review as the App, alongside the comment ------
@@ -225,22 +348,138 @@ test("every native-review refusal names itself", () => {
   }
 });
 
-test("the native review's own event matches the verdict — approve vs request-changes", () => {
-  // decideNativeReview only decides WHETHER to review; the caller (main())
-  // picks --approve/--request-changes from the same reviewVerdict() this file
-  // already pins above. This test locks the two literal review bodies so a
-  // refactor can't silently swap which verdict maps to which GitHub review
-  // event without a test noticing.
-  assert.match(renderNativeReview({ verdict: "mergeable", headSha: sha }), /`mergeable`/);
-  assert.match(renderNativeReview({ verdict: "not-mergeable", headSha: sha }), /`not-mergeable`/);
-  assert.match(renderNativeReview({ verdict: "mergeable", headSha: sha }), new RegExp(sha));
+// --- #181-B: renderNativeReview is three-case, not one ----------------------
+//
+// Before this, `not-mergeable` from a real `high` finding and `not-mergeable`
+// from findings that could not even be parsed rendered byte-identical text —
+// exactly the two cases a human most needs to tell apart, since they want
+// opposite responses (fix the code vs. go look at why the review couldn't be
+// read).
+
+test("renderNativeReview: approved says so, plainly", () => {
+  const body = renderNativeReview({ verdict: "mergeable", basis: BASIS_CLEAN, headSha: sha });
+  assert.match(body, /`mergeable`/);
+  assert.match(body, new RegExp(sha));
+  assert.match(body, /approved/i);
 });
 
-test("main() picks --approve for mergeable and --request-changes for not-mergeable", () => {
+test("renderNativeReview: findings-present points at the artifact comment", () => {
+  const body = renderNativeReview({ verdict: "not-mergeable", basis: BASIS_FINDING, headSha: sha });
+  assert.match(body, /`not-mergeable`/);
+  assert.match(body, /review-artifact comment/);
+  assert.equal(/could not be parsed/i.test(body), false, "a real finding must not read as a parse failure");
+});
+
+test("renderNativeReview: no parseable findings says so, and names refusal as the safe default", () => {
+  const body = renderNativeReview({ verdict: "not-mergeable", basis: BASIS_UNREADABLE, headSha: sha });
+  assert.match(body, /`not-mergeable`/);
+  assert.match(body, /could not be parsed/i);
+  assert.match(body, /safe/i);
+});
+
+test("renderNativeReview: the three cases render three different bodies", () => {
+  const approved = renderNativeReview({ verdict: "mergeable", basis: BASIS_CLEAN, headSha: sha });
+  const finding = renderNativeReview({ verdict: "not-mergeable", basis: BASIS_FINDING, headSha: sha });
+  const unreadable = renderNativeReview({ verdict: "not-mergeable", basis: BASIS_UNREADABLE, headSha: sha });
+  const bodies = new Set([approved, finding, unreadable]);
+  assert.equal(bodies.size, 3, "each case must be visibly distinct to a human reading the PR");
+});
+
+// --- #181-C: a real finding still --request-changes; a parse failure only ---
+// --comment — so an unreadable result never wields the same sticky, blocking
+// native review a genuine `high` finding does.
+
+test("nativeReviewEvent: mergeable approves, a real finding requests changes, an unreadable result only comments", () => {
+  assert.deepEqual(nativeReviewEvent({ verdict: "mergeable", basis: BASIS_CLEAN }), { flag: "--approve", state: "APPROVED" });
+  assert.deepEqual(
+    nativeReviewEvent({ verdict: "not-mergeable", basis: BASIS_FINDING }),
+    { flag: "--request-changes", state: "CHANGES_REQUESTED" },
+  );
+  assert.deepEqual(
+    nativeReviewEvent({ verdict: "not-mergeable", basis: BASIS_UNREADABLE }),
+    { flag: "--comment", state: "COMMENTED" },
+  );
+});
+
+test("main() threads verdict AND basis from reviewBasis into submitNativeReview", () => {
   // Line-level check of the seam this file's other tests can't reach without
-  // mocking `gh`: the ternary that turns a verdict into a `gh pr review` flag.
+  // mocking `gh`: main() must not re-derive the verdict on its own (that was
+  // the #171 divergence risk) — it destructures both from the same
+  // reviewBasis() call this file already pins above.
   const source = read("scripts/actions/headless-review.js");
-  assert.match(source, /verdict === MERGEABLE \? "--approve" : "--request-changes"/);
+  assert.match(source, /const \{ verdict, basis \} = reviewBasis\(/);
+  assert.match(source, /submitNativeReview\(\{ config, repo, prNumber, pr, verdict, basis, headSha \}\)/);
+});
+
+test("submitNativeReview picks the review flag from nativeReviewEvent, not a bare verdict ternary", () => {
+  // The old ternary (verdict === MERGEABLE ? "--approve" : "--request-changes")
+  // is exactly the bug #181-C fixes — it could never produce --comment. This
+  // asserts the replacement wiring instead of the literal it replaced.
+  const source = read("scripts/actions/headless-review.js");
+  const fn = source.slice(source.indexOf("function submitNativeReview"));
+  assert.match(fn, /const \{ flag, state \} = nativeReviewEvent\(\{ verdict, basis \}\)/);
+  assert.match(fn, /"pr", "review", String\(prNumber\), "--repo", repo, flag,/);
+  assert.equal(/verdict === MERGEABLE \? "--approve" : "--request-changes"/.test(fn), false);
+});
+
+// --- #181-A: reconcile the bot's own prior reviews before submitting a new one
+
+test("reconcileNativeReviews: a stale CHANGES_REQUESTED (different sha) is dismissed", () => {
+  const reviews = [
+    { id: 1, state: "CHANGES_REQUESTED", commit_id: "old-sha-1" },
+    { id: 2, state: "CHANGES_REQUESTED", commit_id: "old-sha-2" },
+  ];
+  const result = reconcileNativeReviews({ reviews, headSha: sha, state: "CHANGES_REQUESTED" });
+  assert.deepEqual(result.dismissIds.sort(), [1, 2]);
+  assert.equal(result.skip, false);
+});
+
+test("reconcileNativeReviews: a CHANGES_REQUESTED already at head is not stale — nothing to dismiss", () => {
+  const reviews = [{ id: 1, state: "CHANGES_REQUESTED", commit_id: sha }];
+  const result = reconcileNativeReviews({ reviews, headSha: sha, state: "COMMENTED" });
+  assert.deepEqual(result.dismissIds, []);
+});
+
+test("reconcileNativeReviews: a review already at head in the exact state about to be submitted is a duplicate — skip", () => {
+  const reviews = [{ id: 1, state: "APPROVED", commit_id: sha }];
+  const result = reconcileNativeReviews({ reviews, headSha: sha, state: "APPROVED" });
+  assert.equal(result.skip, true);
+  assert.deepEqual(result.dismissIds, []);
+});
+
+test("reconcileNativeReviews: an APPROVED review is never treated as stale — only CHANGES_REQUESTED accumulates", () => {
+  const reviews = [{ id: 1, state: "APPROVED", commit_id: "old-sha" }];
+  const result = reconcileNativeReviews({ reviews, headSha: sha, state: "CHANGES_REQUESTED" });
+  assert.deepEqual(result.dismissIds, [], "an old APPROVED is not blocking anything — nothing to dismiss");
+  assert.equal(result.skip, false);
+});
+
+test("reconcileNativeReviews: no unbounded accumulation — every stale CHANGES_REQUESTED is dismissed, not just the newest", () => {
+  // The observed bug (#21/#22 on hsk-habit): two undismissed CHANGES_REQUESTED
+  // reviews stacked from two separate pushes. A fix that only cleared the
+  // single most-recent stale review would still leave a remainder behind on a
+  // PR that has been stuck not-mergeable across three or more pushes.
+  const reviews = [
+    { id: 10, state: "CHANGES_REQUESTED", commit_id: "sha-a" },
+    { id: 11, state: "CHANGES_REQUESTED", commit_id: "sha-b" },
+    { id: 12, state: "CHANGES_REQUESTED", commit_id: "sha-c" },
+  ];
+  const result = reconcileNativeReviews({ reviews, headSha: sha, state: "CHANGES_REQUESTED" });
+  assert.deepEqual(result.dismissIds.sort((a, b) => a - b), [10, 11, 12]);
+});
+
+test("submitNativeReview reconciles via the trusted-identity resolution (#113) before submitting", () => {
+  // Line-level check: reconciliation must filter the RAW fetched reviews to
+  // the trusted identity BEFORE deciding what's stale — the same
+  // filter-then-collapse discipline scripts/review/core.js's header requires
+  // of every other reader of this data, reused rather than re-derived.
+  const source = read("scripts/actions/headless-review.js");
+  const fn = source.slice(source.indexOf("function submitNativeReview"));
+  assert.match(fn, /trustedReviewerLogins\(\{ config \}\)/);
+  assert.match(fn, /filterByAuthor\(raw, trusted\.logins\)/);
+  assert.match(fn, /reconcileNativeReviews\(\{ reviews: ownReviews, headSha, state \}\)/);
+  assert.match(fn, /dismissals/);
+  assert.match(fn, /"--method", "PUT"/);
 });
 
 // `reviewText` itself now lives in scripts/headless/core.js (#157 lifted it so
