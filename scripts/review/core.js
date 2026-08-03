@@ -26,6 +26,22 @@
 // all**: nothing stops the PR's own author from posting the marker
 // themselves.
 //
+// Trusted-login membership is necessary but NOT sufficient (#187). A
+// write-capable agent that authors its own PR under the SAME trusted login
+// (the App bot, or `github-actions[bot]` under headless review) can post a
+// `<!-- agentflow-review -->` marker on that very PR and pass
+// `filterByAuthor`'s trust check — the login matches, even though the
+// "reviewer" and the "implementer" are the same principal. Native review
+// gets this exclusion structurally too (GitHub forbids approving your own
+// PR, and `decideBotReview`/`decideNativeReview` in `scripts/actions/*.js`
+// mirror that refusal for the *submitting* side), but the comment-artifact
+// path had no analogue on the *reading* side. `filterByAuthor`'s optional
+// third argument, `excludeAuthor`, closes that: pass the PR author's login
+// and any item authored by it is dropped even when its login is otherwise
+// trusted. **The composing caller MUST pass it** — a trusted login alone no
+// longer proves "not the implementer" once a write principal can author PRs
+// under it.
+//
 // **Where the filter runs matters, and it is easy to get wrong in the unsafe
 // direction.** `latestReviewComment`/`latestNativeReview` are a latest-wins
 // collapse. If a caller collapses first and only then checks the single
@@ -77,12 +93,28 @@ export const UX_VALUES = ["mergeable", "not-mergeable", "n/a"];
 // unfiltered `undefined` slip through some other way) — it fails exactly the
 // way `filterByAuthor(items, [])` reads: fully closed, same posture as every
 // other ambiguity in this module.
-export function filterByAuthor(items, trustedLogins) {
+//
+// `excludeAuthor` (#187) is the PR-author self-exclusion: an optional login,
+// checked in the SAME pass as the trust check and just as case-insensitively
+// exact. An item authored by `excludeAuthor` is dropped even when its login
+// IS in `trustedLogins` — trust in a login is not the same as trust that
+// *this particular poster* is not the PR's own author. This mirrors
+// `decideBotReview`'s (`scripts/actions/auto-merge.js`) self-exclusion for
+// native-review *submission*; this is the analogous guard for *reading* a
+// comment artifact back. Omitted (the default) preserves every existing
+// caller's behaviour exactly — this parameter is additive, not a new
+// default posture.
+export function filterByAuthor(items, trustedLogins, excludeAuthor = null) {
   const trusted = new Set((trustedLogins ?? []).map((l) => String(l ?? "").trim().toLowerCase()).filter(Boolean));
   if (!trusted.size) return [];
+  const excluded = typeof excludeAuthor === "string" ? excludeAuthor.trim().toLowerCase() : null;
   return (items ?? []).filter((item) => {
     const login = item?.author?.login;
-    return typeof login === "string" && trusted.has(login.trim().toLowerCase());
+    if (typeof login !== "string") return false;
+    const normalised = login.trim().toLowerCase();
+    if (!trusted.has(normalised)) return false;
+    if (excluded && normalised === excluded) return false;
+    return true;
   });
 }
 

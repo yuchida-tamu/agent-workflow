@@ -284,3 +284,67 @@ test("native-review mode keeps a trusted native review and ignores an untrusted 
   assert.equal(state.native.verdict, "mergeable");
   assert.equal(state.comment, null);
 });
+
+// --- resolveTrustedReviewState: PR-author self-exclusion (#187) ---------------
+//
+// Surfaced by PR #186's review: native-review mode's own trusted login IS
+// the App's bot login — the exact login a write-capable headless implementer
+// (#189) would author its PRs under. Without excluding the PR author, that
+// implementer could post its own `<!-- agentflow-review -->` marker (or,
+// hypothetically, a native review) on its own PR and pass this composition's
+// trust check unchanged. `prAuthor` closes that by threading straight into
+// `filterByAuthor`'s `excludeAuthor` for both lists.
+
+test("SECURITY (#187): a marker comment authored by the PR's own author is dropped, even under the trusted App login", () => {
+  const botLoginValue = "agentflow-bot[bot]";
+  const comments = [comment(botLoginValue, "mergeable")];
+  const state = resolveTrustedReviewState({
+    config: { [IDENTITY_KEY]: "agentflow-bot" },
+    nativeReviews: [],
+    comments,
+    prAuthor: botLoginValue,
+  });
+  assert.equal(state.comment, null, "the implementer's own post must not survive, however trusted its login");
+});
+
+test("SECURITY (#187): a native review authored by the PR's own author is dropped the same way", () => {
+  const botLoginValue = "agentflow-bot[bot]";
+  const nativeReviews = [{ state: "APPROVED", commit_id: HEAD, body: null, author: { login: botLoginValue } }];
+  const state = resolveTrustedReviewState({
+    config: { [IDENTITY_KEY]: "agentflow-bot" },
+    nativeReviews,
+    comments: [],
+    prAuthor: botLoginValue,
+  });
+  assert.equal(state.native, null);
+});
+
+test("SECURITY (#187): a genuinely different trusted reviewer's artifact still authorises with prAuthor set", () => {
+  const comments = [comment(HEADLESS_REVIEW_BOT_LOGIN, "mergeable")];
+  const state = resolveTrustedReviewState({
+    config: soloEnabled,
+    nativeReviews: [],
+    comments,
+    prAuthor: "some-other-login-entirely",
+  });
+  assert.equal(state.comment?.verdict, "mergeable", "excluding a different login must not touch a genuinely trusted artifact");
+});
+
+test("prAuthor omitted (the default) preserves every existing caller's behaviour exactly", () => {
+  const comments = [comment(HEADLESS_REVIEW_BOT_LOGIN, "mergeable")];
+  const withDefault = resolveTrustedReviewState({ config: soloEnabled, nativeReviews: [], comments });
+  const withNull = resolveTrustedReviewState({ config: soloEnabled, nativeReviews: [], comments, prAuthor: null });
+  assert.deepEqual(withDefault, withNull);
+  assert.equal(withDefault.comment?.verdict, "mergeable");
+});
+
+test("SECURITY (#187): the PR-author exclusion never widens trust — an untrusted post is still dropped regardless of prAuthor", () => {
+  const comments = [comment("pr-author", "mergeable")];
+  const state = resolveTrustedReviewState({
+    config: { [IDENTITY_KEY]: "agentflow-bot" },
+    nativeReviews: [],
+    comments,
+    prAuthor: "someone-else-entirely",
+  });
+  assert.equal(state.comment, null, "still untrusted — excluding a different login changes nothing here");
+});
