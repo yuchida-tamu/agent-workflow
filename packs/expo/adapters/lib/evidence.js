@@ -231,6 +231,18 @@ async function withManifestLock(
         // judged stale (step 3 in the header). Restore it so the real
         // holder's exclusivity isn't compromised, then back off and retry
         // against it like any other live lock.
+        //
+        // RESIDUAL (accepted, PR #184 review): this restore rename clobbers
+        // an occupied target atomically (POSIX rename(2)). If a *third*
+        // waiter grabs the briefly-empty lockPath inside this detach→restore
+        // gap, its lock is silently overwritten — a 4-party, sub-millisecond,
+        // no-crash interleave. This trades #177's fail-LOUD arbitration wedge
+        // for a far-rarer fail-SILENT corruption; it is a strict probability
+        // improvement but a change in failure *character*. Closing it needs an
+        // atomic rename-swap (renameat2 RENAME_EXCHANGE) Node does not expose
+        // portably — tracked for that path. The claim-side inode-REUSE
+        // false-match (snapshot.identity recycled onto a fresh lockPath before
+        // this rename) shares the release-side window and the same acceptance.
         await rename(claimPath, lockPath).catch((restoreErr) => {
           if (restoreErr.code !== "ENOENT") throw restoreErr;
         });
