@@ -250,6 +250,38 @@ export function parseUsage(stdout) {
   }
 }
 
+// Scans every ` ```json ` fenced block in `text`, in order, `JSON.parse`s
+// each, and keeps the LAST one that satisfies `isValid` — so a block quoted
+// mid-prose (an example, an earlier draft the agent superseded) can never
+// win over the concluding one. A fence that fails to parse (or fails
+// `isValid`) is skipped, not fatal: extraction degrades to `null` ("no
+// matching fence found"), never a throw, so a malformed block escalates to
+// whatever "nothing found" means for the caller instead of crashing the run.
+//
+// Lifted out of scripts/actions/dispatch-comment.js, which established this
+// exact contract for extracting `plan.json` out of the architect's prose
+// (#175). scripts/actions/headless-review.js's `findings` extraction (#171)
+// needs the identical scan over a different payload shape — the fact both
+// share is "the model's real answer lives in a fenced ```json block inside
+// its prose, not the whole output", and that fact should have one
+// implementation, not two that can drift apart. `isValid` is how each caller
+// keeps its own payload's schema check local rather than baking it in here.
+export function extractJsonFence(text, isValid = () => true) {
+  if (!text) return null;
+  let winner = null;
+  const re = /```json\b([\s\S]*?)```/gi;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (isValid(parsed)) winner = parsed;
+    } catch {
+      // Not a matching fence (or a corrupted one) — keep scanning.
+    }
+  }
+  return winner;
+}
+
 // Extract the agent's text from `--output-format json`. The CLI wraps it, and
 // a shape change upstream must degrade to "post what we got" rather than to a
 // crash that loses an artifact already paid for. Shared by both headless

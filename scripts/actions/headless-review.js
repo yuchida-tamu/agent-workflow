@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 // seams #91 already exports. (`launch()` growing a stdout passthrough would let
 // this collapse back to one call — worth doing, but not by widening this PR.)
 import { runProcess } from "../headless/run.js";
-import { METERED_VAR, TOKEN_VAR, classify, launchPlan, reviewText, summaryLine } from "../headless/core.js";
+import { METERED_VAR, TOKEN_VAR, classify, extractJsonFence, launchPlan, reviewText, summaryLine } from "../headless/core.js";
 import { reviewEnabled } from "../headless/config.js";
 import { loadTiers } from "../log/cli.js";
 import { runId } from "./dispatch-comment.js";
@@ -32,8 +32,13 @@ import { runId } from "./dispatch-comment.js";
 // the G3 guard's reader parses back. This is what #112 exists to emit —
 // reusing the reader's own exported constants rather than restating the
 // grammar here keeps the writer and reader from drifting apart.
-import { MARKER, VERDICTS } from "../review/core.js";
-import { resolveIdentity, botLogin } from "../identity/identity.js";
+// `filterByAuthor` is the pre-collapse trust filter #113 requires before any
+// list of reviews is treated as authoritative — reused here (#181-A) so this
+// module's own reconciliation of its PRIOR native reviews follows the exact
+// same "filter to trust, then collapse" discipline the G3 guard itself is
+// held to, rather than re-deriving a second, weaker notion of "ours".
+import { MARKER, VERDICTS, filterByAuthor } from "../review/core.js";
+import { resolveIdentity, botLogin, trustedReviewerLogins } from "../identity/identity.js";
 
 const TOOLKIT = process.env.AGENTFLOW_TOOLKIT ?? join(dirname(fileURLToPath(import.meta.url)), "../..");
 const AGENT = "code-reviewer";
@@ -63,16 +68,37 @@ export function reviewPrompt({ repo, prNumber, baseSha, headSha }) {
 }
 
 // Extracts the `findings` array the agent's own JSON output carries, if any.
-// Anything that doesn't parse as `{ findings: [...] }` is not a shape this
-// can trust — `verdictFromFindings` treats that the same as a review that
-// produced nothing usable.
+// Two attempts, in order:
+//
+//  1. `JSON.parse` the WHOLE text. Preserves the original behaviour for a
+//     compliant JSON-only agent that emits nothing but the envelope.
+//  2. Otherwise scan for fenced ` ```json ` blocks (`extractJsonFence`,
+//     scripts/headless/core.js — shared with dispatch-comment.js's
+//     plan.json extraction, #175) and take the LAST one that parses to an
+//     object carrying a `findings` array.
+//
+// (2) is the fix for #171: a full prose review ending in a fenced
+// `{"findings": [...]}` block used to fail step (1)'s whole-text parse and
+// fall straight to `null` — indistinguishable, downstream, from a review
+// that genuinely refused to produce anything readable. Trying the fence scan
+// is what lets a compliant-but-chatty agent's real findings be read instead
+// of discarded.
+//
+// Anything that satisfies NEITHER attempt is not a shape this can trust —
+// `verdictFromFindings` (via `reviewBasis`) treats that the same as a review
+// that produced nothing usable.
 export function findingsFromText(text) {
   try {
     const parsed = JSON.parse(text);
-    return Array.isArray(parsed?.findings) ? parsed.findings : null;
+    if (Array.isArray(parsed?.findings)) return parsed.findings;
   } catch {
-    return null;
+    // Not a bare JSON envelope — fall through to the fenced-block scan.
   }
+  const fenced = extractJsonFence(
+    text,
+    (candidate) => Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate) && Array.isArray(candidate.findings),
+  );
+  return fenced ? fenced.findings : null;
 }
 
 // The deterministic half of the contract (Determinism-first, CLAUDE.md ground
@@ -98,16 +124,47 @@ export function verdictFromFindings(findings) {
     : MERGEABLE;
 }
 
+// The three reasons a run can end up NOT_MERGEABLE — not GitHub's vocabulary,
+// this module's own, closed the same way `VERDICTS` is closed, so a caller
+// and its test cannot drift on the literal spelling.
+//
+//   "clean"      — findings were readable and none were blocking → MERGEABLE
+//   "finding"    — findings were readable and at least one blocks → NOT_MERGEABLE
+//   "unreadable" — no trustworthy findings at all: the run didn't produce
+//                  output (a non-"ok" outcome) or its output didn't parse as
+//                  `{ findings: [...] }` even after the fenced-block scan
+//
+// "finding" and "unreadable" used to be byte-identical downstream — both
+// just `not-mergeable`, both wielding the same sticky native
+// CHANGES_REQUESTED (#181's own root incident: a parse failure is not
+// evidence of a real defect, and treating it as one is what "absence is
+// refusal" is supposed to prevent from being invisible). This is the value
+// that lets a caller finally tell the two apart.
+export const BASIS_CLEAN = "clean";
+export const BASIS_FINDING = "finding";
+export const BASIS_UNREADABLE = "unreadable";
+
 // The single place both the posted comment and the native review (if any)
-// derive their verdict from, so the two artifacts can never disagree about
-// the same run (the "native vs comment divergence" risk #81's plan calls
-// out). A non-"ok" outcome (disabled, unauthenticated, rate-limited, failed)
-// never produced findings to read, so it is `not-mergeable` unconditionally —
-// the PR was not reviewed, and the guard must refuse rather than pass on a
-// run that did not happen.
+// derive their verdict — AND their basis — from, so the two artifacts can
+// never disagree about the same run (the "native vs comment divergence"
+// risk #81's plan calls out). A non-"ok" outcome (disabled, unauthenticated,
+// rate-limited, failed) never produced findings to read, so it is
+// `not-mergeable`/`unreadable` unconditionally — the PR was not reviewed,
+// and the guard must refuse rather than pass on a run that did not happen.
+export function reviewBasis({ outcome, text }) {
+  if (outcome !== "ok") return { verdict: NOT_MERGEABLE, basis: BASIS_UNREADABLE, findings: null };
+  const findings = findingsFromText(text);
+  if (!Array.isArray(findings)) return { verdict: NOT_MERGEABLE, basis: BASIS_UNREADABLE, findings: null };
+  const verdict = verdictFromFindings(findings);
+  return { verdict, basis: verdict === NOT_MERGEABLE ? BASIS_FINDING : BASIS_CLEAN, findings };
+}
+
+// Convenience for callers that only need the verdict — `reviewBody`'s
+// contract line and this module's own pre-#181 test suite both do, and
+// re-deriving it from `reviewBasis` keeps this file from carrying two
+// independent verdict computations that could disagree.
 export function reviewVerdict({ outcome, text }) {
-  if (outcome !== "ok") return NOT_MERGEABLE;
-  return verdictFromFindings(findingsFromText(text));
+  return reviewBasis({ outcome, text }).verdict;
 }
 
 // The comment posted to the PR. A failed or refused run still posts, because a
@@ -166,12 +223,80 @@ export function decideNativeReview({ identity, prAuthor = null, actingLogin = nu
   };
 }
 
-// The native review's body. Short on purpose: the findings live in the
-// comment artifact (both modes keep it, per #112's plan, so solo and
-// native-review repos audit identically); this is only the record that a
-// native review exists and what it says.
-export function renderNativeReview({ verdict, headSha }) {
-  return `⚙️ agentflow headless review: \`${verdict}\` at \`${headSha}\`. Findings are in the review-artifact comment on this PR.`;
+// The native review's body — three cases, not one (#181-B). Before this, a
+// `not-mergeable` from a real `high` finding and a `not-mergeable` from
+// findings that could not even be parsed rendered byte-identical text, which
+// is exactly backwards: those two want OPPOSITE responses from a human
+// (fix the code vs. go look at why the review couldn't be read), and the one
+// place meant to make that distinction visible was erasing it.
+//
+// Findings still live in the comment artifact either way (both modes keep
+// it, per #112's plan, so solo and native-review repos audit identically) —
+// this is only the record that a native review exists, what it says, and
+// (now) why.
+export function renderNativeReview({ verdict, basis, headSha }) {
+  if (verdict === MERGEABLE) {
+    return `⚙️ agentflow headless review: \`mergeable\` at \`${headSha}\`. Approved.`;
+  }
+  if (basis === BASIS_UNREADABLE) {
+    return (
+      `⚙️ agentflow headless review: \`not-mergeable\` at \`${headSha}\`. ` +
+      "The findings could not be parsed from the agent's output — refusing by default is the safe " +
+      "posture here, not evidence of a real defect. See the review-artifact comment on this PR for " +
+      "whatever was captured."
+    );
+  }
+  return (
+    `⚙️ agentflow headless review: \`not-mergeable\` at \`${headSha}\`. ` +
+    "Findings are in the review-artifact comment on this PR."
+  );
+}
+
+// The GitHub review event AND the review state it results in, decided from
+// the SAME (verdict, basis) pair `renderNativeReview` reads — one source, so
+// the flag submitted, the state GitHub records, and the wording a human sees
+// can never independently drift.
+//
+// #181-C: a real `high` finding still `--request-changes` — a genuine
+// blocking veto belongs in the review-state channel scripts/review/core.js's
+// native-review precedence already trusts. A parse failure or a run that
+// produced no output (`basis === "unreadable"`) uses `--comment` instead, so
+// an unreadable result never wields the same sticky, blocking
+// CHANGES_REQUESTED a real finding does — it records the artifact and lets
+// the comment-artifact veto (scripts/review/core.js, #113's G3 guard) do the
+// actual refusing.
+export function nativeReviewEvent({ verdict, basis }) {
+  if (verdict === MERGEABLE) return { flag: "--approve", state: "APPROVED" };
+  if (basis === BASIS_FINDING) return { flag: "--request-changes", state: "CHANGES_REQUESTED" };
+  return { flag: "--comment", state: "COMMENTED" };
+}
+
+// What to do about the bot's OWN prior native reviews before this run submits
+// a fresh one (#181-A). `reviews` is the raw list this module fetched,
+// ALREADY filtered to the trusted identity by the caller (`filterByAuthor` +
+// `trustedReviewerLogins`, same discipline scripts/review/core.js's header
+// insists every collapse follow) — never filtered here, so an untrusted
+// review can never be mistaken for one this function is entitled to dismiss.
+// Pure: the caller does the fetching and the dismissing this decides.
+//
+// A CHANGES_REQUESTED at a SHA that isn't head is stale — the code it
+// blocked has moved on. Nothing else clears it: branch protection's own
+// `dismiss_stale_reviews` is unavailable on a free private repo, and only an
+// APPROVE from the same reviewer self-heals it, which never arrives while
+// the verdict stays not-mergeable across pushes (#181's observed failure —
+// #21 and #22 each accumulated two undismissed CHANGES_REQUESTED). Every
+// stale one is dismissed, not just the newest, so a run that resumes after
+// several stuck pushes clears all of them rather than leaving a remainder to
+// keep accumulating.
+//
+// A review already at head in the EXACT state this run is about to submit is
+// a duplicate, not evidence of anything new — `skip` says so, so the caller
+// does not add a second identical review on top of one that already stands.
+export function reconcileNativeReviews({ reviews, headSha, state }) {
+  const list = reviews ?? [];
+  const stale = list.filter((r) => r.state === "CHANGES_REQUESTED" && r.commit_id !== headSha);
+  const duplicate = list.some((r) => r.commit_id === headSha && r.state === state);
+  return { dismissIds: stale.map((r) => r.id), skip: duplicate };
 }
 
 function upsertComment(repo, prNumber, body) {
@@ -201,7 +326,7 @@ function upsertComment(repo, prNumber, body) {
 // split, mirrored here): a native review that fails to submit must never lose
 // the record, and a solo-comment repo must audit identically to a
 // native-review one.
-function submitNativeReview({ config, repo, prNumber, pr, verdict, headSha }) {
+function submitNativeReview({ config, repo, prNumber, pr, verdict, basis, headSha }) {
   let actingLogin = null;
   try {
     actingLogin = sh(["api", "user", "--jq", ".login"]).trim() || null;
@@ -217,13 +342,47 @@ function submitNativeReview({ config, repo, prNumber, pr, verdict, headSha }) {
     console.log(`headless review: no native review — ${decision.reason}`);
     return;
   }
+
+  const { flag, state } = nativeReviewEvent({ verdict, basis });
+
+  // Reconcile before submitting (#181-A): dismiss any stale CHANGES_REQUESTED
+  // left by a PRIOR run of this same reviewer, and skip submitting a
+  // duplicate of what already stands at head. Reconciliation is a courtesy,
+  // not a gate — if listing or dismissing fails (rate limit, a token that
+  // can't read reviews), the run still submits its own review rather than
+  // losing the artifact over a housekeeping step.
   try {
-    sh([
-      "pr", "review", String(prNumber), "--repo", repo,
-      verdict === MERGEABLE ? "--approve" : "--request-changes",
-      "--body", renderNativeReview({ verdict, headSha }),
-    ]);
-    console.log(`headless review: native review submitted (${verdict}) — ${decision.reason}`);
+    const trusted = trustedReviewerLogins({ config });
+    const raw = JSON.parse(
+      sh([
+        "api", `repos/${repo}/pulls/${prNumber}/reviews`, "--jq",
+        "[.[] | {id, state, commit_id, author: {login: .user.login, association: .author_association}}]",
+      ]),
+    );
+    const ownReviews = filterByAuthor(raw, trusted.logins);
+    const { dismissIds, skip } = reconcileNativeReviews({ reviews: ownReviews, headSha, state });
+    for (const id of dismissIds) {
+      try {
+        sh([
+          "api", "--method", "PUT", `repos/${repo}/pulls/${prNumber}/reviews/${id}/dismissals`,
+          "-f", "message=superseded by a fresh headless review at a later commit",
+          "-f", "event=DISMISS",
+        ]);
+      } catch (err) {
+        console.log(`headless review: could not dismiss stale review ${id} (${err.message})`);
+      }
+    }
+    if (skip) {
+      console.log(`headless review: a native review already stands at ${headSha} in state ${state} — not duplicating`);
+      return;
+    }
+  } catch (err) {
+    console.log(`headless review: reconciliation skipped (${err.message}) — submitting anyway`);
+  }
+
+  try {
+    sh(["pr", "review", String(prNumber), "--repo", repo, flag, "--body", renderNativeReview({ verdict, basis, headSha })]);
+    console.log(`headless review: native review submitted (${verdict}/${basis}, ${flag}) — ${decision.reason}`);
   } catch (err) {
     // Never fatal. The comment artifact is the record either way — mirrors
     // auto-merge.js's posture on a review that fails to submit.
@@ -281,7 +440,7 @@ async function main() {
       prNumber,
       reviewBody({ outcome: "unauthenticated", reason: message, text: "", model: tier, usage: null, headSha: pr.head.sha }),
     );
-    submitNativeReview({ config, repo, prNumber, pr, verdict: NOT_MERGEABLE, headSha: pr.head.sha });
+    submitNativeReview({ config, repo, prNumber, pr, verdict: NOT_MERGEABLE, basis: BASIS_UNREADABLE, headSha: pr.head.sha });
     return 0;
   }
 
@@ -331,7 +490,8 @@ async function main() {
     headSha,
   });
   upsertComment(repo, prNumber, body);
-  submitNativeReview({ config, repo, prNumber, pr, verdict: reviewVerdict({ outcome: result.outcome, text }), headSha });
+  const { verdict, basis } = reviewBasis({ outcome: result.outcome, text });
+  submitNativeReview({ config, repo, prNumber, pr, verdict, basis, headSha });
 
   const ledgerOutcome = result.outcome === "ok" ? "ok" : result.outcome === "disabled" ? "abandoned" : "failed";
   log(["end", "--issue", String(prNumber), "--run", run, "--outcome", ledgerOutcome, "--repo", repo]);
