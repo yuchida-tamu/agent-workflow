@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CLOSING_KEYWORDS, linkedIssues, combineAncestry, main } from "../scripts/actions/post-merge.js";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CLOSING_KEYWORDS, linkedIssues, combineAncestry, main, runReplayViaCli } from "../scripts/actions/post-merge.js";
 import { classifyDelivery, renderFinding } from "../scripts/actions/ancestry.js";
 import { MARKER as MERGE_RECORD_MARKER } from "../scripts/actions/merge-record.js";
 
@@ -105,6 +108,104 @@ test("genuinely undelivered payload: neither sha an ancestor — still fails lou
   assert.match(delivery.reason, /delivered nothing/);
   const finding = renderFinding({ prNumber: 999, classified: delivery, defaultBranch: "main" });
   assert.match(finding, /did not deliver/);
+});
+
+// --- runReplayViaCli: exit 10 (real failure) vs exit 20 (can't run) ----------
+//
+// The bug review caught: `execFileSync` throws on ANY non-zero exit, and
+// `scripts/e2e/cli.js run` uses 10 for "ran, and something genuinely failed or
+// needs derivation" (with the outcome JSON on stdout) versus 20 for "could not
+// run at all". Collapsing those into one "unrunnable" bucket launders a real
+// regression into a vacuous skip that still transitions to `verified` and
+// exits 0 — worse than #182, which at least went red. These tests drive the
+// *real* CLI as a child process (not the injected `runReplay` seam the main()
+// tests below use), because the bug lived entirely inside how this function
+// reads a real child process's exit code and stdout — a seam-level test can
+// never see it.
+
+// A minimal one-scenario/one-step fixture: `.feature` + a compiled trace that
+// matches it exactly (`gherkin.js`'s slug() convention), so the runner has
+// something to replay rather than needing derivation.
+function buildReplayFixture() {
+  const dir = mkdtempSync(join(tmpdir(), "agentflow-replay-"));
+  const scenariosDir = join(dir, "e2e/scenarios");
+  const tracesDir = join(dir, "e2e/traces/checkout");
+  mkdirSync(scenariosDir, { recursive: true });
+  mkdirSync(tracesDir, { recursive: true });
+  writeFileSync(
+    join(scenariosDir, "checkout.feature"),
+    "Feature: Checkout\n\n  Scenario: Buyer completes a purchase\n    Given a signed-in user\n",
+  );
+  writeFileSync(
+    join(tracesDir, "buyer-completes-a-purchase.trace.json"),
+    JSON.stringify({ steps: [{ keyword: "given", text: "a signed-in user", trace: { actions: [], assertions: [] } }] }),
+  );
+  return dir;
+}
+
+// A pack whose adapters always report the step failed — a genuine regression,
+// not an infrastructure problem: both adapters run fine (exit 0), the CLI
+// completes normally, and exits 10 because the scenario failed.
+function buildFailingPack(dir) {
+  const adaptersDir = join(dir, "pack/adapters");
+  mkdirSync(adaptersDir, { recursive: true });
+  const readStdin = "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const p=JSON.parse(d);";
+  writeFileSync(
+    join(adaptersDir, "run.js"),
+    `${readStdin}process.stdout.write(JSON.stringify(p.op==='start'?{session_id:'s1'}:{ok:true}));});`,
+  );
+  writeFileSync(
+    join(adaptersDir, "execute-step.js"),
+    `${readStdin}process.stdout.write(JSON.stringify({status:'failed',failure:{reason:'boom'}}));});`,
+  );
+  return join(dir, "pack");
+}
+
+test("runReplayViaCli: a real scenario failure (exit 10) returns the failing result — it must not throw", () => {
+  const dir = buildReplayFixture();
+  try {
+    const packDir = buildFailingPack(dir);
+    const result = runReplayViaCli({
+      scenariosDir: join(dir, "e2e/scenarios"),
+      tracesDir: join(dir, "e2e/traces"),
+      packDir,
+    });
+    assert.equal(result.summary.failed, 1, "the real CLI's exit-10 outcome JSON, recovered from stdout");
+    assert.equal(result.summary.passed, 0);
+    assert.equal(result.results[0].status, "failed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runReplayViaCli: a genuinely unrunnable pack (exit 20, no adapters) throws", () => {
+  const dir = buildReplayFixture();
+  try {
+    const emptyPack = join(dir, "empty-pack");
+    mkdirSync(emptyPack, { recursive: true });
+    assert.throws(() =>
+      runReplayViaCli({ scenariosDir: join(dir, "e2e/scenarios"), tracesDir: join(dir, "e2e/traces"), packDir: emptyPack }),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runReplayViaCli: a spawn failure (nonexistent CLI-adjacent path) throws rather than fabricating a result", () => {
+  // A path that cannot resolve to an adapter at all — same "genuinely could
+  // not run" bucket as exit 20, reached via a different failure mode.
+  const dir = buildReplayFixture();
+  try {
+    assert.throws(() =>
+      runReplayViaCli({
+        scenariosDir: join(dir, "e2e/scenarios"),
+        tracesDir: join(dir, "e2e/traces"),
+        packDir: join(dir, "does-not-exist"),
+      }),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- main(): the exit-before-transition fix (#182) ---------------------------
@@ -299,7 +400,38 @@ test("main: a real suite with a resolvable pack actually replays and passes", ()
   assert.match(postmergeNote(world, 45), /post-merge smoke: passed/);
 });
 
-test("main: a real suite whose replay throws degrades rather than crashing the run", () => {
+// The review's critical missing case: a replay that RAN and genuinely failed
+// must block, not degrade. `runReplayViaCli`'s fixed contract is that a real
+// failure (the CLI's exit 10) comes back as a *result*, not a thrown error —
+// this pins that main()'s wiring honours that contract all the way through:
+// no transition, exit 10, and the note must never say "skipped" for a
+// regression the replay actually caught.
+test("main: a real suite's replay genuinely fails — blocks the transition, exits 10, never a silent green", () => {
+  const world = { issues: { 46: { labels: ["state:merged"], state: "OPEN" } }, comments: [] };
+  const sh = fakeGh(world);
+  const code = main({
+    event: makeMergeEvent({ body: "Closes #46" }),
+    repo: "org/repo",
+    sh,
+    checkAncestor: alwaysDelivered,
+    readFeatureFiles: () => ({ exists: true, files: ["checkout.feature"] }),
+    countTraceFiles: () => 1,
+    loadConfig: () => ({ platform: "rn-expo" }),
+    listDir: () => ["expo"],
+    // What the fixed runReplayViaCli returns for a real, exit-10 failure —
+    // recovered from the child's stdout rather than thrown.
+    runReplay: () => ({ summary: { passed: 0, failed: 1, "needs-derivation": 0 }, results: [{ status: "failed" }] }),
+  });
+  assert.equal(code, 10, "a genuine regression must turn the workflow red, not exit 0");
+  assert.deepEqual(world.issues[46].labels, ["state:merged"], "no transition — the label must not move to verified");
+  const note = postmergeNote(world, 46);
+  assert.match(note, /post-merge smoke: failed/);
+  assert.match(note, /Smoke blocked the transition/);
+  assert.match(note, /Transition withheld/);
+  assert.doesNotMatch(note, /skipped/i, "a caught real failure must never read as an unrunnable skip");
+});
+
+test("main: a real suite whose replay is genuinely unrunnable (throws) degrades rather than crashing the run", () => {
   const world = { issues: { 47: { labels: ["state:merged"], state: "OPEN" } }, comments: [] };
   const sh = fakeGh(world);
   const code = main({
@@ -311,6 +443,8 @@ test("main: a real suite whose replay throws degrades rather than crashing the r
     countTraceFiles: () => 1,
     loadConfig: () => ({ platform: "rn-expo" }),
     listDir: () => ["expo"],
+    // What the fixed runReplayViaCli throws for exit 20 / a spawn failure —
+    // genuinely could not run, as opposed to ran-and-failed above.
     runReplay: () => {
       throw new Error("adapter exited 20 (infrastructure failure)");
     },

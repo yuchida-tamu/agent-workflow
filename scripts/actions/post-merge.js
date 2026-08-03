@@ -126,13 +126,37 @@ export function gitCheckAncestor(sha, defaultBranch) {
 // resolution. Invoked by absolute path (via TOOLKIT_ROOT) rather than the
 // cwd-relative `scripts/e2e/cli.js` the pre-#182 code used — cwd here is the
 // *consumer's* checkout, which never has a `scripts/` directory of its own.
+//
+// `execFileSync` throws on ANY non-zero exit, and the CLI (scripts/e2e/cli.js)
+// uses two different non-zero codes for two very different facts: 10 means the
+// replay RAN and found a real failure or a needs-derivation step (the outcome
+// JSON — the one thing `main()`'s caller needs — is on stdout); 20 means it
+// could not run at all (a spawn error, a missing adapter, bad usage). Those
+// must not collapse into one "could not run" bucket — a caller that treats
+// both as unrunnable launders a genuine regression into `smokeSkipped` (still
+// transitions to `verified`, still exits 0), which is strictly worse than the
+// #182 bug it replaced: that one at least turned the workflow red. So exit 10
+// is *not* an error here — it is recovered from `err.stdout` and returned as a
+// normal result, exactly like exit 0, so `smokeOutcome` sees the failing
+// summary and takes its `blocked` branch (no transition, exit 10). Only a
+// genuinely unrunnable replay — 20, a spawn failure, or exit 10 with stdout
+// that isn't the outcome JSON we expect — still throws, for `main()`'s catch
+// to degrade into `smokeSkipped`.
 export function runReplayViaCli({ scenariosDir, tracesDir, packDir }) {
-  const raw = execFileSync(
-    process.execPath,
-    [E2E_CLI_PATH, "run", "--scenarios", scenariosDir, "--traces", tracesDir, "--pack", packDir],
-    { encoding: "utf8" }
-  );
-  return JSON.parse(raw);
+  const args = [E2E_CLI_PATH, "run", "--scenarios", scenariosDir, "--traces", tracesDir, "--pack", packDir];
+  try {
+    return JSON.parse(execFileSync(process.execPath, args, { encoding: "utf8" }));
+  } catch (execErr) {
+    if (execErr.status === 10 && execErr.stdout) {
+      try {
+        return JSON.parse(execErr.stdout);
+      } catch {
+        // Exit 10 but stdout wasn't the outcome JSON we expected — fall
+        // through and treat this as genuinely unrunnable rather than guess.
+      }
+    }
+    throw execErr;
+  }
 }
 
 // Primary (merge-commit) and secondary (head-sha) ancestry evidence, combined
