@@ -418,7 +418,9 @@ export function reconcileChildren({ existingChildren = [], specs = [] }) {
     if (byTitle.has(spec.title)) existingByIndex[i] = byTitle.get(spec.title);
     else missingIndices.push(i);
   });
-  const orphans = existingChildren.filter((child) => !child.closed && !declaredTitles.has(child.title));
+  const orphans = existingChildren.filter(
+    (child) => child.title != null && !child.closed && !declaredTitles.has(child.title),
+  );
   return { existingByIndex, missingIndices, orphans };
 }
 
