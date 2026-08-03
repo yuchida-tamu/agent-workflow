@@ -11,6 +11,7 @@
 import { CRITICALITIES, validateConfig } from "./config-schema.js";
 import { g3Mode } from "../scripts/identity/identity.js";
 import { stageEnabled } from "../scripts/headless/core.js";
+import { resolvePackDir } from "../scripts/e2e/pack.js";
 
 // What `projectPlan()` substitutes into every workflow stub it installs. A stub
 // that still carries it was copied by hand, not scaffolded.
@@ -215,6 +216,48 @@ function g3ModeCheck({ value }, protection) {
 }
 
 // ---------------------------------------------------------------------------
+// 7. e2e readiness — never fails, only notes
+//
+// #182: a repo with `.feature` files but no resolvable pack (or no compiled
+// traces) reported 6/6 here and then hard-failed `post-merge` on its first
+// properly-linked PR. `post-merge` no longer hard-fails — it degrades and
+// still transitions — so this check does not fail adoption either; the whole
+// value of `--verify` is learning what post-merge will find *before* the
+// first real merge, not blocking on it. It always names which of the three
+// post-merge states (empty suite, zero traces, ready) this repo is in, the
+// same way `coverage`'s rot-warning names an unmapped fraction rather than
+// silently letting it drift.
+
+function e2eReadinessCheck({ featureFiles = [], traceCount = 0, platform, toolkitPacks = [], consumerPacks = [] }) {
+  const name = "e2e readiness";
+  if (featureFiles.length === 0) {
+    return pass(name, "no .feature files — post-merge smoke passes vacuously");
+  }
+  if (traceCount === 0) {
+    return pass(
+      name,
+      `${featureFiles.length} feature file(s), 0 compiled traces under e2e/traces`,
+      "scenarios are present but nothing is compiled to replay yet — post-merge will pass vacuously " +
+        "(zero traces) until traces are compiled (#182)",
+    );
+  }
+  const resolved = resolvePackDir({ platform, toolkitPacks, consumerPacks });
+  if (!resolved) {
+    return pass(
+      name,
+      `${featureFiles.length} feature file(s), ${traceCount} compiled trace(s), no pack resolvable`,
+      `scenarios are ready to replay but no pack answers platform ${platform ? `"${platform}"` : "(none configured)"} — ` +
+        'post-merge will skip the smoke and record why rather than failing (#182); set "platform" in ' +
+        "agentflow.config.json to a pack the toolkit ships, or vendor one under packs/",
+    );
+  }
+  return pass(
+    name,
+    `${featureFiles.length} feature file(s), ${traceCount} compiled trace(s), pack resolved (${resolved.source}: ${resolved.reason})`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 
 // The whole report, in a fixed order. Inputs are what the CLI gathered:
 //   config     { value, error } — parsed agentflow.config.json
@@ -224,6 +267,9 @@ function g3ModeCheck({ value }, protection) {
 //   next       { code, stdout, error } — `agentflow-next --repo <r> --json`
 //   protection — GET /repos/{repo}/branches/{branch}/protection: the body, null
 //                when absent (404), undefined when unreadable (403) or not read
+//   e2e        { featureFiles, traceCount, toolkitPacks, consumerPacks } — what
+//              the CLI found under e2e/scenarios, e2e/traces, the toolkit's own
+//              packs/, and the target's own packs/, respectively
 // `expectedLabels` comes from init/labels.yml and `expectedWorkflows` from the
 // templates directory, so neither list can drift from what adopt installs.
 export function verifyChecks({
@@ -235,6 +281,7 @@ export function verifyChecks({
   protection,
   expectedLabels = [],
   expectedWorkflows = [],
+  e2e = {},
 }) {
   return [
     configCheck(config),
@@ -243,6 +290,7 @@ export function verifyChecks({
     workflowsCheck(workflows, expectedWorkflows, config.value ?? {}),
     nextCheck(next),
     g3ModeCheck(config, protection),
+    e2eReadinessCheck({ ...e2e, platform: config.value?.platform }),
   ];
 }
 
