@@ -632,6 +632,56 @@ test("reconcileChildren: a duplicate declared title matches the first same-title
   assert.deepEqual(missingIndices, []);
 });
 
+// --- orphans: the reverse set difference (#178 residual from #175) -----------
+
+test("reconcileChildren: a re-plan with a changed title surfaces the old child as an orphan, not silently dropped", () => {
+  // The exact #178 scenario: the architect re-plans with a materially
+  // different title for the same slot. The new title is missing (needs
+  // creating) and the OLD child is now undeclared — an orphan, not touched.
+  const specs = [{ title: "New title" }];
+  const existingChildren = [{ number: 201, title: "Old title", closed: false }];
+  const { missingIndices, orphans } = reconcileChildren({ existingChildren, specs });
+  assert.deepEqual(missingIndices, [0]);
+  assert.deepEqual(orphans, [{ number: 201, title: "Old title", closed: false }]);
+});
+
+test("reconcileChildren: closed children are never orphans — already acted on, nothing left to disclose", () => {
+  const specs = [{ title: "New title" }];
+  const existingChildren = [{ number: 201, title: "Old title", closed: true }];
+  const { orphans } = reconcileChildren({ existingChildren, specs });
+  assert.deepEqual(orphans, []);
+});
+
+test("reconcileChildren: re-running the SAME plan produces zero orphans — idempotent, no noise", () => {
+  const specs = [{ title: "first" }, { title: "second" }];
+  const existingChildren = [
+    { number: 201, title: "first", closed: false },
+    { number: 202, title: "second", closed: false },
+  ];
+  const { orphans } = reconcileChildren({ existingChildren, specs });
+  assert.deepEqual(orphans, []);
+});
+
+test("reconcileChildren: a genuinely-added-then-kept child surfaces as an orphan, once per run", () => {
+  // A child that exists outside the declared plan (legitimate extra work
+  // someone filed) is not recreated (already exists — not in missingIndices)
+  // and not silently dropped from the report — it documents the human
+  // decision point (close it, or keep it) every run it stays undeclared,
+  // never duplicated within a single run's list.
+  const specs = [{ title: "first" }];
+  const existingChildren = [
+    { number: 201, title: "first", closed: false },
+    { number: 305, title: "extra work someone added", closed: false },
+  ];
+  const { missingIndices, orphans } = reconcileChildren({ existingChildren, specs });
+  assert.deepEqual(missingIndices, []);
+  assert.deepEqual(orphans, [{ number: 305, title: "extra work someone added", closed: false }]);
+  // An identical re-run (human left it alone, nothing changed) reports the
+  // exact same single orphan — no accumulation, no duplication.
+  const again = reconcileChildren({ existingChildren, specs });
+  assert.deepEqual(again.orphans, orphans);
+});
+
 // --- the idempotency + validation + reconciliation decision ------------------
 
 test("planChildrenDecision rejects the whole plan on an illegal label — zero creation, names the offender", () => {
@@ -696,6 +746,38 @@ test("planChildrenDecision: existing children with no fresh plan to reconcile ag
 test("planChildrenDecision is a legitimate no-op when the plan declares no children", () => {
   const decision = planChildrenDecision({ existingChildren: [], plan: { files: ["a/**"] }, knownLabels: KNOWN_LABELS });
   assert.equal(decision.act, "none");
+});
+
+// --- orphans threaded through the decision (#178) -----------------------------
+
+test("planChildrenDecision: the skip (idempotent) branch also reports orphans — a re-plan can both fully match AND leave stragglers", () => {
+  const specs = [{ title: "first" }];
+  const existingChildren = [
+    { number: 201, title: "first", closed: false },
+    { number: 202, title: "stale", closed: false },
+  ];
+  const decision = planChildrenDecision({ existingChildren, plan: { files: [], children: specs }, knownLabels: KNOWN_LABELS });
+  assert.equal(decision.act, "skip");
+  assert.deepEqual(decision.orphans, [{ number: 202, title: "stale", closed: false }]);
+});
+
+test("planChildrenDecision: the create branch reports orphans alongside what it's about to create", () => {
+  const specs = [{ title: "new one" }];
+  const existingChildren = [{ number: 202, title: "stale", closed: false }];
+  const decision = planChildrenDecision({ existingChildren, plan: { files: [], children: specs }, knownLabels: KNOWN_LABELS });
+  assert.equal(decision.act, "create");
+  assert.equal(decision.missingCount, 1);
+  assert.deepEqual(decision.orphans, [{ number: 202, title: "stale", closed: false }]);
+});
+
+test("planChildrenDecision: a same-plan re-run reports zero orphans", () => {
+  const specs = [{ title: "first" }, { title: "second" }];
+  const existingChildren = [
+    { number: 201, title: "first", closed: false },
+    { number: 202, title: "second", closed: false },
+  ];
+  const decision = planChildrenDecision({ existingChildren, plan: { files: [], children: specs }, knownLabels: KNOWN_LABELS });
+  assert.deepEqual(decision.orphans, []);
 });
 
 // --- creation + blockedBy resolution + reconciliation + sub-issue linking (mocked gh seam) ----
@@ -949,6 +1031,45 @@ test("specEffectsCommentBody reports a refused CAS and tells a human what to che
   assert.match(body, /A human should:/);
 });
 
+// --- orphan disclosure (#178) -------------------------------------------------
+
+test("specEffectsCommentBody lists orphans under an explicit ⚠ section, naming each by number — disclosed, not acted on", () => {
+  const childrenOutcome = {
+    ok: true,
+    detail: "created 1 child issue(s): #301",
+    orphans: [
+      { number: 201, title: "Old title", closed: false },
+      { number: 205, title: "Also stale", closed: false },
+    ],
+  };
+  const verdictOutcome = { ok: true, detail: "`low` (score 0) posted" };
+  const gate = { ok: true, plan: { from: "spec", to: "planned" } };
+  const body = specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate });
+  assert.match(body, /⚠ children no longer in the plan: #201, #205 — review and close if superseded by this revision\./);
+  // Disclosure only — the comment never claims a close or a re-creation happened.
+  assert.equal(/closed|recreated|re-created/i.test(body.split("⚠")[1]), false);
+});
+
+test("specEffectsCommentBody omits the orphan section entirely when there are none — no ⚠ noise on a clean re-run", () => {
+  const childrenOutcome = {
+    ok: true,
+    detail: "all 2 declared child(ren) already exist (matched by title) — creation skipped (idempotent)",
+    orphans: [],
+  };
+  const verdictOutcome = { ok: true, detail: "`low` (score 0) posted" };
+  const gate = { ok: true, plan: { from: "spec", to: "planned" } };
+  const body = specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate });
+  assert.equal(/⚠/.test(body), false);
+});
+
+test("specEffectsCommentBody omits the orphan section when childrenOutcome carries no orphans field at all (back-compat)", () => {
+  const childrenOutcome = { ok: false, detail: "child creation failed: boom" };
+  const verdictOutcome = { ok: true, detail: "`low` (score 0) posted" };
+  const gate = { ok: false, failed: ["children"] };
+  const body = specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate });
+  assert.equal(/⚠/.test(body), false);
+});
+
 // --- main()'s wiring (source-slice, same style as the #160 test above) -------
 
 test("main() runs the spec side-effects only inside the ok branch, scoped to state === \"spec\"", () => {
@@ -973,6 +1094,12 @@ test("main() validates labels and reconciles before creating — decision drives
   assert.match(specBlock, /existingChildren/, "childrenOf's full children array, not just a count, is threaded through");
   assert.match(specBlock, /knownLabels/);
   assert.match(specBlock, /existingByIndex: decision\.existingByIndex/, "reconciliation's map is passed to createChildren");
+});
+
+test("main() threads reconciliation orphans from the decision into childrenOutcome for the artifact comment (#178)", () => {
+  const source = read("scripts/actions/dispatch-comment.js");
+  const specBlock = source.slice(source.indexOf('if (state === "spec")'));
+  assert.match(specBlock, /orphans: decision\.orphans/);
 });
 
 test("main() re-reads labels and goes through resolveApply before editing — CAS, not an unconditional edit (#168 review, finding 5)", () => {

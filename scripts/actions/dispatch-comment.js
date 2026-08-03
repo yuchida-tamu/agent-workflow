@@ -396,18 +396,32 @@ export function parseCreatedIssueNumber(stdout) {
 // so a duplicate declared title matches the first same-titled existing
 // child. Documented rather than guarded against: the architect is expected
 // to give each child a distinct title, as it always has.
+//
+// The #178 residual: the set difference the other direction. A re-plan with
+// materially changed titles leaves the PRIOR plan's children out of the
+// declared set entirely — `missingIndices` never mentions them (they aren't
+// missing, they're just no longer wanted) so nothing before this reported
+// them at all. `orphans` is exactly that — existing children whose title
+// matches no declared spec, using the SAME `byTitle`/title-string comparison
+// as the forward direction, not a second normalization. Closed children are
+// excluded: an orphan already closed isn't "lingering, dispatchable" — it
+// needs no disclosure, the human already acted on it.
 export function reconcileChildren({ existingChildren = [], specs = [] }) {
   const byTitle = new Map();
   for (const child of existingChildren) {
     if (child.title != null && !byTitle.has(child.title)) byTitle.set(child.title, child.number);
   }
+  const declaredTitles = new Set(specs.map((spec) => spec.title));
   const existingByIndex = {};
   const missingIndices = [];
   specs.forEach((spec, i) => {
     if (byTitle.has(spec.title)) existingByIndex[i] = byTitle.get(spec.title);
     else missingIndices.push(i);
   });
-  return { existingByIndex, missingIndices };
+  const orphans = existingChildren.filter(
+    (child) => child.title != null && !child.closed && !declaredTitles.has(child.title),
+  );
+  return { existingByIndex, missingIndices, orphans };
 }
 
 // The pure per-run decision: validate labels, then reconcile against what
@@ -450,14 +464,15 @@ export function planChildrenDecision({ existingChildren = [], plan, knownLabels 
     };
   }
 
-  const { existingByIndex, missingIndices } = reconcileChildren({ existingChildren, specs });
+  const { existingByIndex, missingIndices, orphans } = reconcileChildren({ existingChildren, specs });
   if (missingIndices.length === 0) {
     return {
       act: "skip",
       detail: `all ${specs.length} declared child(ren) already exist (matched by title) — creation skipped (idempotent)`,
+      orphans,
     };
   }
-  return { act: "create", specs, existingByIndex, missingCount: missingIndices.length };
+  return { act: "create", specs, existingByIndex, missingCount: missingIndices.length, orphans };
 }
 
 // The impure creation loop. `existingByIndex` seeds the index→number map with
@@ -623,6 +638,15 @@ const STEP_GUIDANCE = {
 // outcome (#168 review, finding 5) — apply/noop/heal/refused — so the
 // comment reports what ACTUALLY happened at write time, not just that the
 // precondition (children + verdict) was met.
+//
+// `childrenOutcome.orphans` (#178) is `reconcileChildren`'s reverse-direction
+// set difference — existing children whose title no longer matches anything
+// declared in THIS run's plan. Disclosed, never acted on: close-or-keep is a
+// human call (an "orphan" may be legitimate work someone added since the
+// last plan), so this only ever lists — it never closes, never re-creates.
+// Absent/empty means either nothing diverged or this outcome shape predates
+// #178 (callers that don't compute orphans just omit the field), so the
+// section is skipped rather than rendered empty.
 export function specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate }) {
   const mark = (ok) => (ok ? "✅" : "❌");
   const lines = [
@@ -632,6 +656,14 @@ export function specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate }
     `${mark(childrenOutcome.ok)} children — ${childrenOutcome.detail}`,
     `${mark(verdictOutcome.ok)} plan-stage verdict — ${verdictOutcome.detail}`,
   ];
+  const orphans = childrenOutcome.orphans ?? [];
+  if (orphans.length) {
+    lines.push(
+      "",
+      `⚠ children no longer in the plan: ${orphans.map((o) => `#${o.number}`).join(", ")} — ` +
+        "review and close if superseded by this revision.",
+    );
+  }
   if (gate.ok) {
     const r = gate.resolution;
     if (!r || r.action === "apply") {
@@ -832,14 +864,16 @@ async function main() {
               `created ${created.length} child issue(s)` +
               (alreadyExisted ? ` (${alreadyExisted} already existed — reconciled, not recreated)` : "") +
               `: ${created.map((c) => `#${c.number}`).join(", ") || "none"}`,
+            orphans: decision.orphans ?? [],
           };
         } catch (err) {
-          childrenOutcome = { ok: false, detail: `child creation failed: ${err.message}` };
+          childrenOutcome = { ok: false, detail: `child creation failed: ${err.message}`, orphans: decision.orphans ?? [] };
         }
       } else {
         childrenOutcome = {
           ok: decision.act !== "extraction-failed" && decision.act !== "rejected",
           detail: decision.detail,
+          orphans: decision.orphans ?? [],
         };
       }
 
