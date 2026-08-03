@@ -8,7 +8,6 @@ import {
   artifactCommentBody,
   artifactMarker,
   artifactNote,
-  branchExistsArgv,
   childBody,
   commentBody,
   createChildArgv,
@@ -16,27 +15,22 @@ import {
   dispatchAction,
   extractPlan,
   factsArgv,
-  implementerBranch,
-  implementerWorktreePath,
   isLegalChildLabel,
   isValidPlanCandidate,
   launchPrompt,
   loadKnownLabels,
-  loadToolPolicy,
   matchingComment,
   parseCreatedIssueNumber,
   planChildrenDecision,
   planVerdictCommentBody,
   planVerdictPacks,
   policyEvaluateArgv,
-  prepareImplementerWorktree,
   reconcileChildren,
   runId,
   specEffectsCommentBody,
   specTransitionPlan,
   truncateArtifact,
   validateChildLabels,
-  worktreeAddArgv,
 } from "../scripts/actions/dispatch-comment.js";
 import { DISPATCH, dispatchFor } from "../scripts/next/core.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
@@ -996,121 +990,3 @@ test("main() re-reads labels and goes through resolveApply before editing — CA
   assert.match(editSlice, /resolution\.remove/);
 });
 
-// --- per-role headless tool policy (#180 item 1, the orchestrator's ruling) --
-//
-// The ruling: grant the implementer write tools, bounded architecturally —
-// it can only open a PR, never merge one. `loadToolPolicy` is the mechanism:
-// it reads the SAME per-agent frontmatter `loadTiers` already reads `model:`
-// from, for two more optional lines. These tests exercise it against the
-// REAL roster (`agents/`), so a drift between what the ruling says and what
-// `agents/implementer.md` actually declares fails here, not in production.
-
-test("loadToolPolicy: the implementer declares the write set, and only the implementer", () => {
-  const policy = loadToolPolicy("agents");
-  assert.deepEqual(
-    policy.implementer.allowedTools,
-    ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
-    "the same tools an interactive implementer already wields",
-  );
-  assert.equal(policy.implementer.permissionMode, "acceptEdits");
-});
-
-test("loadToolPolicy: reviewer/architect/every other role declares nothing — launchPlan's own read-only default stands", () => {
-  const policy = loadToolPolicy("agents");
-  for (const agent of ["architect", "code-reviewer", "product-shaper", "ux-reviewer"]) {
-    assert.equal(Object.hasOwn(policy, agent), false, `${agent} must not declare a headless tool policy`);
-  }
-});
-
-test("loadToolPolicy never grants Edit/Write/Bash to anything but the implementer, across the whole roster", () => {
-  const policy = loadToolPolicy("agents");
-  for (const [agent, entry] of Object.entries(policy)) {
-    if (agent === "implementer") continue;
-    for (const writeTool of ["Edit", "Write", "Bash"]) {
-      assert.equal(
-        (entry.allowedTools ?? []).includes(writeTool),
-        false,
-        `${agent} must not declare ${writeTool} — only the implementer is write-capable`,
-      );
-    }
-  }
-});
-
-test("main() reads the per-agent tool policy and threads it into launchPlan, defaulting when the role declares nothing", () => {
-  const source = read("scripts/actions/dispatch-comment.js");
-  const launchBlock = source.slice(source.indexOf("// --- launch "));
-  assert.match(launchBlock, /loadToolPolicy\(join\(TOOLKIT, "agents"\)\)/);
-  assert.match(launchBlock, /policy\.allowedTools \? \{ allowedTools: policy\.allowedTools \} : \{\}/);
-  assert.match(launchBlock, /policy\.permissionMode \? \{ permissionMode: policy\.permissionMode \} : \{\}/);
-});
-
-// --- implementer worktree/branch prep + cwd (#180 item 2) --------------------
-//
-// `agents/implementer.md` promises the prep script has already created the
-// worktree and branch before it's launched. `prepareImplementerWorktree` is
-// that script's headless half — these tests exercise its argv contract and
-// idempotency over the same injected-`sh` mock seam `createChildren` and
-// `computePlanVerdict` already use elsewhere in this file, never a real
-// `git`.
-
-test("implementerBranch and implementerWorktreePath are deterministic and per-issue", () => {
-  assert.equal(implementerBranch(181), "implementer/issue-181");
-  assert.equal(implementerWorktreePath("/home/runner/work/repo/repo", 181), "/home/runner/work/repo/agentflow-worktree-issue-181");
-});
-
-test("branchExistsArgv checks the local ref quietly, without triggering a fetch or a network call", () => {
-  assert.deepEqual(branchExistsArgv("implementer/issue-181"), ["rev-parse", "--verify", "--quiet", "refs/heads/implementer/issue-181"]);
-});
-
-test("worktreeAddArgv: a fresh issue creates the branch off HEAD; an existing branch is attached to instead", () => {
-  assert.deepEqual(
-    worktreeAddArgv({ path: "/x/agentflow-worktree-issue-181", branch: "implementer/issue-181", branchExists: false }),
-    ["worktree", "add", "-b", "implementer/issue-181", "/x/agentflow-worktree-issue-181", "HEAD"],
-  );
-  assert.deepEqual(
-    worktreeAddArgv({ path: "/x/agentflow-worktree-issue-181", branch: "implementer/issue-181", branchExists: true }),
-    ["worktree", "add", "/x/agentflow-worktree-issue-181", "implementer/issue-181"],
-  );
-});
-
-test("prepareImplementerWorktree: a fresh issue checks for the branch, finds none, and creates both", () => {
-  const calls = [];
-  const sh = (cmd, args) => {
-    calls.push([cmd, args]);
-    if (args[0] === "rev-parse") throw new Error("not a valid ref"); // no such branch yet
-    return "";
-  };
-  const result = prepareImplementerWorktree({ issue: "181", cwd: "/home/runner/work/repo/repo", sh, exists: () => false });
-  assert.equal(result.branch, "implementer/issue-181");
-  assert.equal(result.path, "/home/runner/work/repo/agentflow-worktree-issue-181");
-  assert.equal(result.reused, false);
-  assert.deepEqual(calls[0], ["git", branchExistsArgv("implementer/issue-181")]);
-  assert.deepEqual(calls[1], ["git", worktreeAddArgv({ path: result.path, branch: result.branch, branchExists: false })]);
-});
-
-test("prepareImplementerWorktree: an already-existing worktree directory is reused, not re-added — idempotent across a retry", () => {
-  const sh = () => {
-    throw new Error("must not shell out when the worktree already exists");
-  };
-  const result = prepareImplementerWorktree({ issue: "181", cwd: "/home/runner/work/repo/repo", sh, exists: () => true });
-  assert.equal(result.reused, true);
-  assert.equal(result.path, "/home/runner/work/repo/agentflow-worktree-issue-181");
-});
-
-test("prepareImplementerWorktree: an existing branch (a retry after the worktree dir alone was cleaned up) is attached to, not re-created", () => {
-  const calls = [];
-  const sh = (cmd, args) => {
-    calls.push([cmd, args]);
-    return ""; // rev-parse succeeds — the branch already exists
-  };
-  const result = prepareImplementerWorktree({ issue: "181", cwd: "/home/runner/work/repo/repo", sh, exists: () => false });
-  assert.deepEqual(calls[1], ["git", worktreeAddArgv({ path: result.path, branch: result.branch, branchExists: true })]);
-});
-
-test("main() only preps a worktree for state:ready and passes it as launchPlan's cwd", () => {
-  const source = read("scripts/actions/dispatch-comment.js");
-  const launchBlock = source.slice(source.indexOf("// --- launch "));
-  assert.match(launchBlock, /state === "ready" \? prepareImplementerWorktree\(\{ issue, cwd: process\.cwd\(\), sh \}\)\.path : undefined/);
-  const planCall = launchBlock.slice(launchBlock.indexOf("const plan = launchPlan("), launchBlock.indexOf("if (plan.launch)"));
-  assert.match(planCall, /\bcwd,/, "the prepped path is threaded into launchPlan as cwd");
-});

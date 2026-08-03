@@ -37,33 +37,7 @@ export const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 // Read-only by construction. The agent produces an artifact; the caller posts
 // it. No Edit, no Write, no arbitrary Bash — a headless agent that can write to
 // the checkout is a headless agent that can change what it is reviewing.
-//
-// This is the DEFAULT for a role that declares nothing more, not a ceiling —
-// #180's ruling grants the implementer a write set (Read/Grep/Glob/Edit/
-// Write/Bash) declared in its own definition's `allowedTools:` frontmatter,
-// the same way `model:` already declares its tier
-// (`scripts/actions/dispatch-comment.js`'s `loadToolPolicy`, next to the
-// existing `loadTiers`). An agent that declares no `allowedTools:` line still
-// falls back to exactly this, so reviewer and architect are unaffected.
 export const DEFAULT_ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
-
-// `plan` mode is what makes the read-only default a hard floor rather than a
-// suggestion: it structurally refuses mutation regardless of what the
-// allowlist says. The implementer needs a mode that actually lets Edit/Write
-// run unattended — `acceptEdits` is that mode, declared per-agent the same
-// way `allowedTools` is.
-export const DEFAULT_PERMISSION_MODE = "plan";
-
-// The one thing #180's ruling explicitly forbids: "do NOT grant
-// --dangerously-skip-permissions or an unbounded permission mode ... use the
-// explicit allowlist." `--dangerously-skip-permissions` is a different flag
-// this module never emits at all (see `KNOWN_FLAGS`); `bypassPermissions` is
-// its `--permission-mode` equivalent, and IS a value this module could
-// otherwise be asked to pass through. Refused here, not merely by
-// convention — a typo'd or hallucinated frontmatter line must fail closed,
-// not silently widen a headless session's blast radius past what the
-// allowlist alone bounds.
-const FORBIDDEN_PERMISSION_MODES = new Set(["bypassPermissions"]);
 
 // Every flag this module is allowed to emit, each one checked by hand against
 // `claude --help` and kept here so a test can assert the argv never grows a
@@ -135,28 +109,10 @@ export function launchPlan({
   tiers = {},
   prompt = "",
   allowedTools = DEFAULT_ALLOWED_TOOLS,
-  permissionMode = DEFAULT_PERMISSION_MODE,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-  // Where the child process runs. `undefined` (the default) leaves it
-  // unset — `spawn` then inherits the caller's own cwd, exactly today's
-  // behaviour for the read-only agents, which never needed a checkout of
-  // their own. The implementer does: `scripts/actions/dispatch-comment.js`
-  // preps an isolated worktree+branch before launch and passes its path
-  // here, so the plan this function returns carries `cwd` straight through
-  // to `runProcess` (#180 item 2).
-  cwd = undefined,
 } = {}) {
   if (!agent) {
     return { launch: false, outcome: "failed", reason: "no agent named — nothing to launch" };
-  }
-  if (FORBIDDEN_PERMISSION_MODES.has(permissionMode)) {
-    return {
-      launch: false,
-      outcome: "failed",
-      reason:
-        `permission mode "${permissionMode}" is forbidden — #180's ruling bounds a write-capable headless ` +
-        "agent with an explicit tool allowlist, not an escalated permission mode",
-    };
   }
   if (!stageEnabled(config, stage)) {
     return {
@@ -200,7 +156,7 @@ export function launchPlan({
     "--model",
     model,
     "--permission-mode",
-    permissionMode,
+    "plan",
     "--allowedTools",
     allowedTools.join(" "),
     "--output-format",
@@ -213,7 +169,7 @@ export function launchPlan({
   const childEnv = { ...env };
   delete childEnv[METERED_VAR];
 
-  return { launch: true, argv, env: childEnv, model, timeoutMs, cwd };
+  return { launch: true, argv, env: childEnv, model, timeoutMs };
 }
 
 // → { outcome, reason, usage } — reads a finished run.

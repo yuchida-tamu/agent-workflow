@@ -73,13 +73,8 @@ export async function launch(options, { spawnFn = spawn, tiers = null } = {}) {
     return { outcome: plan.outcome, reason: plan.reason, usage: null, model: null, argv: null };
   }
 
-  // `cwd` comes off the PLAN, not off `options` directly: `launchPlan` already
-  // received `options.cwd` (the spread above) and echoes it back on the plan
-  // it returns — a single source of truth for "where does this run", rather
-  // than two paths (`options.cwd` here, `plan.cwd` everywhere else this
-  // module is called via `runProcess(plan)` directly) that could drift.
   const result = await runProcess(
-    { argv: plan.argv, env: plan.env, timeoutMs: plan.timeoutMs, cwd: plan.cwd },
+    { argv: plan.argv, env: plan.env, timeoutMs: plan.timeoutMs, cwd: options.cwd },
     spawnFn,
   );
   const verdict = classify(result);

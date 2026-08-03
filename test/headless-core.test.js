@@ -4,7 +4,6 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   DEFAULT_ALLOWED_TOOLS,
-  DEFAULT_PERMISSION_MODE,
   KNOWN_FLAGS,
   METERED_VAR,
   OUTCOMES,
@@ -21,7 +20,7 @@ import { launch, runProcess } from "../scripts/headless/run.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
 import { loadTiers } from "../scripts/log/cli.js";
 
-const TIERS = { "code-reviewer": "sonnet", architect: "opus", implementer: "sonnet" };
+const TIERS = { "code-reviewer": "sonnet", architect: "opus" };
 const ON = { [HEADLESS_KEY]: { review: true, dispatch: { spec: true } } };
 const TOKEN = { [TOKEN_VAR]: "sk-ant-oat01-example" };
 
@@ -131,60 +130,6 @@ test("the run is non-interactive and machine-readable", () => {
   assert.equal(argv.includes("--print"), true);
   assert.equal(argFor(argv, "--output-format"), "json");
   assert.equal(argFor(argv, "--agent"), "code-reviewer");
-});
-
-// --- per-role tool policy (#180 item 1) --------------------------------------
-//
-// `launchPlan` itself stays role-agnostic — it does not know "implementer"
-// from "reviewer" — but it must accept a write-capable allowlist and a
-// permission mode that actually lets Edit/Write run when a caller
-// (`scripts/actions/dispatch-comment.js`'s per-agent `loadToolPolicy`) hands
-// it one, while still defaulting to the read-only reviewer/architect shape
-// when nothing is passed. These tests are the seam contract; the wiring
-// itself (which agent gets which policy) is asserted over
-// `scripts/actions/dispatch-comment.js` in test/dispatch.test.js.
-
-test("with no override, permission mode defaults to plan — reviewer/architect are unaffected", () => {
-  assert.equal(DEFAULT_PERMISSION_MODE, "plan");
-  assert.equal(argFor(plan().argv, "--permission-mode"), "plan");
-});
-
-test("a caller can grant a write-capable allowlist and permission mode — the implementer's shape", () => {
-  const IMPLEMENTER_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash"];
-  const result = launchPlan({
-    agent: "implementer",
-    stage: "ready",
-    config: { [HEADLESS_KEY]: { dispatch: { ready: true } } },
-    env: TOKEN,
-    tiers: TIERS,
-    allowedTools: IMPLEMENTER_TOOLS,
-    permissionMode: "acceptEdits",
-  });
-  assert.equal(result.launch, true);
-  assert.equal(argFor(result.argv, "--allowedTools"), IMPLEMENTER_TOOLS.join(" "));
-  assert.equal(argFor(result.argv, "--permission-mode"), "acceptEdits");
-});
-
-test("bypassPermissions is refused even if explicitly asked for — the allowlist is the bound, never an escalated mode", () => {
-  const result = launchPlan({
-    agent: "implementer",
-    stage: "ready",
-    config: { [HEADLESS_KEY]: { dispatch: { ready: true } } },
-    env: TOKEN,
-    tiers: TIERS,
-    allowedTools: ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
-    permissionMode: "bypassPermissions",
-  });
-  assert.equal(result.launch, false);
-  assert.equal(result.outcome, "failed");
-  assert.match(result.reason, /forbidden/);
-  assert.match(result.reason, /bypassPermissions/);
-});
-
-test("cwd flows through the plan unchanged — undefined by default, whatever was asked when given", () => {
-  assert.equal(plan().cwd, undefined, "the read-only roles run in the caller's own cwd, exactly as before");
-  const result = plan({ cwd: "/tmp/agentflow-worktree-issue-181" });
-  assert.equal(result.cwd, "/tmp/agentflow-worktree-issue-181");
 });
 
 // --- classification: three outcomes that are not "failed" --------------------

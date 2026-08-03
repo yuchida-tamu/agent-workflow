@@ -11,7 +11,7 @@
 // CLAUDE_CODE_OAUTH_TOKEN (launch path only), AGENTFLOW_TOOLKIT.
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, readdirSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -661,106 +661,6 @@ export function specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate }
   return lines.join("\n");
 }
 
-// --- per-role headless tool policy (#180 item 1, the orchestrator's ruling) -
-//
-// A headless launch has always used ONE allowlist for every role —
-// `headless/core.js`'s `DEFAULT_ALLOWED_TOOLS`, read-only by construction,
-// correct for the architect and the reviewer but "exactly backwards for the
-// implementer, whose whole role is to write" (#180). The ruling: grant it,
-// bounded — not by a smaller tool count, but architecturally: the
-// implementer can only OPEN a pr, never merge one, and every existing gate
-// (risk verdict, the #113 review guard, G3) stands between that PR and main
-// unchanged. Nothing here grants a merge capability; nothing here touches a
-// gate.
-//
-// `loadTiers` (`scripts/log/cli.js`) already reads `model:` out of each
-// agent definition's own frontmatter. This reads the SAME files for two more
-// optional lines, declared right next to it: `allowedTools:` (comma-
-// separated, exactly `model:`'s single-line convention) and
-// `permissionMode:`. An agent that declares neither gets nothing back here,
-// and its caller (`launchPlan`) falls back to its own read-only default —
-// so reviewer, architect and every other role are unaffected by this at
-// all. Only an agent definition that explicitly opts in — today, only
-// `agents/implementer.md` — gets anything but the reviewer's allowlist. Kept
-// local to this file (rather than folded into `loadTiers` itself) to match
-// #180's own declared file surface.
-export function loadToolPolicy(agentsDir = join(TOOLKIT, "agents")) {
-  const policy = {};
-  for (const file of readdirSync(agentsDir).filter((f) => f.endsWith(".md"))) {
-    const text = readFileSync(join(agentsDir, file), "utf8");
-    const name = text.match(/^name:\s*(\S+)\s*$/m)?.[1] ?? file.replace(/\.md$/, "");
-    const toolsLine = text.match(/^allowedTools:\s*(.+)$/m)?.[1] ?? null;
-    const mode = text.match(/^permissionMode:\s*(\S+)\s*$/m)?.[1] ?? null;
-    const entry = {};
-    if (toolsLine) entry.allowedTools = toolsLine.split(",").map((t) => t.trim()).filter(Boolean);
-    if (mode) entry.permissionMode = mode;
-    if (Object.keys(entry).length) policy[name] = entry;
-  }
-  return policy;
-}
-
-// --- implementer worktree/branch prep (#180 item 2) -------------------------
-//
-// `agents/implementer.md` has always promised "the prep script has already
-// created your worktree and branch" — true only for an interactive session
-// where a human runs that script by hand first. Headlessly, nothing ever
-// ran it: the agent got the workflow's own bare checkout, on whatever branch
-// the triggering event left it on, with no branch or worktree of its own
-// (#180). This is that script, run by the harness immediately before an
-// implementer launch, never for any other role (they read; they do not need
-// a checkout to write into).
-//
-// One worktree, sibling to the checkout (`git worktree add` refuses a path
-// nested inside the main tree's own git metadata), one branch named after
-// the issue it implements. Idempotent across a retry: a worktree directory
-// left over from a previous attempt at the SAME issue is reused as-is rather
-// than re-added (which `git worktree add` would refuse anyway), and an
-// already-existing branch is attached to instead of re-created.
-export function implementerBranch(issue) {
-  return `implementer/issue-${issue}`;
-}
-
-export function implementerWorktreePath(cwd, issue) {
-  return join(dirname(cwd), `agentflow-worktree-issue-${issue}`);
-}
-
-export function branchExistsArgv(branch) {
-  return ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`];
-}
-
-// `HEAD` — not `origin/main` — is the base: the event that triggers a
-// dispatch launch (`issues.labeled`) checks out the default branch already,
-// so whatever is currently checked out in `cwd` IS the base the new branch
-// should fork from, and asking for `HEAD` works even under `actions/
-// checkout`'s default shallow, ref-only fetch (no guaranteed `origin/main`
-// tracking ref), exactly the same reasoning `computePlanVerdict` above uses
-// for its own `--base HEAD --head HEAD`.
-export function worktreeAddArgv({ path, branch, branchExists }) {
-  return branchExists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, "HEAD"];
-}
-
-// The impure half: decides branch/path (pure, above), then either finds the
-// worktree already there (a retry) or creates it. `sh` is injected — the
-// same mock seam every other impure step in this file uses (`createChildren`,
-// `computePlanVerdict`) — so a test can assert the argv shape without a real
-// `git`.
-export function prepareImplementerWorktree({ issue, cwd, sh: run, exists = existsSync }) {
-  const branch = implementerBranch(issue);
-  const path = implementerWorktreePath(cwd, issue);
-  if (exists(path)) {
-    return { branch, path, reused: true };
-  }
-  let branchExists = false;
-  try {
-    run("git", branchExistsArgv(branch));
-    branchExists = true;
-  } catch {
-    branchExists = false; // no such ref — the common case, a fresh issue
-  }
-  run("git", worktreeAddArgv({ path, branch, branchExists }));
-  return { branch, path, reused: false };
-}
-
 const sh = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
 
 // Resolved here (I/O — one `childrenOf` call, a `gh` search) and injected
@@ -844,8 +744,6 @@ async function main() {
   const { state, dispatch } = decision;
   const agent = dispatch.who;
   const tiers = loadTiers(join(TOOLKIT, "agents"));
-  const toolPolicy = loadToolPolicy(join(TOOLKIT, "agents"));
-  const policy = toolPolicy[agent] ?? {};
   const tier = tiers[agent] ?? null;
   const run = runId(`dispatch-${issue}-${state}`);
 
@@ -863,14 +761,6 @@ async function main() {
 
   let result;
   try {
-    // Only the implementer (`ready`) needs a checkout of its own — the
-    // read-only roles run in the workflow's existing checkout exactly as
-    // before. Failure here (e.g. `git worktree add` refused) folds into the
-    // same catch/`failed` path as a launch failure: the ledger row still
-    // closes, and the escalation comment below still fires, restoring the
-    // dispatch line for a human (#180 item 2).
-    const cwd = state === "ready" ? prepareImplementerWorktree({ issue, cwd: process.cwd(), sh }).path : undefined;
-
     const plan = launchPlan({
       agent,
       stage: state,
@@ -878,12 +768,6 @@ async function main() {
       env: process.env,
       tiers,
       prompt: launchPrompt({ repo, issue, state, who: agent }),
-      // Per-role: absent for every agent but the implementer, so
-      // `launchPlan` falls back to its own read-only default exactly as
-      // before (#180 item 1).
-      ...(policy.allowedTools ? { allowedTools: policy.allowedTools } : {}),
-      ...(policy.permissionMode ? { permissionMode: policy.permissionMode } : {}),
-      cwd,
     });
     if (plan.launch) {
       const finished = await runProcess(plan);

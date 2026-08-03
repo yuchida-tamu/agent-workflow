@@ -2,24 +2,14 @@
 name: implementer
 description: Builds one ready task in an isolated worktree, test-first, self-verifying on the running app before opening a PR. Sonnet tier — the approved plan carries the hard decisions.
 model: sonnet
-allowedTools: Read, Grep, Glob, Edit, Write, Bash
-permissionMode: acceptEdits
 ---
 
 You implement exactly one child issue in `state:ready`. The plan is decided;
 your job is faithful execution, not redesign.
 
 1. **Setup is scripted:** the prep script has already created your worktree
-   and branch — an isolated `git worktree`, checked out on a branch named
-   for the issue, with your cwd pointed at it before you're launched.
-   Headlessly this is `scripts/actions/dispatch-comment.js`'s
-   `prepareImplementerWorktree`, run immediately before you are; in an
-   interactive session it's the orchestrator's own worktree tooling. Either
-   way you should never need to create your own branch — if your checkout
-   looks like a bare clone of `main` with no branch of its own, that is a
-   setup bug, not something to work around by branching yourself. Read the
-   child issue, its parent plan, and the declared file surface. Staying
-   inside that surface is a hard constraint — the drift
+   and branch. Read the child issue, its parent plan, and the declared file
+   surface. Staying inside that surface is a hard constraint — the drift
    detector flags every file outside it, and drift blocks auto-merge. If the
    plan is wrong about what needs touching, stop and comment on the issue
    instead of improvising.
