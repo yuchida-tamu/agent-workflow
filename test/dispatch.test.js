@@ -32,7 +32,7 @@ import {
   truncateArtifact,
   validateChildLabels,
 } from "../scripts/actions/dispatch-comment.js";
-import { DISPATCH } from "../scripts/next/core.js";
+import { DISPATCH, dispatchFor } from "../scripts/next/core.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
 import { TOKEN_VAR } from "../scripts/headless/core.js";
 
@@ -112,6 +112,51 @@ test("flag on but no token falls back to the comment, not to a failure", () => {
   assert.equal(result.act, "comment");
   assert.match(result.reason, new RegExp(TOKEN_VAR));
   assert.match(result.reason, /falling back/);
+});
+
+// --- the childrenOf dispatch guard on state:ready (#180 item 3) --------------
+//
+// hsk-habit#14: a parent with three open children (#24, #25, #26) was moved
+// to `state:ready` and an implementer was dispatched AT THE PARENT, which
+// has no PR of its own — nominating an implementer for it means asking
+// someone to rebuild work that already shipped. `agentflow-next`
+// (scripts/next/core.js) already refuses this via `dispatchFor`'s
+// `PARENT_WAITING`/`PARENT_COMPLETE`; `dispatchAction` now reuses that exact
+// function (not a re-derived copy) so the two paths can never disagree about
+// what a parent's dispatch line says.
+
+test("a parent with open children at state:ready comments 'waiting on N children' instead of launching", () => {
+  const parent = { hasChildren: true, allChildrenDone: false, openChildren: [24, 25, 26] };
+  const result = dispatchAction({ label: "state:ready", config: on("ready"), env: TOKEN, parent });
+  assert.equal(result.act, "comment");
+  assert.equal(result.dispatch.actor, "none");
+  assert.equal(result.dispatch.action, dispatchFor("ready", { parent }).action, "byte-identical to agentflow-next's own PARENT_WAITING");
+  assert.match(result.dispatch.action, /waiting on 3 child\(ren\): #24, #25, #26/);
+});
+
+test("a parent whose children are all done at state:ready points at the state transition, not an implementer", () => {
+  const parent = { hasChildren: true, allChildrenDone: true, openChildren: [] };
+  const result = dispatchAction({ label: "state:ready", config: on("ready"), env: TOKEN, parent });
+  assert.equal(result.act, "comment");
+  assert.notEqual(result.dispatch.who, "implementer");
+  assert.equal(result.dispatch, dispatchFor("ready", { parent }));
+});
+
+test("a childless issue at state:ready still launches an implementer — the parent guard never fires for ordinary work", () => {
+  for (const parent of [null, undefined]) {
+    const result = dispatchAction({ label: "state:ready", config: on("ready"), env: TOKEN, parent });
+    assert.equal(result.act, "launch");
+    assert.equal(result.dispatch.who, "implementer");
+  }
+});
+
+test("the parent guard is scoped to state:ready — a parent fact on any other state is ignored", () => {
+  // dispatchFor only consults `parent` for `ready`; every other state must
+  // behave exactly as if no parent fact were supplied at all.
+  const parent = { hasChildren: true, allChildrenDone: false, openChildren: [1] };
+  const result = dispatchAction({ label: "state:spec", config: on("spec"), env: TOKEN, parent });
+  assert.equal(result.act, "launch");
+  assert.equal(result.dispatch.who, "architect");
 });
 
 // --- the comment is unchanged -------------------------------------------------
@@ -944,3 +989,4 @@ test("main() re-reads labels and goes through resolveApply before editing — CA
   assert.match(editSlice, /resolution\.add/);
   assert.match(editSlice, /resolution\.remove/);
 });
+

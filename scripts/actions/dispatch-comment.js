@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { DISPATCH } from "../next/core.js";
+import { dispatchFor } from "../next/core.js";
 import { LABEL_PREFIX, planTransition, resolveApply } from "../state/machine.js";
 import { dispatchEnabled } from "../headless/config.js";
 import { TOKEN_VAR, classify, extractJsonFence, launchPlan, reviewText, summaryLine } from "../headless/core.js";
@@ -31,14 +31,46 @@ const MARKER = "<!-- agentflow-dispatch -->";
 // runs unattended is testable without an event, a token, or a network — the
 // same split `pr-verdict` and the headless launcher already keep.
 //
+// `parent` is the same fact shape `scripts/next/core.js`'s own `pickNext`
+// resolves lazily and only for `ready` candidates: `null` for a childless
+// (ordinary) issue, or `{ hasChildren, allChildrenDone, openChildren }` for
+// one that has children. Resolving it is I/O (`childrenOf`, a `gh` call), so
+// it is injected here rather than looked up inline — this function stays
+// testable with no event, token, or network, exactly as before; `main()`
+// below is the one place that actually calls `childrenOf` and only for
+// `state:ready` labels, where the question is worth asking.
+//
 // → { act: "ignore" | "comment" | "launch", state?, dispatch?, reason? }
-export function dispatchAction({ label, config = {}, env = {} }) {
+export function dispatchAction({ label, config = {}, env = {}, parent = null }) {
   if (!label?.startsWith(LABEL_PREFIX)) return { act: "ignore", reason: "not a state label" };
 
   const state = label.slice(LABEL_PREFIX.length);
-  const dispatch = DISPATCH[state];
-  if (!dispatch || dispatch.actor === "none") {
+
+  // `dispatchFor` (not the bare `DISPATCH` table) is what actually answers
+  // "who acts next" for `ready` — it is `scripts/next/core.js`'s own
+  // function, reused rather than re-derived, so a parent with open children
+  // gets the SAME `PARENT_WAITING` object (down to the exact wording) that
+  // `agentflow-next` would print, and a parent whose children are all done
+  // gets `PARENT_COMPLETE` pointing at the state transition instead of an
+  // implementer. For every other state, and for a childless `ready` issue,
+  // `dispatchFor` degrades to exactly `DISPATCH[state]` — unchanged from
+  // before this fix (#180 item 3; the reproduction was hsk-habit#14, a
+  // parent with three open children dispatched to an implementer that had
+  // nothing of its own to build).
+  const dispatch = dispatchFor(state, { parent });
+
+  // A parent waiting on open children has no actor either (`PARENT_WAITING`
+  // is `actor: "none"`, same shape as the genuinely static states below) —
+  // but unlike those, it IS new information worth a comment: "waiting on N
+  // children" is what tells a human why nothing is dispatchable here, where
+  // "in-progress"/"released" have nothing left to say. So it is excluded
+  // from the generic ignore-on-no-actor branch, not folded into it.
+  const waitingOnChildren = state === "ready" && parent?.hasChildren && !parent.allChildrenDone;
+  if (!dispatch || (dispatch.actor === "none" && !waitingOnChildren)) {
     return { act: "ignore", state, reason: `no actor for state "${state}"` };
+  }
+  if (waitingOnChildren) {
+    return { act: "comment", state, dispatch, reason: "parent has open children — not dispatchable" };
   }
 
   // Only an agent can be launched. A state whose actor is a human or a script
@@ -631,6 +663,23 @@ export function specEffectsCommentBody({ childrenOutcome, verdictOutcome, gate }
 
 const sh = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
 
+// Resolved here (I/O — one `childrenOf` call, a `gh` search) and injected
+// into the pure `dispatchAction` above as its `parent` argument. Mirrors
+// `scripts/next/cli.js`'s own `parentFactsFor` exactly: same shape
+// (`{ hasChildren, allChildrenDone, openChildren }`), same conservative
+// fallback — a lookup failure degrades to `null` ("cannot tell — treat as an
+// ordinary item") rather than blocking dispatch on an API hiccup.
+function parentFactsFor(repo, issueNumber) {
+  try {
+    const { children } = childrenOf(repo, issueNumber);
+    if (!children.length) return null;
+    const open = children.filter((c) => !c.closed).map((c) => c.number);
+    return { hasChildren: true, allChildrenDone: open.length === 0, openChildren: open };
+  } catch {
+    return null; // can't tell — not a reason to block an otherwise-ordinary issue
+  }
+}
+
 // Pure half of "which comment is this posting to" — split out because #160's
 // review found the whole bug living in this decision: reusing the dispatch
 // line's marker for the artifact meant one match answered both, so the next
@@ -670,7 +719,14 @@ async function main() {
     ? JSON.parse(readFileSync("agentflow.config.json", "utf8"))
     : {};
 
-  const decision = dispatchAction({ label: event.label?.name ?? "", config, env: process.env });
+  const label = event.label?.name ?? "";
+  // Only asked when it can change the answer: `ready` is the one state
+  // `dispatchAction` consults `parent` for, so every other event pays no
+  // extra `gh` call for a fact it would never use (#180 item 3).
+  const labelState = label.startsWith(LABEL_PREFIX) ? label.slice(LABEL_PREFIX.length) : null;
+  const parent = labelState === "ready" ? parentFactsFor(repo, Number(issue)) : null;
+
+  const decision = dispatchAction({ label, config, env: process.env, parent });
 
   if (decision.act === "ignore") {
     console.log(`dispatch: nothing to do — ${decision.reason}`);
