@@ -9,6 +9,48 @@
 // There is deliberately no parameter, flag, or field by which a caller can state
 // a risk level. The authority comes from the record; an agent must not be able
 // to auto-pass its own plan by asserting it was low.
+//
+// --- authorship is NOT enforced here — read this before wiring a caller ------
+// (#188 — the same obligation scripts/review/core.js's header documents for the
+// review artifact, and the same defect this module shipped with until #188:
+// `latestVerdict` used to parse whatever comment it was handed with no opinion
+// on who posted it. Any write-capable actor could append a forged
+// `<!-- agentflow-verdict -->` comment claiming `risk verdict: low` and it
+// would be trusted — laundering the self-mod-guard's high floor (the very
+// obligation that exists to force a human merge on workflow/policy changes)
+// into an unattended auto-merge. PR #186's guard-grade review found this live.
+//
+// `latestVerdict` now takes `trustedLogins` and refuses to consider any
+// comment not authored by one of them — but it still does not decide WHO is
+// trusted, the same way this module has never decided WHO may approve a gate.
+// The composing caller resolves that from config (see
+// scripts/identity/identity.js's `trustedVerdictLogins`, #188) and passes the
+// result in. No trusted logins → `filterByAuthor` below filters out
+// everything → no verdict is ever trusted: fail-closed, exactly the "absence
+// is refusal" posture this whole module already keeps for a missing or
+// unparseable verdict.
+//
+// **Filtering happens BEFORE the latest-wins collapse, never after** — same
+// ordering discipline scripts/review/core.js's header documents at length,
+// for the identical reason: collapsing first and only then checking the
+// single winner's author lets a newer *untrusted* comment (the forged
+// low-verdict append) shadow an older *trusted* one before authorship is ever
+// considered. `authoritativeMarkerComment` below does the filter-then-collapse
+// in one place so a caller cannot get the order wrong.
+//
+// This is also where the first/last marker mismatch (#188, the other half of
+// the same defect) is closed: `scripts/actions/pr-verdict.js` used to upsert
+// the FIRST marker comment it found while this module read the LAST — so an
+// appended second marker comment (forged or otherwise) was invisible to the
+// write path but authoritative to the read path. `authoritativeMarkerComment`
+// is now the ONE selection rule both sides share: the most recent comment,
+// among those authored by a trusted login, carrying the marker. pr-verdict.js
+// calls it to decide which comment to PATCH; `latestVerdict` calls it to
+// decide which comment's content is the verdict. Sharing the function makes
+// "read == write" structural rather than two independently-written filters
+// that merely happen to agree today.
+
+import { filterByAuthor } from "../review/core.js";
 
 export const MARKER = "<!-- agentflow-verdict -->";
 export const LEVELS = ["low", "medium", "high", "critical"];
@@ -77,12 +119,24 @@ export function parseVerdict(body) {
   };
 }
 
-// The most recent verdict comment wins, deterministically.
-export function latestVerdict(comments) {
-  const parsed = (comments ?? [])
-    .map((c) => parseVerdict(c?.body))
-    .filter(Boolean);
-  return parsed.length ? parsed[parsed.length - 1] : null;
+// The single comment BOTH the write path (pr-verdict.js, deciding which
+// comment to upsert-in-place) and the read path (`latestVerdict`, below)
+// treat as authoritative: the most recent comment, among the ones authored by
+// a trusted login, whose body carries the marker. `trustedLogins` is caller-
+// supplied — see this module's header — so this stays pure: no config, no
+// `gh`, no clock. No trusted logins (or none given) filters out every
+// comment via `filterByAuthor`, the same fail-closed posture described above.
+export function authoritativeMarkerComment(comments, trustedLogins) {
+  const trusted = filterByAuthor(comments, trustedLogins).filter((c) => (c?.body ?? "").startsWith(MARKER));
+  return trusted.length ? trusted[trusted.length - 1] : null;
+}
+
+// The most recent verdict wins, deterministically — but only a verdict posted
+// by a trusted login, and only from the ONE comment `authoritativeMarkerComment`
+// and pr-verdict.js's upsert agree is authoritative. See this module's header
+// for why both of those are load-bearing (#188).
+export function latestVerdict(comments, trustedLogins) {
+  return parseVerdict(authoritativeMarkerComment(comments, trustedLogins)?.body ?? null);
 }
 
 // Does this verdict authorise crossing `gate` with no human?

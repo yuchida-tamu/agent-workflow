@@ -15,6 +15,8 @@
 
 import { execFileSync } from "node:child_process";
 import { latestVerdict, authorises } from "./core.js";
+import { trustedVerdictLogins } from "../identity/identity.js";
+import { loadConfig } from "../config/load.js";
 
 function parseArgs(argv) {
   const flags = {};
@@ -36,9 +38,16 @@ if (!["read", "check"].includes(command) || !flags.repo || !flags.issue) {
 
 try {
   const comments = JSON.parse(
-    sh(["api", `repos/${flags.repo}/issues/${flags.issue}/comments`, "--jq", "[.[] | {body}]"])
+    sh([
+      "api", `repos/${flags.repo}/issues/${flags.issue}/comments`, "--jq",
+      "[.[] | {body, author: {login: .user.login}}]",
+    ])
   );
-  const verdict = latestVerdict(comments);
+  // #188: authenticate the verdict comment's author against the identity the
+  // risk-verdict workflow actually posts as, before trusting anything it
+  // says — see scripts/identity/identity.js's trustedVerdictLogins and
+  // scripts/verdict/core.js's header for why this cannot be skipped.
+  const verdict = latestVerdict(comments, trustedVerdictLogins({ config: loadConfig() }).logins);
 
   if (command === "read") {
     console.log(JSON.stringify(verdict, null, 2));
