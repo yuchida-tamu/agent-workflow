@@ -256,3 +256,60 @@ export function resolveTrustedReviewState({ config = {}, nativeReviews = [], com
     why,
   };
 }
+
+// --- who the risk-verdict reader trusts (#188) -------------------------------
+//
+// scripts/verdict/core.js's `latestVerdict` parses whatever comment it is
+// handed and — like scripts/review/core.js before #113 — has no opinion of
+// its own on who posted it (see that module's header). Skipping the check
+// here IS the forged-verdict laundering #188 was filed over: a
+// `<!-- agentflow-verdict -->` comment authored by *anyone who can comment on
+// the PR* — including a write-capable implementer acting on this same repo —
+// would otherwise be trusted, letting a forged `risk verdict: low` launder
+// the self-mod-guard's high floor (the obligation that exists to force a
+// human merge on workflow/policy/label changes) into an unattended merge.
+//
+// `actions/risk-verdict/action.yml` posts as the agentflow App when
+// `agent_identity` is configured, and as `GITHUB_TOKEN` (which GitHub always
+// attributes to `github-actions[bot]`) otherwise — exactly the two identities
+// `trustedReviewerLogins` already resolves for the review artifact, via the
+// same `g3Mode`/`resolveIdentity`/`botLogin` primitives, reused here rather
+// than re-derived.
+//
+// It diverges from `trustedReviewerLogins` on exactly one point, and the
+// divergence is deliberate: solo-comment mode trusts `github-actions[bot]`
+// UNCONDITIONALLY, rather than gating on `headless.review`. That gate exists
+// on the review artifact because the review artifact is optional
+// infrastructure — with `headless.review` off, nothing in the intended
+// design ever posts it as `github-actions[bot]`, so trusting that login
+// anyway would trust an identity nothing should be producing. The
+// risk-verdict workflow has no equivalent opt-in flag: `agentflow-verdict.yml`
+// runs on every `pull_request` once a repo installs it, unconditionally, and
+// it always posts as one of these two identities — there is no config key
+// that means "this workflow is off" the way `headless.review` means that for
+// the reviewer. Gating verdict trust on `headless.review` would mean the
+// DEFAULT solo-comment config (`headless.review` unset, the common case)
+// never trusts any verdict comment at all — silently disabling G2 auto-pass
+// and G3 auto-merge everywhere headless review has not *also* been opted
+// into, which is a far larger regression than #188 was filed to fix. A repo
+// that never installed the risk-verdict workflow simply has no verdict
+// comments to read, and absence is already refusal.
+export function trustedVerdictLogins({ config = {} } = {}) {
+  const { mode } = g3Mode({ config });
+  if (mode === "native-review") {
+    const identity = resolveIdentity(config);
+    const login = botLogin(identity.slug);
+    return {
+      logins: login ? [login] : [],
+      mode,
+      why: `native-review: @${login} is the only identity the risk-verdict workflow acts as`,
+    };
+  }
+  return {
+    logins: [HEADLESS_REVIEW_BOT_LOGIN],
+    mode,
+    why:
+      `solo-comment: the risk-verdict workflow falls back to GITHUB_TOKEN, which GitHub always ` +
+      `attributes to @${HEADLESS_REVIEW_BOT_LOGIN} — never to a human, however the workflow run was triggered`,
+  };
+}

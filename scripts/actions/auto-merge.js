@@ -12,7 +12,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { latestVerdict, authorises } from "../verdict/core.js";
-import { botApprovalAllowed, resolveIdentity, resolveTrustedReviewState } from "../identity/identity.js";
+import { botApprovalAllowed, resolveIdentity, resolveTrustedReviewState, trustedVerdictLogins } from "../identity/identity.js";
 import { reviewAuthorises, uiSurfaceTouched } from "../review/core.js";
 
 export const MARKER = "<!-- agentflow-automerge -->";
@@ -179,17 +179,30 @@ if (isMain) {
   const checksPassing =
     checks.length > 0 && checks.every((c) => ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(c.conclusion ?? c.state));
 
+  const config = existsSync("agentflow.config.json")
+    ? JSON.parse(readFileSync("agentflow.config.json", "utf8"))
+    : {};
+
   // Both fetches carry `author: {login, association}` — the risk-verdict
-  // reader ignores the extra field, and the review guard needs it to filter
-  // to a trusted reviewer before collapsing to "the latest" (see
-  // `resolveTrustedReviewState` below). One fetch each, two readers.
+  // reader needs it now too (#188: `latestVerdict` used to trust whoever
+  // posted the comment, which let a forged low verdict launder the
+  // self-mod-guard's high floor into this exact auto-merge path), and the
+  // review guard needs it to filter to a trusted reviewer before collapsing
+  // to "the latest" (see `resolveTrustedReviewState` below). One fetch each,
+  // two readers.
   const comments = JSON.parse(
     sh([
       "api", `repos/${repo}/issues/${number}/comments`, "--jq",
       "[.[] | {body, author: {login: .user.login, association: .author_association}}]",
     ])
   );
-  const verdict = latestVerdict(comments);
+
+  // Resolve who is trusted from config, THEN filter to that trust, THEN
+  // collapse to "the latest" — never the reverse (scripts/review/core.js's
+  // documented obligation; `trustedVerdictLogins`/`latestVerdict` do this for
+  // the risk verdict, `resolveTrustedReviewState` does it for the review
+  // artifact below).
+  const verdict = latestVerdict(comments, trustedVerdictLogins({ config }).logins);
 
   const nativeReviews = JSON.parse(
     sh([
@@ -198,17 +211,16 @@ if (isMain) {
     ])
   );
 
-  const config = existsSync("agentflow.config.json")
-    ? JSON.parse(readFileSync("agentflow.config.json", "utf8"))
-    : {};
-
-  // Resolve who is trusted from config, THEN filter the raw lists to that
-  // trust, THEN collapse to "the latest" — never the reverse (scripts/review/core.js's
-  // documented obligation; `resolveTrustedReviewState` is where #113 does this).
   // `prAuthor` is threaded through so a marker comment or native review
   // authored by the PR's own author is dropped even when its login is
   // otherwise trusted (#187) — the self-exclusion `decideBotReview` below
   // already applies when this PR's own principal tries to SUBMIT a review.
+  // This is an independent trust resolver from the risk-verdict one above
+  // (#188): that one authenticates WHO may post a verdict comment at all,
+  // this one additionally excludes the PR's own author from an otherwise-
+  // trusted review-artifact login. Both are needed and neither substitutes
+  // for the other — the verdict and the review are separate G3 obligations,
+  // composed independently by `decideAutoMerge` below.
   const trust = resolveTrustedReviewState({ config, nativeReviews, comments, prAuthor: pr.user?.login ?? null });
   const changedFiles = (view.files ?? []).map((f) => f.path);
   const uiTouched = uiSurfaceTouched(changedFiles, uiGlobsFor(config));

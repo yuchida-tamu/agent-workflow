@@ -11,6 +11,7 @@ import {
   resolveIdentity,
   trustedReviewerLogins,
   resolveTrustedReviewState,
+  trustedVerdictLogins,
 } from "../scripts/identity/identity.js";
 
 // --- resolveIdentity ---------------------------------------------------------
@@ -347,4 +348,30 @@ test("SECURITY (#187): the PR-author exclusion never widens trust — an untrust
     prAuthor: "someone-else-entirely",
   });
   assert.equal(state.comment, null, "still untrusted — excluding a different login changes nothing here");
+});
+
+// --- trustedVerdictLogins (#188) ----------------------------------------------
+//
+// Who scripts/verdict/core.js's latestVerdict trusts. Resolved the same way
+// trustedReviewerLogins is — reusing g3Mode/resolveIdentity/botLogin rather
+// than re-deriving "configured or not" a second way — but it diverges from
+// trustedReviewerLogins on solo-comment mode: see identity.js's own doc
+// comment for why gating verdict trust on `headless.review` (as the review
+// artifact does) would silently disable G2 auto-pass and G3 auto-merge for
+// every repo in the default solo-comment config.
+
+test("native-review mode trusts only the App's bot login", () => {
+  const { logins, mode, why } = trustedVerdictLogins({ config: { [IDENTITY_KEY]: "agentflow-bot" } });
+  assert.equal(mode, "native-review");
+  assert.deepEqual(logins, ["agentflow-bot[bot]"]);
+  assert.match(why, /agentflow-bot\[bot\]/);
+});
+
+test("solo-comment mode trusts github-actions[bot] unconditionally — no headless.review gate", () => {
+  for (const config of [{}, { headless: { review: false } }, { headless: { review: true } }]) {
+    const { logins, mode, why } = trustedVerdictLogins({ config });
+    assert.equal(mode, "solo-comment", JSON.stringify(config));
+    assert.deepEqual(logins, [HEADLESS_REVIEW_BOT_LOGIN], JSON.stringify(config));
+    assert.match(why, /GITHUB_TOKEN|github-actions/);
+  }
 });

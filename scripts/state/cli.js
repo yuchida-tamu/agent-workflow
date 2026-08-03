@@ -17,8 +17,9 @@
 
 import { execFileSync } from "node:child_process";
 import { planTransition, stateFromLabels, transitionsFrom, resolveApply } from "./machine.js";
-import { releaseKindOf } from "../config/load.js";
+import { releaseKindOf, loadConfig } from "../config/load.js";
 import { latestVerdict, authorises } from "../verdict/core.js";
+import { trustedVerdictLogins } from "../identity/identity.js";
 import { childrenOf } from "../hierarchy/gh.js";
 
 // A parent completes when its children do. Resolved here (I/O) and handed to
@@ -120,11 +121,17 @@ if (isMain) {
         let authorisedBy = null;
         if (plan.gate && flags["approved-gate"] !== plan.gate) {
           if (plan.gate === "G2") {
-            const verdict = latestVerdict(
-              JSON.parse(
-                gh(["api", `repos/${repoSlug(flags.repo)}/issues/${flags.issue}/comments`, "--jq", "[.[] | {body}]"])
-              )
+            const comments = JSON.parse(
+              gh([
+                "api", `repos/${repoSlug(flags.repo)}/issues/${flags.issue}/comments`, "--jq",
+                "[.[] | {body, author: {login: .user.login}}]",
+              ])
             );
+            // #188: only a verdict comment authored by the identity the
+            // risk-verdict workflow actually posts as may auto-pass a gate —
+            // otherwise any write-capable actor could forge `risk verdict:
+            // low` on this exact issue and skip G2 with no human involved.
+            const verdict = latestVerdict(comments, trustedVerdictLogins({ config: loadConfig() }).logins);
             if (authorises("G2", verdict)) {
               authorisedBy = verdict;
             }

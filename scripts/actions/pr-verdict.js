@@ -14,10 +14,11 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { assembleFacts, rotWarning } from "../facts/core.js";
 import { evaluate, validatePack } from "../policy/engine.js";
+import { MARKER, authoritativeMarkerComment } from "../verdict/core.js";
+import { trustedVerdictLogins } from "../identity/identity.js";
 
 const TOOLKIT = process.env.AGENTFLOW_TOOLKIT ?? join(dirname(fileURLToPath(import.meta.url)), "../..");
 const PLATFORM_PACKS = { "rn-expo": "packs/expo/policies/expo.yaml" };
-const MARKER = "<!-- agentflow-verdict -->";
 
 const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
 const repo = process.env.GITHUB_REPOSITORY;
@@ -119,9 +120,22 @@ verdict-sha: ${headSha}
 ${verdict.matched.length ? `<details><summary>${verdict.matched.length} rule(s) matched</summary>\n\n| pack | rule | obligations |\n|---|---|---|\n${rows}\n\n</details>` : "No rules matched."}
 ${verdict.warnings.length ? `\n⚠️ ${verdict.warnings.join(" · ")}` : ""}${rot ? `\n${rot}` : ""}`;
 
-const existing = JSON.parse(
-  sh("gh", ["api", `repos/${repo}/issues/${prNumber}/comments`, "--jq", "[.[] | {id, body}]"])
-).find((c) => c.body.startsWith(MARKER));
+// Upsert onto the SAME comment `latestVerdict` will read back — never the
+// first marker comment found, regardless of author (#188). The old `.find()`
+// here picked the FIRST marker-prefixed comment while `latestVerdict` read
+// the LAST, so an appended second marker comment (forged by any write-capable
+// actor, or otherwise) was invisible to this upsert but authoritative to the
+// read side. `authoritativeMarkerComment` is the one selection rule both
+// sides share: the most recent comment, among those authored by this
+// workflow's own trusted identity (`trustedVerdictLogins` — the App if
+// configured, else `github-actions[bot]`), carrying the marker. Restricting
+// to the trusted login also means this workflow only ever edits its OWN
+// prior comment in place, never a comment someone else posted.
+const trustedLogins = trustedVerdictLogins({ config }).logins;
+const existingComments = JSON.parse(
+  sh("gh", ["api", `repos/${repo}/issues/${prNumber}/comments`, "--jq", "[.[] | {id, body, author: {login: .user.login}}]"])
+);
+const existing = authoritativeMarkerComment(existingComments, trustedLogins);
 if (existing) {
   sh("gh", ["api", "--method", "PATCH", `repos/${repo}/issues/comments/${existing.id}`, "-f", `body=${body}`]);
 } else {
