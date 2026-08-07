@@ -223,9 +223,26 @@ fetch, so a script fetches it, and the agent stays read-only.
   even consults `approvers`. This is enforced in code, not by prompt text.
 - **No state transitions.** Agents produce artifacts; the gate workflow owns
   labels.
-- **No write tools.** The reviewer runs with a read-only tool allowlist and
-  `--permission-mode plan`. A headless agent that could write to the checkout
-  could change what it is reviewing.
+- **No write tools.** Every headless role runs with a read-only tool allowlist
+  and `--permission-mode plan`. A headless agent that could write to the
+  checkout could change what it is reviewing.
+
+  The allowlist is **declared per role**, in the definition's own
+  `headless_tools:` frontmatter, and validated against `GRANTABLE_TOOLS`
+  (`scripts/headless/core.js`) before it reaches the CLI. Two different
+  questions, kept apart on purpose: `DEFAULT_ALLOWED_TOOLS` is what a role gets
+  when it declares nothing; `GRANTABLE_TOOLS` is what a role is *allowed to ask
+  for*. Today both hold `Read, Grep, Glob` — and that is the point. **Widening a
+  role means editing `GRANTABLE_TOOLS`, in a diff a human reads, not editing one
+  definition's frontmatter.** A declaration naming anything outside the ceiling
+  is rejected whole, not filtered, and the read-only default applies.
+
+  `headless_tools:` is a **different key from `tools:`**, deliberately.
+  `tools:` governs an interactive spawn, where a human is watching a `Bash`
+  call happen; `--allowedTools` governs an unattended one, where nobody is.
+  `product-shaper.md` declares `tools: Read, Bash, AskUserQuestion` and gets
+  `Read Grep Glob` headlessly — unifying the two would hand it an unrestricted,
+  `GH_TOKEN`-bearing shell in the one environment with no human to watch it.
 - **No unbounded runs.** A wall-clock timeout is enforced on our side of the
   process boundary, and the process is killed rather than orphaned.
 

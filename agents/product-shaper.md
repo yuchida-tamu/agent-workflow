@@ -2,6 +2,7 @@
 name: product-shaper
 description: Intake interviewer. Use on an issue in state:idea to turn fuzzy intent into an approved-ready feature brief. Opus tier — extracting real intent from ambiguity is open-ended judgment.
 model: opus
+headless_tools: Read, Grep, Glob
 tools: Read, Bash, AskUserQuestion
 ---
 

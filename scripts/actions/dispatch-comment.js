@@ -20,10 +20,10 @@ import { parse as parseYaml } from "yaml";
 import { dispatchFor } from "../next/core.js";
 import { LABEL_PREFIX, planTransition, resolveApply } from "../state/machine.js";
 import { dispatchEnabled } from "../headless/config.js";
-import { TOKEN_VAR, classify, extractJsonFence, launchPlan, reviewText, safeCut, summaryLine } from "../headless/core.js";
+import { TOKEN_VAR, classify, extractJsonFence, launchPlan, resolveAllowedTools, reviewText, safeCut, summaryLine } from "../headless/core.js";
 import { issueContextBlock } from "../headless/context.js";
 import { runProcess } from "../headless/run.js";
-import { loadTiers } from "../log/cli.js";
+import { loadAgentMeta } from "../log/cli.js";
 import { childrenOf, linkSubIssue } from "../hierarchy/gh.js";
 
 const TOOLKIT = process.env.AGENTFLOW_TOOLKIT ?? join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -869,8 +869,18 @@ async function main() {
   // --- launch ---------------------------------------------------------------
   const { state, dispatch } = decision;
   const agent = dispatch.who;
-  const tiers = loadTiers(join(TOOLKIT, "agents"));
+  const agentsDir = join(TOOLKIT, "agents");
+  const meta = loadAgentMeta(agentsDir);
+  const tiers = Object.fromEntries(
+    Object.entries(meta).filter(([, m]) => m.model).map(([name, m]) => [name, m.model]),
+  );
   const tier = tiers[agent] ?? null;
+  // Per role and declared (#197), not one global default named after the
+  // reviewer. `resolveAllowedTools` validates the declaration against
+  // `GRANTABLE_TOOLS` before it reaches the CLI, so a definition cannot widen
+  // itself — the ceiling moves only in a diff a human reads.
+  const allowed = resolveAllowedTools({ agent, declared: meta[agent]?.headlessTools ?? null });
+  if (allowed.rejected) console.error(`allowlist: ${allowed.reason}`);
   const run = runId(`dispatch-${issue}-${state}`);
 
   const log = (args) => {
@@ -910,6 +920,7 @@ async function main() {
       config,
       env: process.env,
       tiers,
+      allowedTools: allowed.tools,
       prompt: launchPrompt({ repo, issue, state, who: agent, context, tag }),
     });
     if (plan.launch) {

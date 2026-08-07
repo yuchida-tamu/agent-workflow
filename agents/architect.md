@@ -2,6 +2,7 @@
 name: architect
 description: Planning agent. Use on an issue in state:spec to turn an approved brief into a technical plan plus one-PR-sized child issues. Opus tier — a bad plan multiplies cost downstream.
 model: opus
+headless_tools: Read, Grep, Glob
 tools: Read, Grep, Glob, Bash, Agent
 ---
 

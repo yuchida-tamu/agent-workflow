@@ -37,7 +37,74 @@ export const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 // Read-only by construction. The agent produces an artifact; the caller posts
 // it. No Edit, no Write, no arbitrary Bash — a headless agent that can write to
 // the checkout is a headless agent that can change what it is reviewing.
+//
+// This is what a role gets when it declares nothing. It was named for, and
+// argued from, ONE role — the code-reviewer, whose input is already on disk —
+// and then silently became every role's list, because `launchPlan` has taken an
+// `allowedTools` parameter since it was written and nothing ever passed one
+// (#197). It remains correct as a floor; it is no longer the only answer.
 export const DEFAULT_ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
+
+// The ceiling on what any headless role may receive, whatever it declares.
+//
+// Two different questions, deliberately kept apart. `DEFAULT_ALLOWED_TOOLS` is
+// "what does a role get by default"; this is "what is a role ALLOWED to ask
+// for". Today they happen to hold the same three names, and that is the point:
+// widening a role means editing this list, in a diff a human reads, rather than
+// editing one definition's frontmatter.
+//
+// #189's write capability must come through here. A per-call `allowedTools`
+// argument that could name anything would let a caller widen a role by
+// accident; a declaration validated against a named ceiling cannot.
+export const GRANTABLE_TOOLS = ["Read", "Grep", "Glob"];
+
+// → { tools, declared, rejected?, reason? }
+//
+// Fail-closed, and all-or-nothing. A declaration naming anything outside
+// `GRANTABLE_TOOLS` is rejected WHOLE rather than filtered down to its legal
+// subset — the same posture `validateChildLabels` takes toward model-authored
+// labels, and for the same reason: a declaration that silently loses half its
+// entries looks like it worked. The caller gets the read-only default and a
+// reason naming the offending tool.
+//
+// `declared` empty or absent is not a rejection; it is a role that has not
+// asked for anything, which is the common case and the safe one.
+// The first entry of `list` that `GRANTABLE_TOOLS` does not permit, or `null`.
+// One rule, two enforcement points: `resolveAllowedTools` applies it to what a
+// definition DECLARES, and `launchPlan` applies it to what a caller PASSES.
+// Both, or the ceiling is only a ceiling on the path somebody remembered to
+// route through — which is prose, not enforcement.
+export function ungrantableTool(list) {
+  if (!Array.isArray(list)) return null;
+  return list.find((tool) => !GRANTABLE_TOOLS.includes(tool)) ?? null;
+}
+
+export function resolveAllowedTools({ agent = "(unnamed)", declared = null } = {}) {
+  if (declared == null || (Array.isArray(declared) && declared.length === 0)) {
+    return { tools: DEFAULT_ALLOWED_TOOLS, declared: null };
+  }
+  if (!Array.isArray(declared)) {
+    return {
+      tools: DEFAULT_ALLOWED_TOOLS,
+      declared,
+      rejected: true,
+      reason: `"${agent}" declared a non-list headless_tools — falling back to the read-only default`,
+    };
+  }
+  const illegal = ungrantableTool(declared);
+  if (illegal) {
+    return {
+      tools: DEFAULT_ALLOWED_TOOLS,
+      declared,
+      rejected: true,
+      reason:
+        `"${agent}" declared headless tool "${illegal}", which is not in GRANTABLE_TOOLS ` +
+        `(${GRANTABLE_TOOLS.join(", ")}) — the whole declaration was rejected and the read-only ` +
+        "default applied. Widening a role means editing GRANTABLE_TOOLS, not a definition's frontmatter.",
+    };
+  }
+  return { tools: declared, declared };
+}
 
 // Every flag this module is allowed to emit, each one checked by hand against
 // `claude --help` and kept here so a test can assert the argv never grows a
@@ -142,6 +209,30 @@ export function launchPlan({
       launch: false,
       outcome: "failed",
       reason: `no declared model tier for agent "${agent}" — every agent definition must carry a \`model:\` field`,
+    };
+  }
+
+  // The ceiling, enforced at the primitive rather than only on the path that
+  // reads a definition's frontmatter. Without this, `GRANTABLE_TOOLS` bounds
+  // what a role may DECLARE and nothing at all bounds what a caller may PASS —
+  // so #189's write grant, or any new entry point that copies an existing
+  // `launchPlan({...})` call, could hand an unattended agent `Write` and every
+  // test here would still pass while the runbook told the next reader the
+  // ceiling had been enforced.
+  //
+  // A refusal, not a silent narrowing: a caller asking for a tool it may not
+  // have is a programming error, and quietly launching with fewer tools than
+  // it asked for would surface as a confusing agent failure one layer down.
+  const illegal = ungrantableTool(allowedTools);
+  if (illegal || !Array.isArray(allowedTools)) {
+    return {
+      launch: false,
+      outcome: "failed",
+      reason: illegal
+        ? `refused to launch "${agent}" with tool "${illegal}": not in GRANTABLE_TOOLS ` +
+          `(${GRANTABLE_TOOLS.join(", ")}). Widening a headless role means editing that list, ` +
+          "not passing a wider one here."
+        : `refused to launch "${agent}": allowedTools must be a list of tool names`,
     };
   }
 

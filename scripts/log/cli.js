@@ -47,13 +47,43 @@ function parseArgs(argv) {
 const sh = (args) => execFileSync("gh", args, { encoding: "utf8" });
 const repoArgs = (repo) => (repo ? ["--repo", repo] : []);
 
-// The declared tier of every agent, read from the definitions themselves.
-export function loadTiers(agentsDir = join(TOOLKIT, "agents")) {
-  const tiers = {};
+// What every agent definition declares about itself, read from the definitions
+// rather than restated anywhere: `{ [name]: { model, headlessTools } }`.
+//
+// `headless_tools:` is deliberately a DIFFERENT key from `tools:` (#197).
+// `tools:` governs an interactive spawn, where a human is watching a `Bash`
+// call happen; `--allowedTools` governs an unattended one, where nobody is.
+// The divergence is real — `product-shaper.md` declares `tools: Read, Bash,
+// AskUserQuestion` and a headless run gives it `Read Grep Glob` — and it is
+// closed by naming the two mechanisms, not by unifying them. Unifying would
+// hand the product-shaper an unrestricted, `GH_TOKEN`-bearing shell in the one
+// environment with no human to watch it, which is the lever #195 declined to
+// pull and #189 exists to keep closed.
+//
+// A declaration here grants nothing on its own: `resolveAllowedTools`
+// (scripts/headless/core.js) validates it against `GRANTABLE_TOOLS` first.
+export function loadAgentMeta(agentsDir = join(TOOLKIT, "agents")) {
+  const meta = {};
   for (const file of readdirSync(agentsDir).filter((f) => f.endsWith(".md"))) {
     const text = readFileSync(join(agentsDir, file), "utf8");
     const name = text.match(/^name:\s*(\S+)\s*$/m)?.[1] ?? file.replace(/\.md$/, "");
     const model = text.match(/^model:\s*(\S+)\s*$/m)?.[1] ?? null;
+    const raw = text.match(/^headless_tools:\s*(.+)$/m)?.[1] ?? null;
+    const headlessTools = raw
+      ? raw.split(",").map((t) => t.trim()).filter(Boolean)
+      : null;
+    meta[name] = { model, headlessTools };
+  }
+  return meta;
+}
+
+// The declared tier of every agent. Kept as its own export over
+// `loadAgentMeta` rather than folded into it: two callers and the ledger audit
+// ask only this question, and `launchPlan`'s `tiers` parameter is shaped for
+// exactly this map.
+export function loadTiers(agentsDir = join(TOOLKIT, "agents")) {
+  const tiers = {};
+  for (const [name, { model }] of Object.entries(loadAgentMeta(agentsDir))) {
     if (model) tiers[name] = model;
   }
   return tiers;
