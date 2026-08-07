@@ -24,9 +24,9 @@ import { fileURLToPath } from "node:url";
 // seams #91 already exports. (`launch()` growing a stdout passthrough would let
 // this collapse back to one call — worth doing, but not by widening this PR.)
 import { runProcess } from "../headless/run.js";
-import { METERED_VAR, TOKEN_VAR, classify, extractJsonFence, launchPlan, reviewText, summaryLine } from "../headless/core.js";
+import { METERED_VAR, TOKEN_VAR, classify, extractJsonFence, launchPlan, resolveAllowedTools, reviewText, summaryLine } from "../headless/core.js";
 import { reviewEnabled } from "../headless/config.js";
-import { loadTiers } from "../log/cli.js";
+import { loadAgentMeta } from "../log/cli.js";
 import { runId } from "./dispatch-comment.js";
 // The review-artifact contract (#111, merged): marker + verdict/sha/ux lines
 // the G3 guard's reader parses back. This is what #112 exists to emit —
@@ -423,8 +423,17 @@ async function main() {
   // moment the roster changes tier — which is not hypothetical: that exact drift
   // produced two `agentflow-log audit` violations while this issue was being
   // built.
-  const tiers = loadTiers(join(TOOLKIT, "agents"));
+  const meta = loadAgentMeta(join(TOOLKIT, "agents"));
+  const tiers = Object.fromEntries(
+    Object.entries(meta).filter(([, m]) => m.model).map(([name, m]) => [name, m.model]),
+  );
   const tier = tiers[AGENT] ?? null;
+  // Declared per role rather than inherited from a global default (#197). The
+  // reviewer's list is `["Read","Grep","Glob"]` and stays there — `test/
+  // headless-core.test.js` asserts that it did not widen, which is the point of
+  // making the list declared in the first place.
+  const allowedTools = resolveAllowedTools({ agent: AGENT, declared: meta[AGENT]?.headlessTools ?? null });
+  if (allowedTools.rejected) console.error(`allowlist: ${allowedTools.reason}`);
 
   if (!process.env[TOKEN_VAR]) {
     // Named loudly and early, before anything else is attempted — and posted,
@@ -467,6 +476,7 @@ async function main() {
       config,
       env: process.env,
       tiers,
+      allowedTools: allowedTools.tools,
       prompt: reviewPrompt({ repo, prNumber, baseSha: pr.base.sha, headSha: pr.head.sha }),
     });
     if (plan.launch) {

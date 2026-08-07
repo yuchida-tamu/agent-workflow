@@ -210,3 +210,29 @@ test("the autonomy section is compared in isolation from the sections below it",
   assert.ok(!autonomy.includes(LEDGER_HEADING), "autonomy section must stop at the next heading");
   assert.ok(!section(text, LEDGER_HEADING).includes(AUTONOMY_HEADING));
 });
+
+// --- the headless allowlist is declared per role (#197) -----------------------
+
+test("headless_tools declarations are identical between source and installed copies", () => {
+  // The frontmatter is what `loadAgentMeta` reads, and `--agent` resolves
+  // against the installed copy. A declaration that drifted between the two
+  // would mean the list a role is validated against is not the list it runs
+  // with.
+  const declaration = (text) => text.match(/^headless_tools:\s*(.+)$/m)?.[1]?.trim() ?? null;
+  for (const file of definitionFiles(SOURCE)) {
+    assert.equal(
+      declaration(read(SOURCE, file)),
+      declaration(read(INSTALLED, file)),
+      `${file}'s headless_tools declaration has drifted between agents/ and .claude/agents/`,
+    );
+  }
+});
+
+test("every agent dispatch or review can launch declares its headless allowlist", () => {
+  // Not the whole roster: only the roles the headless harness can actually
+  // launch. A role that never runs unattended has nothing to declare.
+  for (const agent of ["code-reviewer", "product-shaper", "architect", "implementer"]) {
+    const text = read(SOURCE, `${agent}.md`);
+    assert.match(text, /^headless_tools:\s*Read, Grep, Glob$/m, `${agent} must declare its headless allowlist`);
+  }
+});

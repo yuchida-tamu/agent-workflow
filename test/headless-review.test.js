@@ -596,7 +596,9 @@ test("the ledger tier is read from the roster, never written as a literal", () =
   const source = read("scripts/actions/headless-review.js");
   assert.equal(/"--model",\s*"(opus|sonnet|haiku)"/.test(source), false, "no hardcoded tier");
   assert.match(source, /"--model", tier/);
-  assert.match(source, /loadTiers\(/);
+  // `loadAgentMeta` since #197 — same roster, same file, one reader for both
+  // the declared tier and the declared headless allowlist.
+  assert.match(source, /loadAgentMeta\(/);
 });
 
 test("an enabled repo with no token still gets a comment", () => {

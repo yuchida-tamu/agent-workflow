@@ -2,6 +2,7 @@
 name: code-reviewer
 description: Reviews a PR for correctness, conventions, and security after CI is green. Opus tier — review is the loop's load-bearing quality gate, and it must run in a fresh context, independent of whoever implemented.
 model: opus
+headless_tools: Read, Grep, Glob
 tools: Read, Grep, Glob, Bash
 ---
 

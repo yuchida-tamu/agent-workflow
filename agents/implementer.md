@@ -2,6 +2,7 @@
 name: implementer
 description: Builds one ready task in an isolated worktree, test-first, self-verifying on the running app before opening a PR. Sonnet tier — the approved plan carries the hard decisions.
 model: sonnet
+headless_tools: Read, Grep, Glob
 ---
 
 You implement exactly one child issue in `state:ready`. The plan is decided;

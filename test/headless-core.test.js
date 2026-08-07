@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { readFileSync } from "node:fs";
 import {
   DEFAULT_ALLOWED_TOOLS,
+  GRANTABLE_TOOLS,
   KNOWN_FLAGS,
   METERED_VAR,
   OUTCOMES,
@@ -12,13 +14,14 @@ import {
   extractJsonFence,
   launchPlan,
   parseUsage,
+  resolveAllowedTools,
   reviewText,
   stageEnabled,
   summaryLine,
 } from "../scripts/headless/core.js";
 import { launch, runProcess } from "../scripts/headless/run.js";
 import { HEADLESS_KEY } from "../scripts/headless/config.js";
-import { loadTiers } from "../scripts/log/cli.js";
+import { loadAgentMeta, loadTiers } from "../scripts/log/cli.js";
 
 const TIERS = { "code-reviewer": "sonnet", architect: "opus" };
 const ON = { [HEADLESS_KEY]: { review: true, dispatch: { spec: true } } };
@@ -430,4 +433,79 @@ test("multi-byte output is decoded whole, not per chunk", async () => {
   assert.equal(result.stdout.includes("�"), false, "no replacement characters");
   assert.equal(JSON.parse(result.stdout).result, "verdict — approved");
   assert.equal(classify(result).usage.inputTokens, 1, "usage survives the split");
+});
+
+// --- the allowlist is per role and declared (#197) ----------------------------
+//
+// `DEFAULT_ALLOWED_TOOLS` was argued for ONE role — the code-reviewer, whose
+// input is already on disk — and then silently became every role's list,
+// because `launchPlan` has taken an `allowedTools` parameter since it was
+// written and nothing ever passed one. These tests pin the two questions apart:
+// what a role gets by default, and what a role is ALLOWED to ask for.
+
+test("the code-reviewer's allowlist is exactly the read-only three, and did not widen", () => {
+  // The load-bearing assertion of #197. It fails if GRANTABLE_TOOLS grows, if
+  // the reviewer's declaration grows, or if the resolver starts honouring
+  // something it should not — which is the whole point of making the list
+  // declared rather than defaulted.
+  const meta = loadAgentMeta();
+  const resolved = resolveAllowedTools({
+    agent: "code-reviewer",
+    declared: meta["code-reviewer"]?.headlessTools ?? null,
+  });
+  assert.deepEqual(resolved.tools, ["Read", "Grep", "Glob"]);
+  assert.equal(resolved.rejected, undefined);
+  assert.deepEqual(GRANTABLE_TOOLS, ["Read", "Grep", "Glob"]);
+});
+
+test("every role that runs headlessly resolves to a subset of GRANTABLE_TOOLS", () => {
+  for (const [agent, { headlessTools }] of Object.entries(loadAgentMeta())) {
+    const { tools } = resolveAllowedTools({ agent, declared: headlessTools });
+    for (const tool of tools) {
+      assert.ok(GRANTABLE_TOOLS.includes(tool), `${agent} resolved to ungrantable "${tool}"`);
+    }
+  }
+});
+
+test("a role that declares nothing falls back to the read-only default", () => {
+  assert.deepEqual(resolveAllowedTools({ agent: "x", declared: null }).tools, DEFAULT_ALLOWED_TOOLS);
+  assert.deepEqual(resolveAllowedTools({ agent: "x", declared: [] }).tools, DEFAULT_ALLOWED_TOOLS);
+  assert.equal(resolveAllowedTools({ agent: "x" }).declared, null);
+});
+
+test("an ungrantable tool rejects the WHOLE declaration rather than being filtered out", () => {
+  // Fail-closed and all-or-nothing, the posture `validateChildLabels` takes
+  // toward model-authored labels. A declaration that silently lost half its
+  // entries would look like it worked.
+  for (const tool of ["Bash", "Write", "Edit", "WebFetch", "Agent"]) {
+    const resolved = resolveAllowedTools({ agent: "product-shaper", declared: ["Read", tool, "Glob"] });
+    assert.equal(resolved.rejected, true, tool);
+    assert.deepEqual(resolved.tools, DEFAULT_ALLOWED_TOOLS, `${tool} must not survive`);
+    assert.match(resolved.reason, new RegExp(tool), "the reason names the offending tool");
+    assert.match(resolved.reason, /product-shaper/, "the reason names the role");
+  }
+});
+
+test("a malformed declaration is refused, not coerced", () => {
+  const resolved = resolveAllowedTools({ agent: "x", declared: "Read, Bash" });
+  assert.equal(resolved.rejected, true);
+  assert.deepEqual(resolved.tools, DEFAULT_ALLOWED_TOOLS);
+});
+
+test("a declared list reaches the CLI as --allowedTools", () => {
+  const { argv } = plan({ allowedTools: ["Read", "Glob"] });
+  assert.equal(argFor(argv, "--allowedTools"), "Read Glob");
+});
+
+test("`tools:` frontmatter does NOT govern the headless allowlist", () => {
+  // product-shaper declares `tools: Read, Bash, AskUserQuestion` for an
+  // interactive spawn, where a human watches the Bash call happen. Headless has
+  // no such human. Unifying the two keys would hand it an unrestricted,
+  // GH_TOKEN-bearing shell in the one environment nobody is watching — the
+  // lever #195 declined to pull and #189 exists to keep closed.
+  const { headlessTools } = loadAgentMeta()["product-shaper"];
+  assert.deepEqual(headlessTools, ["Read", "Grep", "Glob"]);
+  const source = readFileSync("agents/product-shaper.md", "utf8");
+  assert.match(source, /^tools: Read, Bash, AskUserQuestion$/m, "the interactive declaration is untouched");
+  assert.equal(resolveAllowedTools({ agent: "product-shaper", declared: headlessTools }).tools.includes("Bash"), false);
 });

@@ -37,7 +37,64 @@ export const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 // Read-only by construction. The agent produces an artifact; the caller posts
 // it. No Edit, no Write, no arbitrary Bash — a headless agent that can write to
 // the checkout is a headless agent that can change what it is reviewing.
+//
+// This is what a role gets when it declares nothing. It was named for, and
+// argued from, ONE role — the code-reviewer, whose input is already on disk —
+// and then silently became every role's list, because `launchPlan` has taken an
+// `allowedTools` parameter since it was written and nothing ever passed one
+// (#197). It remains correct as a floor; it is no longer the only answer.
 export const DEFAULT_ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
+
+// The ceiling on what any headless role may receive, whatever it declares.
+//
+// Two different questions, deliberately kept apart. `DEFAULT_ALLOWED_TOOLS` is
+// "what does a role get by default"; this is "what is a role ALLOWED to ask
+// for". Today they happen to hold the same three names, and that is the point:
+// widening a role means editing this list, in a diff a human reads, rather than
+// editing one definition's frontmatter.
+//
+// #189's write capability must come through here. A per-call `allowedTools`
+// argument that could name anything would let a caller widen a role by
+// accident; a declaration validated against a named ceiling cannot.
+export const GRANTABLE_TOOLS = ["Read", "Grep", "Glob"];
+
+// → { tools, declared, rejected?, reason? }
+//
+// Fail-closed, and all-or-nothing. A declaration naming anything outside
+// `GRANTABLE_TOOLS` is rejected WHOLE rather than filtered down to its legal
+// subset — the same posture `validateChildLabels` takes toward model-authored
+// labels, and for the same reason: a declaration that silently loses half its
+// entries looks like it worked. The caller gets the read-only default and a
+// reason naming the offending tool.
+//
+// `declared` empty or absent is not a rejection; it is a role that has not
+// asked for anything, which is the common case and the safe one.
+export function resolveAllowedTools({ agent = "(unnamed)", declared = null } = {}) {
+  if (declared == null || (Array.isArray(declared) && declared.length === 0)) {
+    return { tools: DEFAULT_ALLOWED_TOOLS, declared: null };
+  }
+  if (!Array.isArray(declared)) {
+    return {
+      tools: DEFAULT_ALLOWED_TOOLS,
+      declared,
+      rejected: true,
+      reason: `"${agent}" declared a non-list headless_tools — falling back to the read-only default`,
+    };
+  }
+  const illegal = declared.find((tool) => !GRANTABLE_TOOLS.includes(tool));
+  if (illegal) {
+    return {
+      tools: DEFAULT_ALLOWED_TOOLS,
+      declared,
+      rejected: true,
+      reason:
+        `"${agent}" declared headless tool "${illegal}", which is not in GRANTABLE_TOOLS ` +
+        `(${GRANTABLE_TOOLS.join(", ")}) — the whole declaration was rejected and the read-only ` +
+        "default applied. Widening a role means editing GRANTABLE_TOOLS, not a definition's frontmatter.",
+    };
+  }
+  return { tools: declared, declared };
+}
 
 // Every flag this module is allowed to emit, each one checked by hand against
 // `claude --help` and kept here so a test can assert the argv never grows a
