@@ -296,6 +296,32 @@ export function reviewText(stdout) {
   }
 }
 
+// --- surrogate-safe truncation -----------------------------------------------
+//
+// The code unit at `index` is a high (leading) surrogate — the first half of a
+// two-unit UTF-16 pair (emoji, many CJK-extension and symbol code points). If
+// it is the LAST unit a slice keeps, the low surrogate it pairs with falls
+// just past the cut, leaving a lone high surrogate — not a valid character on
+// its own, and exactly the kind of mid-character truncation that turns into a
+// mojibake glyph or a broken comment render.
+//
+// Lifted here from scripts/actions/dispatch-comment.js, which established it
+// for `truncateArtifact` (#160), because scripts/headless/context.js needs the
+// identical arithmetic for a different payload (#195). One implementation, not
+// two that can drift.
+export function isHighSurrogate(codeUnit) {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+// Where to actually cut so a slice never splits a surrogate pair. Backs off by
+// one code unit when the character right at the boundary is a lone high
+// surrogate; otherwise the boundary was already safe (either a normal
+// character or a complete pair — the low surrogate can only appear at `max-1`
+// if its high surrogate at `max-2` was already included).
+export function safeCut(text, max) {
+  return max > 0 && isHighSurrogate(text.charCodeAt(max - 1)) ? max - 1 : max;
+}
+
 // One line for the workflow summary. Says subscription-billed explicitly,
 // because the whole reason this path exists is that the metered one was refused.
 export function summaryLine({ agent, model, outcome, usage = null }) {
