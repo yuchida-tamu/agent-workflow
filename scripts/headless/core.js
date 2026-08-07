@@ -69,6 +69,16 @@ export const GRANTABLE_TOOLS = ["Read", "Grep", "Glob"];
 //
 // `declared` empty or absent is not a rejection; it is a role that has not
 // asked for anything, which is the common case and the safe one.
+// The first entry of `list` that `GRANTABLE_TOOLS` does not permit, or `null`.
+// One rule, two enforcement points: `resolveAllowedTools` applies it to what a
+// definition DECLARES, and `launchPlan` applies it to what a caller PASSES.
+// Both, or the ceiling is only a ceiling on the path somebody remembered to
+// route through — which is prose, not enforcement.
+export function ungrantableTool(list) {
+  if (!Array.isArray(list)) return null;
+  return list.find((tool) => !GRANTABLE_TOOLS.includes(tool)) ?? null;
+}
+
 export function resolveAllowedTools({ agent = "(unnamed)", declared = null } = {}) {
   if (declared == null || (Array.isArray(declared) && declared.length === 0)) {
     return { tools: DEFAULT_ALLOWED_TOOLS, declared: null };
@@ -81,7 +91,7 @@ export function resolveAllowedTools({ agent = "(unnamed)", declared = null } = {
       reason: `"${agent}" declared a non-list headless_tools — falling back to the read-only default`,
     };
   }
-  const illegal = declared.find((tool) => !GRANTABLE_TOOLS.includes(tool));
+  const illegal = ungrantableTool(declared);
   if (illegal) {
     return {
       tools: DEFAULT_ALLOWED_TOOLS,
@@ -199,6 +209,30 @@ export function launchPlan({
       launch: false,
       outcome: "failed",
       reason: `no declared model tier for agent "${agent}" — every agent definition must carry a \`model:\` field`,
+    };
+  }
+
+  // The ceiling, enforced at the primitive rather than only on the path that
+  // reads a definition's frontmatter. Without this, `GRANTABLE_TOOLS` bounds
+  // what a role may DECLARE and nothing at all bounds what a caller may PASS —
+  // so #189's write grant, or any new entry point that copies an existing
+  // `launchPlan({...})` call, could hand an unattended agent `Write` and every
+  // test here would still pass while the runbook told the next reader the
+  // ceiling had been enforced.
+  //
+  // A refusal, not a silent narrowing: a caller asking for a tool it may not
+  // have is a programming error, and quietly launching with fewer tools than
+  // it asked for would surface as a confusing agent failure one layer down.
+  const illegal = ungrantableTool(allowedTools);
+  if (illegal || !Array.isArray(allowedTools)) {
+    return {
+      launch: false,
+      outcome: "failed",
+      reason: illegal
+        ? `refused to launch "${agent}" with tool "${illegal}": not in GRANTABLE_TOOLS ` +
+          `(${GRANTABLE_TOOLS.join(", ")}). Widening a headless role means editing that list, ` +
+          "not passing a wider one here."
+        : `refused to launch "${agent}": allowedTools must be a list of tool names`,
     };
   }
 

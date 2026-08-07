@@ -509,3 +509,29 @@ test("`tools:` frontmatter does NOT govern the headless allowlist", () => {
   assert.match(source, /^tools: Read, Bash, AskUserQuestion$/m, "the interactive declaration is untouched");
   assert.equal(resolveAllowedTools({ agent: "product-shaper", declared: headlessTools }).tools.includes("Bash"), false);
 });
+
+test("launchPlan itself refuses an ungrantable tool — the ceiling is not only on the declaration path", () => {
+  // Without this, GRANTABLE_TOOLS bounds what a role may DECLARE and nothing
+  // bounds what a caller may PASS: #189's write grant, or any new entry point
+  // copying an existing launchPlan({...}) call, could hand an unattended agent
+  // `Write` while every other test here still passed.
+  for (const tool of ["Write", "Edit", "Bash", "WebFetch"]) {
+    const result = plan({ allowedTools: ["Read", tool] });
+    assert.equal(result.launch, false, tool);
+    assert.equal(result.outcome, "failed", tool);
+    assert.match(result.reason, new RegExp(tool));
+    assert.match(result.reason, /GRANTABLE_TOOLS/);
+  }
+});
+
+test("launchPlan refuses a non-list allowedTools rather than coercing it", () => {
+  const result = plan({ allowedTools: "Read Write" });
+  assert.equal(result.launch, false);
+  assert.equal(result.outcome, "failed");
+});
+
+test("a grantable subset still launches", () => {
+  const result = plan({ allowedTools: ["Read", "Glob"] });
+  assert.equal(result.launch, true);
+  assert.equal(argFor(result.argv, "--allowedTools"), "Read Glob");
+});
