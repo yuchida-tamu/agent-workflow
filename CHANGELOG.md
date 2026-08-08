@@ -8,6 +8,90 @@ build-status ledger this summarizes.
 
 日本語版: [`CHANGELOG.ja.md`](CHANGELOG.ja.md)
 
+## v0.4.0 — the headless loop actually closes
+
+(Everything below is new since v0.3.0.)
+
+v0.3.0 shipped headless dispatch and review as switchable stages. Turning them
+on in a real consumer repo (`hsk-habit`) found that each one produced its
+artifact and then dropped it, refused it, or aimed it at the wrong issue — five
+consumer-facing defects, all reported from that repo and all fixed here. A
+consumer pinning `@v0.3.0` with `headless.*` enabled is getting a loop that
+runs and does not land; this is the tag that closes it.
+
+### Headless review — the verdict is now read, not guessed
+
+`findingsFromText` `JSON.parse`d the agent's **entire** output. The
+code-reviewer emits prose with its findings in a fenced ```json block, so the
+parse always threw, `findings` was always `null`, and `verdictFromFindings`
+returned `not-mergeable` by its (correct) absence-is-refusal default. Every
+headless review refused, whatever it found — a clean review and a blocking one
+were byte-identical (#171, fixed in #183).
+
+It now falls back to scanning fenced blocks for the concluding `findings`
+payload, so the verdict follows the agent's actual findings.
+
+The same run submitted a native `CHANGES_REQUESTED` per invocation and never
+reconciled the previous one, so PRs accumulated undismissed blocking reviews —
+two apiece on the reporting repo — and the body claimed "findings are in the
+review-artifact comment" even when there were none (#181, also #183). The
+native review is now reconciled rather than re-added.
+
+### post-merge — an unrunnable smoke degrades instead of abandoning the merge
+
+The pack lookup resolved `packs/` against the **consumer's** checkout, where
+nothing ever vendors one: `adopt` does not install a pack and no documentation
+said to. With scenarios present the stage hit `process.exit(20)` — *above* the
+loop that applies the state transition and posts the smoke note. The linked
+issue was left CLOSED but stuck at its pre-merge label, and `main` went red on
+every merge (#182, fixed in #191).
+
+It stayed hidden until the first PR that actually closed an issue: earlier
+merges exited higher up at `PR closes no issue — nothing to transition`, so a
+repo could look healthy for many merges and break on the first one that used
+the loop as intended.
+
+`resolvePackDir` now resolves against the toolkit, where the pack actually
+lives, and an unrunnable smoke degrades to `smokeSkipped` — recorded honestly
+in the note, with the merge bookkeeping still applied. **A real replay failure
+still blocks.**
+
+### Dispatch — a parent no longer launches an implementer
+
+`state:ready` on a parent issue dispatched an implementer at the parent, which
+has no work of its own. `agentflow-next` had the `PARENT_WAITING` guard for
+exactly this; the label-triggered dispatcher never consulted `childrenOf`
+(#180, fixed in #186). It does now.
+
+`fcd18d4` (#190) also surfaces children orphaned by a re-plan instead of
+leaving them silently attached to a superseded plan.
+
+### Known gap: the headless implementer still cannot write
+
+Reported alongside the parent-dispatch bug and **not** fixed here.
+`DEFAULT_ALLOWED_TOOLS` is `["Read", "Grep", "Glob"]` with
+`--permission-mode plan`, applied to every role — correct for the architect and
+code-reviewer, fatal for the implementer, whose job is to write. `launchPlan`
+accepts an `allowedTools` override and nothing passes one. Nor does anything
+prepare the worktree `agents/implementer.md` tells the agent to expect.
+
+So `headless.dispatch.ready` will still burn a run and post a blocker artifact.
+The agent fails safe and says exactly what it needs, but the stage cannot
+succeed. Leave `ready` off until that lands.
+
+### Also
+
+- **State transitions are idempotent** compare-and-swap across drivers (#172),
+  so a repeated apply cannot double-move an item.
+- **PR verdicts count unmapped code** toward criticality and warn on map rot
+  (#169) — an unmapped diff surface no longer scores as if it were harmless.
+- **`agentflow-gates`** gives the approval inbox a front door (#173).
+- **`release --verify`** checks per-item versions rather than `HEAD`'s (#170).
+- **Lock takeover** is an inode-checked claim with no arbitration file (#184),
+  and adapter residuals get lock age-out plus pid-bound readiness (#177).
+- **pack-expo `ship`** has a written specification (#176); still spec-only.
+- **JA house glossary** unified across the site and documents (#174).
+
 ## v0.3.0 — the platform pillar
 
 (Everything below is new since v0.2.0; see that section for what was already
